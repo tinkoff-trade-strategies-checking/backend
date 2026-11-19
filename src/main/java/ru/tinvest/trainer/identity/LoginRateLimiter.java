@@ -12,8 +12,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * Ограничитель неудачных попыток входа в памяти одного экземпляра (скользящее окно): по IP и по почте. Блокировка
- * проверяется до вычисления bcrypt. Состояние не общее между экземплярами и теряется при рестарте.
+ * Ограничитель неудачных попыток входа в памяти одного экземпляра (скользящее окно): по паре (почта, IP), по IP и по почте
+ * (общий порог на почту высокий: иначе перебором можно заблокировать чужую почту). Блокировка проверяется до
+ * вычисления bcrypt. Состояние не общее между экземплярами и теряется при рестарте.
  */
 @Component
 class LoginRateLimiter {
@@ -22,6 +23,7 @@ class LoginRateLimiter {
 
     private final LoginLimitProperties props;
     private final Clock clock;
+    private final Map<String, Deque<Instant>> byPair = new HashMap<>();
     private final Map<String, Deque<Instant>> byEmail = new HashMap<>();
     private final Map<String, Deque<Instant>> byIp = new HashMap<>();
 
@@ -35,32 +37,54 @@ class LoginRateLimiter {
         this.clock = clock;
     }
 
-    /** Через сколько можно повторить, если вход для этой пары заблокирован. */
-    synchronized Optional<Duration> blockedFor(String ip, String email) {
+    /**
+     * Атомарно проверяет лимиты и, если вход не заблокирован, сразу учитывает попытку (до проверки пароля): пачка
+     * параллельных запросов не проскакивает лимит. Успешный вход снимает учёт через {@link #recordSuccess}. Возвращает,
+     * через сколько можно повторить, если вход заблокирован.
+     */
+    synchronized Optional<Duration> tryAcquire(String ip, String email) {
         Instant now = clock.instant();
-        Duration byEmailWait = wait(byEmail, email, props.maxFailuresPerEmail(), now);
-        Duration byIpWait = wait(byIp, ip, props.maxFailuresPerIp(), now);
-        Duration result = byEmailWait.compareTo(byIpWait) >= 0 ? byEmailWait : byIpWait;
-        return result.isZero() ? Optional.empty() : Optional.of(result);
-    }
-
-    synchronized void recordFailure(String ip, String email) {
-        Instant now = clock.instant();
-        if (byEmail.size() > PURGE_THRESHOLD || byIp.size() > PURGE_THRESHOLD) {
+        String pair = pairKey(ip, email);
+        Duration result = wait(byPair, pair, props.maxFailuresPerPair(), now);
+        result = max(result, wait(byEmail, email, props.maxFailuresPerEmail(), now));
+        result = max(result, wait(byIp, ip, props.maxFailuresPerIp(), now));
+        if (!result.isZero()) {
+            return Optional.of(result);
+        }
+        if (byPair.size() > PURGE_THRESHOLD || byEmail.size() > PURGE_THRESHOLD || byIp.size() > PURGE_THRESHOLD) {
             purge(now);
         }
+        byPair.computeIfAbsent(pair, k -> new ArrayDeque<>()).addLast(now);
         byEmail.computeIfAbsent(email, k -> new ArrayDeque<>()).addLast(now);
         byIp.computeIfAbsent(ip, k -> new ArrayDeque<>()).addLast(now);
+        return Optional.empty();
     }
 
-    /** Успешный вход сбрасывает счётчик почты; счётчик IP остаётся. */
-    synchronized void clearEmail(String email) {
+    /** Успешный вход сбрасывает счётчики пары и почты и не засчитывается в счётчик IP. */
+    synchronized void recordSuccess(String ip, String email) {
+        byPair.remove(pairKey(ip, email));
         byEmail.remove(email);
+        Deque<Instant> times = byIp.get(ip);
+        if (times != null) {
+            times.pollLast();
+            if (times.isEmpty()) {
+                byIp.remove(ip);
+            }
+        }
     }
 
     synchronized void reset() {
+        byPair.clear();
         byEmail.clear();
         byIp.clear();
+    }
+
+    private static String pairKey(String ip, String email) {
+        return email + '\n' + ip;
+    }
+
+    private static Duration max(Duration a, Duration b) {
+        return a.compareTo(b) >= 0 ? a : b;
     }
 
     private Duration wait(Map<String, Deque<Instant>> failures, String key, int max, Instant now) {
@@ -88,7 +112,7 @@ class LoginRateLimiter {
     }
 
     private void purge(Instant now) {
-        for (Map<String, Deque<Instant>> failures : java.util.List.of(byEmail, byIp)) {
+        for (Map<String, Deque<Instant>> failures : java.util.List.of(byPair, byEmail, byIp)) {
             failures.values().removeIf(times -> {
                 prune(times, now);
                 return times.isEmpty();

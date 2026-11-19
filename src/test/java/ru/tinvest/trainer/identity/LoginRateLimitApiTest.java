@@ -76,8 +76,25 @@ class LoginRateLimitApiTest extends PostgresIntegrationTest {
         assertThat(blocked.getResponse().getContentAsString()).contains("\"status\":429");
         assertThat(Long.parseLong(blocked.getResponse().getHeader("Retry-After")))
                 .isBetween(1L, 300L);
-        // блокировка по почте действует и с другого IP: верный пароль до конца окна не принимается
-        assertThat(status(EMAIL, PASSWORD, "10.0.0.2")).isEqualTo(429);
+        // блокировка по паре (почта, IP): владелец с другого IP входит, перебор с чужого адреса его не блокирует
+        assertThat(status(EMAIL, PASSWORD, "10.0.0.2")).isEqualTo(204);
+        assertThat(status(EMAIL, PASSWORD, "10.0.0.1")).isEqualTo(429);
+    }
+
+    @Test
+    void emailAcrossManyIpsIsBlockedOnlyAfterGlobalThreshold() throws Exception {
+        for (int i = 0; i < 50; i++) {
+            assertThat(status(EMAIL, "wrong", "10.1." + (i / 5) + "." + (i % 5)))
+                    .isEqualTo(401);
+        }
+        assertThat(status(EMAIL, PASSWORD, "10.9.9.9")).isEqualTo(429);
+    }
+
+    @Test
+    void tooLongEmailIs400() throws Exception {
+        String email = "a".repeat(250) + "@x.ru";
+        assertThat(status(email, "x", "10.0.0.1")).isEqualTo(400);
+        assertThat(status("a".repeat(248) + "@x.ru", "x", "10.0.0.1")).isEqualTo(401);
     }
 
     @Test

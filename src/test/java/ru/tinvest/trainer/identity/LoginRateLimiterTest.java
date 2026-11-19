@@ -32,42 +32,76 @@ class LoginRateLimiterTest {
 
     private final MutableClock clock = new MutableClock();
     private final LoginRateLimiter limiter =
-            new LoginRateLimiter(new LoginLimitProperties(3, 5, Duration.ofMinutes(5)), clock);
+            new LoginRateLimiter(new LoginLimitProperties(3, 10, 5, Duration.ofMinutes(5)), clock);
 
     @Test
-    void blocksAfterMaxFailuresPerEmailAndReportsRetryAfter() {
+    void blocksPairAfterMaxAttemptsAndReportsRetryAfterButNotOtherIpOrEmail() {
         for (int i = 0; i < 3; i++) {
-            assertThat(limiter.blockedFor("1.1.1." + i, "a@x.ru")).isEmpty();
-            limiter.recordFailure("1.1.1." + i, "a@x.ru");
+            assertThat(limiter.tryAcquire("1.1.1.1", "a@x.ru")).isEmpty();
         }
         clock.now = clock.now.plusSeconds(60);
 
-        assertThat(limiter.blockedFor("9.9.9.9", "a@x.ru")).contains(Duration.ofMinutes(4));
-        assertThat(limiter.blockedFor("9.9.9.9", "b@x.ru")).isEmpty();
+        assertThat(limiter.tryAcquire("1.1.1.1", "a@x.ru")).contains(Duration.ofMinutes(4));
+        // владелец почты с другого адреса и другая почта с того же адреса не заблокированы
+        assertThat(limiter.tryAcquire("9.9.9.9", "a@x.ru")).isEmpty();
+        assertThat(limiter.tryAcquire("1.1.1.1", "b@x.ru")).isEmpty();
     }
 
     @Test
-    void blocksAfterMaxFailuresPerIp() {
+    void blocksEmailAcrossManyIpsOnlyAfterHighThreshold() {
+        for (int i = 0; i < 10; i++) {
+            assertThat(limiter.tryAcquire("3.3.3." + i, "a@x.ru")).isEmpty();
+        }
+        assertThat(limiter.tryAcquire("4.4.4.4", "a@x.ru")).isPresent();
+        assertThat(limiter.tryAcquire("4.4.4.4", "b@x.ru")).isEmpty();
+    }
+
+    @Test
+    void blocksAfterMaxAttemptsPerIp() {
         for (int i = 0; i < 5; i++) {
-            limiter.recordFailure("2.2.2.2", "user" + i + "@x.ru");
+            assertThat(limiter.tryAcquire("2.2.2.2", "user" + i + "@x.ru")).isEmpty();
         }
-        assertThat(limiter.blockedFor("2.2.2.2", "fresh@x.ru")).isPresent();
-        assertThat(limiter.blockedFor("3.3.3.3", "fresh@x.ru")).isEmpty();
+        assertThat(limiter.tryAcquire("2.2.2.2", "fresh@x.ru")).isPresent();
+        assertThat(limiter.tryAcquire("3.3.3.3", "fresh@x.ru")).isEmpty();
     }
 
     @Test
-    void windowExpiresAndClearEmailResets() {
-        for (int i = 0; i < 3; i++) {
-            limiter.recordFailure("1.1.1.1", "a@x.ru");
+    void acquireIsAtomicUnderConcurrency() throws Exception {
+        var limiter = new LoginRateLimiter(new LoginLimitProperties(5, 1000, 1000, Duration.ofMinutes(5)), clock);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(16);
+        try {
+            var tasks = new java.util.ArrayList<java.util.concurrent.Callable<Boolean>>();
+            for (int i = 0; i < 100; i++) {
+                tasks.add(() -> limiter.tryAcquire("1.1.1.1", "a@x.ru").isEmpty());
+            }
+            long allowed = pool.invokeAll(tasks).stream()
+                    .filter(f -> {
+                        try {
+                            return f.get();
+                        } catch (Exception e) {
+                            throw new IllegalStateException(e);
+                        }
+                    })
+                    .count();
+            assertThat(allowed).isEqualTo(5);
+        } finally {
+            pool.shutdownNow();
         }
-        assertThat(limiter.blockedFor("1.1.1.1", "a@x.ru")).isPresent();
-        limiter.clearEmail("a@x.ru");
-        assertThat(limiter.blockedFor("1.1.1.1", "a@x.ru")).isEmpty();
+    }
 
+    @Test
+    void windowExpiresAndSuccessResets() {
         for (int i = 0; i < 3; i++) {
-            limiter.recordFailure("1.1.1.1", "a@x.ru");
+            limiter.tryAcquire("1.1.1.1", "a@x.ru");
+        }
+        assertThat(limiter.tryAcquire("1.1.1.1", "a@x.ru")).isPresent();
+        limiter.recordSuccess("1.1.1.1", "a@x.ru");
+        assertThat(limiter.tryAcquire("1.1.1.1", "a@x.ru")).isEmpty();
+
+        for (int i = 0; i < 2; i++) {
+            limiter.tryAcquire("1.1.1.1", "a@x.ru");
         }
         clock.now = clock.now.plus(Duration.ofMinutes(5));
-        assertThat(limiter.blockedFor("1.1.1.1", "a@x.ru")).isEmpty();
+        assertThat(limiter.tryAcquire("1.1.1.1", "a@x.ru")).isEmpty();
     }
 }

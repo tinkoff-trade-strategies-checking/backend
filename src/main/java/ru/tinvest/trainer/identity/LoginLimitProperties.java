@@ -5,11 +5,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /**
- * Ограничение неудачных попыток входа: не больше {@code maxFailuresPerEmail} на нормализованную почту и
- * {@code maxFailuresPerIp} на IP за окно {@code window}; следующая попытка — 429.
+ * Ограничение попыток входа за окно {@code window}: не больше {@code maxFailuresPerPair} на пару (почта, IP),
+ * {@code maxFailuresPerIp} на IP и {@code maxFailuresPerEmail} на нормализованную почту со всех IP (высокий порог:
+ * иначе перебором можно заблокировать владельца почты); следующая попытка — 429.
  */
 @ConfigurationProperties("identity.login-limit")
 record LoginLimitProperties(
-        @DefaultValue("5") int maxFailuresPerEmail,
+        @DefaultValue("5") int maxFailuresPerPair,
+        @DefaultValue("50") int maxFailuresPerEmail,
         @DefaultValue("20") int maxFailuresPerIp,
         @DefaultValue("5m") Duration window) {}

@@ -67,13 +67,16 @@ class AuthController {
                 || body.password().isEmpty()) {
             throw new InvalidRequestException("email and password are required");
         }
+        if (body.email().length() > Accounts.MAX_EMAIL_LENGTH) {
+            throw new InvalidRequestException("email is longer than " + Accounts.MAX_EMAIL_LENGTH + " characters");
+        }
         if (Accounts.passwordTooLong(body.password())) {
             throw new InvalidRequestException("password is longer than " + Accounts.MAX_PASSWORD_BYTES + " bytes");
         }
 
         String email = Accounts.normalizeEmail(body.email());
         String ip = request.getRemoteAddr();
-        Duration blocked = limiter.blockedFor(ip, email).orElse(null);
+        Duration blocked = limiter.tryAcquire(ip, email).orElse(null);
         if (blocked != null) {
             // bcrypt не вычисляется
             log.warn("Вход заблокирован ограничителем попыток, ip={}", ip);
@@ -96,7 +99,6 @@ class AuthController {
             }
             throw e;
         } catch (AuthenticationException e) {
-            limiter.recordFailure(ip, email);
             log.warn("Неудачная попытка входа, ip={}", ip);
             // Неизвестная почта и неверный пароль неразличимы.
             ProblemDetail problem =
@@ -111,7 +113,7 @@ class AuthController {
         } else {
             request.getSession(true);
         }
-        limiter.clearEmail(email);
+        limiter.recordSuccess(ip, email);
         SecurityContext context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(authentication);
         SecurityContextHolder.setContext(context);

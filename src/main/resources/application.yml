@@ -22,7 +22,8 @@ server:
 
 identity:
   login-limit:
-    max-failures-per-email: 5
+    max-failures-per-pair: 5
+    max-failures-per-email: 50
     max-failures-per-ip: 20
     window: 5m
 
