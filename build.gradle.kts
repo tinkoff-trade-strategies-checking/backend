@@ -40,6 +40,7 @@ dependencies {
     implementation(libs.protobuf.java)
     implementation(libs.grpc.protobuf)
     implementation(libs.grpc.stub)
+    implementation(libs.fastexcel)
     runtimeOnly(libs.grpc.netty.shaded)
     // javax.annotation.Generated для grpc-стабов (рекомендация grpc-java для Java 9+)
     compileOnly(libs.tomcat.annotations.api)
@@ -47,6 +48,7 @@ dependencies {
     errorprone(libs.errorprone.core)
 
     testImplementation(libs.grpc.inprocess)
+    testImplementation(libs.fastexcel.reader)
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.spring.boot.starter.security.test)
     testImplementation(libs.spring.boot.starter.webmvc.test)

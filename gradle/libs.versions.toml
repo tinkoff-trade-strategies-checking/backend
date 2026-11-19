@@ -10,6 +10,7 @@ protobuf = "4.36.2"
 protobufPlugin = "0.10.1"
 grpc = "1.85.1"
 tomcatAnnotations = "6.0.53"
+fastexcel = "0.20.2"
 
 [libraries]
 spring-boot-starter-webmvc = { module = "org.springframework.boot:spring-boot-starter-webmvc" }
@@ -38,6 +39,9 @@ grpc-netty-shaded = { module = "io.grpc:grpc-netty-shaded", version.ref = "grpc"
 grpc-inprocess = { module = "io.grpc:grpc-inprocess", version.ref = "grpc" }
 grpc-protoc-gen = { module = "io.grpc:protoc-gen-grpc-java", version.ref = "grpc" }
 tomcat-annotations-api = { module = "org.apache.tomcat:annotations-api", version.ref = "tomcatAnnotations" }
+
+fastexcel = { module = "org.dhatim:fastexcel", version.ref = "fastexcel" }
+fastexcel-reader = { module = "org.dhatim:fastexcel-reader", version.ref = "fastexcel" }
 
 errorprone-core = { module = "com.google.errorprone:error_prone_core", version.ref = "errorproneCore" }
 
