@@ -105,8 +105,9 @@ public class Sessions {
         Collections.shuffle(shuffled, random);
         for (int index = 0; index < shuffled.size(); index++) {
             PlannedPaper p = shuffled.get(index);
-            jdbc.sql("INSERT INTO sessions.session_paper (session_id, paper_index, paper_id, secid, sector, "
-                            + "lot_size, price_step) VALUES (:session, :idx, :paper, :secid, :sector, :lot, :step)")
+            jdbc.sql(
+                            "INSERT INTO sessions.session_paper (session_id, paper_index, paper_id, secid, sector, "
+                                    + "lot_size, price_step, name) VALUES (:session, :idx, :paper, :secid, :sector, :lot, :step, :name)")
                     .param("session", id)
                     .param("idx", index)
                     .param("paper", p.id())
@@ -114,6 +115,7 @@ public class Sessions {
                     .param("sector", p.sector())
                     .param("lot", p.lotSize())
                     .param("step", p.priceStep())
+                    .param("name", p.name())
                     .update();
         }
         return id;
@@ -228,7 +230,7 @@ public class Sessions {
     }
 
     private List<PaperRecord> papers(UUID sessionId) {
-        return jdbc.sql("SELECT paper_index, paper_id, secid, sector, lot_size, price_step "
+        return jdbc.sql("SELECT paper_index, paper_id, secid, sector, lot_size, price_step, name "
                         + "FROM sessions.session_paper WHERE session_id = :id ORDER BY paper_index")
                 .param("id", sessionId)
                 .query((rs, n) -> new PaperRecord(
@@ -237,7 +239,8 @@ public class Sessions {
                         rs.getString("secid"),
                         rs.getString("sector"),
                         rs.getLong("lot_size"),
-                        rs.getBigDecimal("price_step")))
+                        rs.getBigDecimal("price_step"),
+                        rs.getString("name")))
                 .list();
     }
 }

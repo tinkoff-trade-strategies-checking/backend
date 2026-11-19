@@ -90,7 +90,7 @@ final class ReportViews {
             out.put("blindLabel", ViewFormat.label(paper.paperIndex()));
             out.put("ticker", paper.secid());
             // названий в архиве нет: name = тикер, как в GET /papers
-            out.put("name", paper.secid());
+            out.put("name", paper.displayName());
             out.put("sector", paper.sector());
             out.put("startPrice", ViewFormat.number(startPrice(session, paper, replay)));
             out.put("lotSize", paper.lotSize());

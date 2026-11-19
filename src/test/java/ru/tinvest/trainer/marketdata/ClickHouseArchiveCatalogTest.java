@@ -71,7 +71,9 @@ class ClickHouseArchiveCatalogTest {
 
         exec("INSERT INTO snapshots_ready VALUES ('" + SNAP + "')");
         exec("INSERT INTO securities VALUES ('" + SNAP + "', 'SBER', 'Финансы', 10, 0.01, 'Сбербанк'), ('" + SNAP
-                + "', 'GAZP', '', 10, 0.02, ''), ('" + OTHER + "', 'LKOH', 'Нефть и газ', 1, 0.5, 'Лукойл')");
+                + "', 'GAZP', '', 10, 0.02, ''), ('" + SNAP
+                + "', 'IMOEX', '', 1, 0.01, 'Индекс МосБиржи'), ('" + OTHER
+                + "', 'LKOH', 'Нефть и газ', 1, 0.5, 'Лукойл')");
         exec("INSERT INTO trading_calendar VALUES ('" + SNAP + "', '2024-03-05', 1), ('" + SNAP
                 + "', '2024-03-04', 1), ('" + SNAP + "', '2024-03-06', 0)");
         // SBER: 04.03 — две минутные свечи, вечерняя 23:49 МСК (20:49 UTC) тоже 04.03; 05.03 00:00 МСК = 04.03 21:00
@@ -121,6 +123,8 @@ class ClickHouseArchiveCatalogTest {
     @Test
     void securitiesOfSnapshot() {
         var list = catalog(url()).securities(SNAP);
+        // строка бенчмарка IMOEX в securities есть, в каталог бумаг для торговли не входит
+        assertThat(list).extracting(ArchiveCatalog.ArchivePaper::secid).doesNotContain("IMOEX");
         assertThat(list).extracting(ArchiveCatalog.ArchivePaper::secid).containsExactly("GAZP", "SBER");
         assertThat(list.get(0).sector()).isEmpty();
         assertThat(list.get(1).sector()).isEqualTo("Финансы");

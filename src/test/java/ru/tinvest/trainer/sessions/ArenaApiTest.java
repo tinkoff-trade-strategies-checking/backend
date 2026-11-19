@@ -234,6 +234,32 @@ class ArenaApiTest extends PostgresIntegrationTest {
         for (String secid : SECIDS) {
             assertThat(raw).doesNotContain(secid);
         }
+        assertThat(raw).doesNotContain("Название");
+    }
+
+    @Test
+    void revealedSnapshotCarriesCatalogNamesAndBlindRunningNever() throws Exception {
+        java.util.Map<String, String> expected =
+                java.util.Map.of("SBER", "Название0", "GAZP", "GAZP", "LKOH", "Название2");
+
+        UUID open = newSession(false);
+        for (JsonNode paper : body(httpGet(open, "")).get("papers")) {
+            assertThat(paper.get("name").asString())
+                    .isEqualTo(expected.get(paper.get("ticker").asString()));
+        }
+
+        // слепая идущая — названий нет (INV-7), завершённая — раскрыта с названиями
+        UUID blind = newSession(true);
+        assertThat(httpGet(blind, "").getResponse().getContentAsString()).doesNotContain("Название");
+        jdbc.sql("UPDATE sessions.session SET status = 'completed' WHERE id = :id")
+                .param("id", blind)
+                .update();
+        JsonNode revealed = body(httpGet(blind, "/replay?step=1")).get("snapshot");
+        assertThat(revealed.get("mode").asString()).isEqualTo("OPEN");
+        for (JsonNode paper : revealed.get("papers")) {
+            assertThat(paper.get("name").asString())
+                    .isEqualTo(expected.get(paper.get("ticker").asString()));
+        }
     }
 
     private void assertBlind(JsonNode response) {
@@ -1447,8 +1473,14 @@ class ArenaApiTest extends PostgresIntegrationTest {
     private UUID newSession(boolean blind, List<String> secids, LocalDate start) {
         List<PlannedPaper> list = new ArrayList<>();
         for (int i = 0; i < secids.size(); i++) {
+            // название из каталога; у бумаги 1 его нет (в раскрытом виде вместо него тикер)
             list.add(new PlannedPaper(
-                    Papers.id(secids.get(i)), secids.get(i), "Сектор" + i, 10 + i, new BigDecimal("0.01")));
+                    Papers.id(secids.get(i)),
+                    secids.get(i),
+                    "Сектор" + i,
+                    10 + i,
+                    new BigDecimal("0.01"),
+                    i == 1 ? "" : "Название" + i));
         }
         Snapshot snapshot = registeredSnapshot();
         LaunchPlan plan = new LaunchPlan(
