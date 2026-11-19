@@ -31,6 +31,7 @@ dependencyManagement {
 dependencies {
     implementation(libs.spring.boot.starter.webmvc)
     implementation(libs.spring.boot.starter.actuator)
+    implementation(libs.spring.boot.starter.security)
     implementation(libs.spring.boot.starter.jdbc)
     implementation(libs.spring.boot.starter.flyway)
     implementation(libs.spring.modulith.starter.core)
@@ -47,6 +48,7 @@ dependencies {
 
     testImplementation(libs.grpc.inprocess)
     testImplementation(libs.spring.boot.starter.test)
+    testImplementation(libs.spring.boot.starter.security.test)
     testImplementation(libs.spring.boot.starter.webmvc.test)
     testImplementation(libs.spring.boot.testcontainers)
     testImplementation(libs.spring.modulith.starter.test)

@@ -6,6 +6,23 @@ spring:
     username: ${SPRING_DATASOURCE_USERNAME}
     password: ${SPRING_DATASOURCE_PASSWORD}
 
+server:
+  # Tomcat RemoteIpValve: IP клиента из X-Forwarded-For от Caddy (внутренняя сеть, INV-10); нужен ограничителю входа
+  forward-headers-strategy: native
+  servlet:
+    session:
+      cookie:
+        name: SESSION
+        http-only: true
+        secure: true
+        same-site: lax
+
+identity:
+  login-limit:
+    max-failures-per-email: 5
+    max-failures-per-ip: 20
+    window: 5m
+
 worker:
   address: ${WORKER_ADDRESS:localhost:50051}
   deadline: ${WORKER_DEADLINE:5s}
