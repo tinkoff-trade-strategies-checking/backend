@@ -43,13 +43,27 @@
 - `identity` — учётные записи и вход пользователя (схема PostgreSQL `identity`).
 - `config` — общие настройки приложения.
 - `worker` — связь с Simulation Worker по gRPC, передача заданий и результатов. Публичный интерфейс — `SimulationWorkerClient` (пока `ping()`); реализация на `ManagedChannel`, адрес `worker.address` (env `WORKER_ADDRESS`, по умолчанию `localhost:50051`), дедлайн вызова `worker.deadline` (env `WORKER_DEADLINE`, по умолчанию `5s`); `UNAVAILABLE` и `DEADLINE_EXCEEDED` → `DependencyUnavailableException` (503).
-- `marketdata` — каталог бумаг и доступной истории; подбор отрезка выбранной категории периода (схема `marketdata`).
+- `marketdata` — каталог бумаг и доступной истории; подбор отрезка выбранной категории периода (схема `marketdata`). Импортёр архива ISS — пакет `marketdata.importer` (профиль `import`, раздел «Импорт архива ISS»).
 - `workshop` — черновики стратегий, публикация неизменяемых версий, форки и скрытие из каталога (схема `workshop`).
 - `sessions` — ручная торговля: журнал команд, виртуальное время, плеер, слепой режим, завершение и воспроизведение (схема `sessions`).
 - `simulation` — очередь вычислительных заданий, прогоны алгоритмов и повтор прогона (схема `simulation`).
 - `analysis` — отчёты, история, каталог алгоритмов, сравнение результатов, разбор расхождений и выгрузка CSV/XLSX (схема `analysis`).
 
 Миграции Flyway — в `src/main/resources/db/migration/` (`V1__baseline.sql` создаёт схемы модулей). Нумерация: `V<N>__<что>.sql`, по возрастанию в одном каталоге; таблицы модуля — только в его схеме. Конфигурация — `src/main/resources/application.yml` (БД из `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, без значений по умолчанию) и профиль `application-local.yml` (значения для локального запуска).
+
+## Импорт архива ISS
+Импортёр (UC-26, `backend#7`) грузит MOEX ISS и ставки RUONIA ЦБ РФ в ClickHouse как неизменяемый снапшот и регистрирует его в `marketdata.snapshot` (`Snapshots.register`). Запускается тем же приложением под профилем `import` (без веб-сервера), нужны PostgreSQL и ClickHouse:
+
+```bash
+./gradlew bootRun --args='--spring.profiles.active=import --import.from=2024-01-01 --import.to=2024-12-31 --import.tickers=SBER,GAZP'
+```
+
+- Без `--import.tickers` пул — состав индекса IMOEX на `--import.to` (ближайший торговый день не позже). `--import.label=<текст>` — новый снапшот на тех же параметрах.
+- ClickHouse: `IMPORT_CLICKHOUSE_URL` (HTTP, по умолчанию `http://localhost:8123`), `IMPORT_CLICKHOUSE_DATABASE` (`ttsc`), `IMPORT_CLICKHOUSE_USER` (`ttsc`), `IMPORT_CLICKHOUSE_PASSWORD`. PostgreSQL — `SPRING_DATASOURCE_*` (по умолчанию как в `local`). ISS и повторы — `--import.iss.*` (`pause`, `max-retries`, `initial-backoff`, `max-backoff`, `empty-retries`, `base-url`), ЦБ — `--import.cbr.url`.
+- Что грузится: минутные свечи пула с TQBR (`candles`, `interval_sec = 60`, `ts_open` — UTC из МСК = UTC+3, `available_at = ts_open + интервал`), дневной ряд IMOEX (`interval_sec = 86400`), `securities` (лот, шаг цены `MINSTEP`, сектор), `trading_calendar` (торговый день — день с дневной свечой IMOEX), `ruonia`, `corporate_actions` (сплиты и консолидации из `statistics/engines/stock/splits`, таблица сверх контракта `core`), затем `snapshots_ready`. Календарь и ставки берутся с запасом 14 дней до `--import.from`. Бумага не на TQBR, с шагом цены < 1e-6 ₽ или лотом < 1 пропускается с предупреждением. Сектор — по вхождению в отраслевые индексы MOEX на дату состава; нет сектора — пустая строка, несколько — первый по коду индекса, оба случая с предупреждением в логе.
+- Идемпотентность: `snapshot_id` = UUID по имени от параметров (`Params.snapshotId`). Зарегистрированный снапшот не меняется (INV-5): повторный запуск с теми же параметрами ничего не делает. Оборванный запуск докачивается: каждая таблица и каждый кусок (бумага × месяц) вставляются одним атомарным `INSERT`, «в таблице есть строки» значит «загружено». Снапшот виден `core` только после `snapshots_ready`; готовый в ClickHouse, но не зарегистрированный в PostgreSQL только регистрируется.
+- ISS: пауза между запросами, ошибка (сеть, не 200, не JSON) — повтор с экспоненциальной задержкой, пустая страница — до `empty-retries` повторов, затем конец данных; следующая страница нужна, пока страница полная (500 для свечей) или не набран `TOTAL` из `<блок>.cursor`.
+- Тесты `marketdata/importer`: поддельный ISS на JDK `HttpServer` с образцами из `src/test/resources/iss`, настоящие ClickHouse (Testcontainers) и PostgreSQL, сети нет.
 
 ## gRPC-контракт (proto)
 `proto/simulation.proto` и `proto/common.proto` — копии `core/proto/` с ветки `main` репозитория `core` (источник правды), без изменений. Java-код (protobuf и gRPC-стабы, пакет `pac.simulation.v1`) генерируется при сборке плагином `com.google.protobuf` в `build/generated` и не коммитится; ErrorProne и Spotless его не проверяют. Джоба CI `proto-sync` падает, если копия отличается от `core/main`. Контракт изменился в `core` — PR в `backend` с новой копией сразу после слияния PR в `core` (порядок контракта — `home/AGENTS.md`).
