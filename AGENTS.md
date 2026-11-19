@@ -17,20 +17,20 @@
 Полностью — `home/workflow.md`. Коротко:
 1. Работа идёт по issue с доски https://github.com/orgs/tinkoff-trade-strategies-checking/projects/2. Перед стартом прочитай issue вместе с комментариями.
 2. Прочитай ФТ, INV и решения раздела «Архитектура» в `documentation/decisions.md`. Отход от принятого решения — только явно, PR в `decisions.md` с причиной.
-3. Ветка `<тип>/<номер-issue>` в worktree (`sh scripts/worktree.sh start backend <тип> <N>`), изменения вместе с тестами, PR с `Closes #N`.
+3. Ветка `<тип>/<номер-issue>` в worktree (из `home`: `sh scripts/worktree.sh start backend <тип> <N>`), изменения вместе с тестами, PR с `Closes #N`.
 4. Изменение сделало документы неверными — обнови их в том же PR.
 
 ## Критично
 - **Границы модулей.** Зависимости между модулями проверяет `ModularityTest` (`ApplicationModules.verify()`). Межмодульное взаимодействие — только через публичный API и события.
-- **INV-6 (деньги).** Денежные суммы и цены — только `BigDecimal` с явным `RoundingMode`, без `float`/`double`.
+- **INV-6 (деньги).** Денежные суммы и цены — только `BigDecimal` (масштаб и `RoundingMode` — по `decisions.md`, «Деньги и округление»), без `float`/`double`.
 - **INV-7 (слепой режим).** Маскирование названий, тикеров, реальных дат и рублёвых сумм — в одном месте, с контрактным тестом; данные слепого режима не должны попадать в ответы об ошибках и логи.
 - **INV-8 (восстановление сессии).** Ручная сессия хранится как журнал команд; состояние восстанавливается проигрыванием журнала.
 
 ## Стандарты
 Общие стандарты — `home/standards.md`. Специфика Java/Spring для `backend`:
 - **Формат и статический анализ.** `palantir-java-format` через Spotless (`./gradlew spotlessApply` / `./gradlew spotlessCheck`) и ErrorProne при компиляции — проверяются в CI, падение = ошибка.
-- **Ошибки API.** Формат `ProblemDetail` (RFC 9457, `application/problem+json`), общий обработчик `ApiExceptionHandler` в модуле `api`. Каждая ошибка входа и зависимости переводится в явный HTTP-статус (`400`, `404`, `503`); на `500` клиенту не отдаются стек, внутренние сообщения, секреты и данные слепого режима.
-- **Деньги (INV-6).** Только `BigDecimal` с явным `RoundingMode` (например, `RoundingMode.HALF_UP`, или направленное округление не в пользу трейдера по правилам исполнения). Никаких `double`/`float` для цен, сумм и комиссий.
+- **Ошибки API.** Формат `ProblemDetail` (RFC 9457, `application/problem+json`), общий обработчик `ApiExceptionHandler` в модуле `api`. Ошибка входа — `InvalidRequestException` (`400`), нет ресурса — `NotFoundException` (`404`), недоступная зависимость — `DependencyUnavailableException` или ошибка доступа к БД (`503`); `IllegalArgumentException` и прочие JDK-исключения — `500`, их текст клиенту не уходит; на `500` клиенту не отдаются стек, внутренние сообщения, секреты и данные слепого режима.
+- **Деньги (INV-6).** Только `BigDecimal`, масштаб и `RoundingMode` — по `documentation/decisions.md`, «Деньги и округление» (INV-6). Никаких `double`/`float` для цен, сумм и комиссий.
 - **DTO и сущности.** DTO API (Java `record`) отделены от сущностей и таблиц БД; сущности БД не отдаются напрямую из контроллеров.
 - **Слепой режим (INV-7).** Единая точка маскирования для ответов слепой сессии; все изменения покрываются контрактным тестом.
 - **Зависимости и генерация.** Новые зависимости — с версией в `gradle/libs.versions.toml` и записью в `documentation/decisions.md` («Архитектура»). Сгенерированный код (gRPC-стабы и т. п.) не коммитится.
@@ -48,7 +48,7 @@
 - `simulation` — очередь вычислительных заданий, прогоны алгоритмов и повтор прогона (схема `simulation`).
 - `analysis` — отчёты, история, каталог алгоритмов, сравнение результатов, разбор расхождений и выгрузка CSV/XLSX (схема `analysis`).
 
-Миграции Flyway — в `src/main/resources/db/migration/` (`V1__init_module_schemas.sql` создаёт схемы модулей). Конфигурация — `src/main/resources/application.yml` и профиль `application-local.yml`.
+Миграции Flyway — в `src/main/resources/db/migration/` (`V1__baseline.sql` создаёт схемы модулей). Нумерация: `V<N>__<что>.sql`, по возрастанию в одном каталоге; таблицы модуля — только в его схеме. Конфигурация — `src/main/resources/application.yml` (БД из `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, без значений по умолчанию) и профиль `application-local.yml` (значения для локального запуска).
 
 ## Команды
 Для интеграционных тестов (Testcontainers) нужен запущенный Docker. На машине без локального JDK 25 Gradle автоматически скачает toolchain 25 через Foojay.

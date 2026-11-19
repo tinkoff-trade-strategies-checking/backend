@@ -1,3 +1,9 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/trainer
+    username: trainer
+    password: trainer
+
 server:
   port: 8080
 
