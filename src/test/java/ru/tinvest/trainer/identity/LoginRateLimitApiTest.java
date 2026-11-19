@@ -76,13 +76,13 @@ class LoginRateLimitApiTest extends PostgresIntegrationTest {
         assertThat(blocked.getResponse().getContentAsString()).contains("\"status\":429");
         assertThat(Long.parseLong(blocked.getResponse().getHeader("Retry-After")))
                 .isBetween(1L, 300L);
-        // блокировка по паре (почта, IP): владелец с другого IP входит, перебор с чужого адреса его не блокирует
+        // блокировка по паре (почта, IP): с другого IP почта не заблокирована (общий порог по почте — 50)
         assertThat(status(EMAIL, PASSWORD, "10.0.0.2")).isEqualTo(204);
         assertThat(status(EMAIL, PASSWORD, "10.0.0.1")).isEqualTo(429);
     }
 
     @Test
-    void emailAcrossManyIpsIsBlockedOnlyAfterGlobalThreshold() throws Exception {
+    void emailAcrossManyIpsIsBlockedForUnknownPairOnlyAfterGlobalThreshold() throws Exception {
         for (int i = 0; i < 50; i++) {
             assertThat(status(EMAIL, "wrong", "10.1." + (i / 5) + "." + (i % 5)))
                     .isEqualTo(401);
@@ -91,10 +91,21 @@ class LoginRateLimitApiTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void knownPairOwnerLogsInDespiteGlobalEmailThreshold() throws Exception {
+        assertThat(status(EMAIL, PASSWORD, "10.9.9.8")).isEqualTo(204);
+        for (int i = 0; i < 50; i++) {
+            assertThat(status(EMAIL, "wrong", "10.1." + (i / 5) + "." + (i % 5)))
+                    .isEqualTo(401);
+        }
+        assertThat(status(EMAIL, PASSWORD, "10.9.9.9")).isEqualTo(429);
+        assertThat(status(EMAIL, PASSWORD, "10.9.9.8")).isEqualTo(204);
+    }
+
+    @Test
     void tooLongEmailIs400() throws Exception {
-        String email = "a".repeat(250) + "@x.ru";
-        assertThat(status(email, "x", "10.0.0.1")).isEqualTo(400);
-        assertThat(status("a".repeat(248) + "@x.ru", "x", "10.0.0.1")).isEqualTo(401);
+        // ровно 254 символа допустимо (401), 255 — 400
+        assertThat(status("a".repeat(249) + "@x.ru", "x", "10.0.0.1")).isEqualTo(401);
+        assertThat(status("a".repeat(250) + "@x.ru", "x", "10.0.0.1")).isEqualTo(400);
     }
 
     @Test

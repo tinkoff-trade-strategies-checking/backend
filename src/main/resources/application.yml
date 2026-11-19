@@ -12,6 +12,10 @@ spring:
 server:
   # Tomcat RemoteIpValve: IP клиента из X-Forwarded-For от Caddy (внутренняя сеть, INV-10); нужен ограничителю входа
   forward-headers-strategy: native
+  tomcat:
+    remoteip:
+      # X-Forwarded-For доверяем только Caddy из закреплённой подсети internal (deploy/docker-compose.yml, 172.28.0.0/24)
+      internal-proxies: 172\.28\.0\.\d{1,3}
   servlet:
     session:
       cookie:

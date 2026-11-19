@@ -67,14 +67,14 @@ class AuthController {
                 || body.password().isEmpty()) {
             throw new InvalidRequestException("email and password are required");
         }
-        if (body.email().length() > Accounts.MAX_EMAIL_LENGTH) {
-            throw new InvalidRequestException("email is longer than " + Accounts.MAX_EMAIL_LENGTH + " characters");
-        }
         if (Accounts.passwordTooLong(body.password())) {
             throw new InvalidRequestException("password is longer than " + Accounts.MAX_PASSWORD_BYTES + " bytes");
         }
 
         String email = Accounts.normalizeEmail(body.email());
+        if (email.length() > Accounts.MAX_EMAIL_LENGTH) {
+            throw new InvalidRequestException("email is longer than " + Accounts.MAX_EMAIL_LENGTH + " characters");
+        }
         String ip = request.getRemoteAddr();
         Duration blocked = limiter.tryAcquire(ip, email).orElse(null);
         if (blocked != null) {
@@ -84,7 +84,7 @@ class AuthController {
                     ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS, "Too many login attempts");
             problem.setTitle("Too Many Requests");
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
-                    .header(HttpHeaders.RETRY_AFTER, String.valueOf(blocked.toSeconds()))
+                    .header(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds(blocked)))
                     .body(problem);
         }
 
@@ -94,6 +94,7 @@ class AuthController {
                     UsernamePasswordAuthenticationToken.unauthenticated(email, body.password()));
         } catch (InternalAuthenticationServiceException e) {
             // Сбой при загрузке пользователя (БД и т. п.) — не «неверный пароль»: причина уходит в ApiExceptionHandler.
+            limiter.release(ip, email);
             if (e.getCause() instanceof RuntimeException cause) {
                 throw cause;
             }
@@ -120,6 +121,12 @@ class AuthController {
         contextRepository.saveContext(context, request, response);
         csrfTokenRepository.saveToken(csrfTokenRepository.generateToken(request), request, response);
         return ResponseEntity.noContent().build();
+    }
+
+    /** Секунды вверх, не меньше 1: нулевое или усечённое значение даёт повторный 429. */
+    private static long retryAfterSeconds(Duration blocked) {
+        long seconds = blocked.toSeconds() + (blocked.toNanosPart() > 0 ? 1 : 0);
+        return Math.max(1, seconds);
     }
 
     @PostMapping("/auth/logout")

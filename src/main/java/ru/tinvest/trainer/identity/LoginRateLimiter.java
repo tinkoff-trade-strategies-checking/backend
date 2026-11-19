@@ -6,26 +6,32 @@ import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * Ограничитель неудачных попыток входа в памяти одного экземпляра (скользящее окно): по паре (почта, IP), по IP и по почте
- * (общий порог на почту высокий: иначе перебором можно заблокировать чужую почту). Блокировка проверяется до
- * вычисления bcrypt. Состояние не общее между экземплярами и теряется при рестарте.
+ * Ограничитель попыток входа в памяти одного экземпляра (скользящее окно): по паре (почта, IP), по IP и по почте со всех
+ * IP. Общий порог по почте не действует на «известную» пару: пару с успешным входом помнят {@code knownPairTtl}
+ * (размер списка ограничен), поэтому владельца почты со своего IP перебор с чужих адресов не блокирует. Блокировка
+ * проверяется до вычисления bcrypt. Состояние не общее между экземплярами и теряется при рестарте (после него список
+ * известных пар пуст).
  */
 @Component
 class LoginRateLimiter {
 
     private static final int PURGE_THRESHOLD = 10_000;
+    private static final Duration PURGE_INTERVAL = Duration.ofSeconds(10);
 
     private final LoginLimitProperties props;
     private final Clock clock;
     private final Map<String, Deque<Instant>> byPair = new HashMap<>();
     private final Map<String, Deque<Instant>> byEmail = new HashMap<>();
     private final Map<String, Deque<Instant>> byIp = new HashMap<>();
+    private final Map<String, Instant> knownPairs;
+    private Instant lastPurge = Instant.MIN;
 
     @Autowired
     LoginRateLimiter(LoginLimitProperties props) {
@@ -35,6 +41,13 @@ class LoginRateLimiter {
     LoginRateLimiter(LoginLimitProperties props, Clock clock) {
         this.props = props;
         this.clock = clock;
+        int max = props.maxKnownPairs();
+        this.knownPairs = new LinkedHashMap<>() {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, Instant> eldest) {
+                return size() > max;
+            }
+        };
     }
 
     /**
@@ -46,12 +59,16 @@ class LoginRateLimiter {
         Instant now = clock.instant();
         String pair = pairKey(ip, email);
         Duration result = wait(byPair, pair, props.maxFailuresPerPair(), now);
-        result = max(result, wait(byEmail, email, props.maxFailuresPerEmail(), now));
+        if (!isKnown(pair, now)) {
+            result = max(result, wait(byEmail, email, props.maxFailuresPerEmail(), now));
+        }
         result = max(result, wait(byIp, ip, props.maxFailuresPerIp(), now));
         if (!result.isZero()) {
             return Optional.of(result);
         }
-        if (byPair.size() > PURGE_THRESHOLD || byEmail.size() > PURGE_THRESHOLD || byIp.size() > PURGE_THRESHOLD) {
+        if ((byPair.size() > PURGE_THRESHOLD || byEmail.size() > PURGE_THRESHOLD || byIp.size() > PURGE_THRESHOLD)
+                && !now.isBefore(lastPurge.plus(PURGE_INTERVAL))) {
+            lastPurge = now;
             purge(now);
         }
         byPair.computeIfAbsent(pair, k -> new ArrayDeque<>()).addLast(now);
@@ -60,15 +77,44 @@ class LoginRateLimiter {
         return Optional.empty();
     }
 
-    /** Успешный вход сбрасывает счётчики пары и почты и не засчитывается в счётчик IP. */
+    /**
+     * Успешный вход: сбрасывает счётчик пары, не засчитывает попытку в счётчики почты и IP и запоминает пару как
+     * известную. Общий счётчик почты остаётся: чужие неудачи с других IP не стираются.
+     */
     synchronized void recordSuccess(String ip, String email) {
-        byPair.remove(pairKey(ip, email));
-        byEmail.remove(email);
-        Deque<Instant> times = byIp.get(ip);
+        String pair = pairKey(ip, email);
+        byPair.remove(pair);
+        dropLast(byEmail, email);
+        dropLast(byIp, ip);
+        knownPairs.remove(pair);
+        knownPairs.put(pair, clock.instant());
+    }
+
+    /** Возвращает попытку, учтённую {@link #tryAcquire}, если пароль не проверялся (сбой БД). */
+    synchronized void release(String ip, String email) {
+        dropLast(byPair, pairKey(ip, email));
+        dropLast(byEmail, email);
+        dropLast(byIp, ip);
+    }
+
+    private boolean isKnown(String pair, Instant now) {
+        Instant since = knownPairs.get(pair);
+        if (since == null) {
+            return false;
+        }
+        if (!since.plus(props.knownPairTtl()).isAfter(now)) {
+            knownPairs.remove(pair);
+            return false;
+        }
+        return true;
+    }
+
+    private static void dropLast(Map<String, Deque<Instant>> failures, String key) {
+        Deque<Instant> times = failures.get(key);
         if (times != null) {
             times.pollLast();
             if (times.isEmpty()) {
-                byIp.remove(ip);
+                failures.remove(key);
             }
         }
     }
@@ -77,6 +123,7 @@ class LoginRateLimiter {
         byPair.clear();
         byEmail.clear();
         byIp.clear();
+        knownPairs.clear();
     }
 
     private static String pairKey(String ip, String email) {
