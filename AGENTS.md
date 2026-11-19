@@ -148,7 +148,21 @@ USER_PASSWORD='...' ./gradlew bootRun --args='--spring.profiles.active=create-us
 ./gradlew test            # модульные и интеграционные тесты (Modulith, ProblemDetail, Testcontainers PostgreSQL)
 ./gradlew build           # полная проверка: формат, компиляция с ErrorProne, тесты, сборка JAR
 npx -y @redocly/cli@latest lint api/openapi.yaml   # контракт REST и SSE (джоба CI `openapi`)
+./gradlew e2eTest         # сквозной сценарий и сверка денег с настоящим воркером ядра (в `build` не входит)
 ```
+
+### Сквозные тесты (`e2eTest`)
+Набор `src/e2eTest/java` (пакет `ru.tinvest.trainer.e2e`) поднимает полное приложение на случайном порту и ходит в него по HTTP, как браузер. Окружение — Testcontainers: ClickHouse 25.8 с маленьким снапшотом (`MarketFixture`: SBER, GAZP, LKOH и IMOEX, 160 торговых дней, дневные свечи, календарь, RUONIA; без сети и ISS), PostgreSQL 17 и **настоящий** Simulation Worker из образа `simulation-worker:latest` (`-De2e.worker.image=...` меняет образ). Нужны Docker и свободные ~3 ГБ RAM. Образ собирается из `core` на `main`; локально он должен быть не старше `core/main`, иначе контракт воркера разойдётся с `proto/`:
+
+```bash
+docker build -t simulation-worker:latest ../core      # тяжёлая сборка C++, если образа нет или он устарел
+./gradlew e2eTest --no-daemon                         # весь набор (около 2-3 минут после сборки образа)
+./gradlew e2eTest --tests '*MoneyReconciliation*'     # только сверка денег
+```
+
+Что проверяют (INV-6, INV-7, INV-8): `BlindScenarioE2eTest` — вход, слепая сессия, снимок, заявки (в том числе отказ и отмена), шаги плеера, обрыв SSE и догон по `Last-Event-ID`, F5, завершение, раскрытие периода, отчёт, история, воспроизведение; `LeakScanner` рекурсивно обходит **каждый** ответ слепой сессии до завершения (тикеры, названия, даты и время, цены архива, капитал, поля рублей) и на неслепой сессии находит всё (положительный контроль); `blindMaskNeverLetsPaperFieldsThrough` — то же для слепых сессий всех категорий и числа бумаг со случайными командами и отказами. `MoneyReconciliationE2eTest` — случайные рыночные сделки (зерно `20261120`) идут через API, `MoneyModel` независимо считает цену исполнения, сумму, комиссию и сбор, остаток денег и стоимость портфеля в `BigDecimal` по правилам `decisions.md`; сверка до копейки после каждого шага, затем издержки отчёта по видам, итоговый капитал и воспроизведение журнала. Меняете правила исполнения в `core` — обновите `MoneyModel` вместе с `decisions.md`.
+
+Скилл `verify` в `home` гоняет `./gradlew spotlessApply build` и `./gradlew e2eTest` (джоба CI `e2e`: образ собирается из `core/main` через buildx с кэшем GitHub Actions).
 
 INV-10 проверяет `DeployExposureTest` (без Docker): порты публикует только caddy (80, 443), postgres/clickhouse/worker/backend — только в сетях `internal: true`, `Caddyfile` без http-сайтов и `tls off`/`auto_https off`.
 
@@ -168,7 +182,7 @@ curl -s http://localhost:8080/actuator/health
 docker stop trainer-pg
 ```
 
-CI (`.github/workflows/ci.yml`): джоба `format` (`./gradlew spotlessCheck --no-daemon`), джоба `build-test` (`./gradlew build -x spotlessCheck --no-daemon`), джоба `proto-sync` (сверка `proto/` с `core/main`), джоба `pr-size` (наблюдение размера PR).
+CI (`.github/workflows/ci.yml`): джоба `format` (`./gradlew spotlessCheck --no-daemon`), джоба `build-test` (`./gradlew build -x spotlessCheck --no-daemon`), джоба `e2e` (образ воркера из `core/main` и `./gradlew e2eTest --no-daemon`), джоба `proto-sync` (сверка `proto/` с `core/main`), джоба `pr-size` (наблюдение размера PR).
 
 ## Окружение
 Локальный стек в `deploy/`: `caddy` (HTTPS, единственный с опубликованными портами 80/443, INV-10) → `backend`; внутри сети `postgres` (17), `clickhouse` (25.8) и `worker` (образ `simulation-worker`, собирается из `../core` по его `Dockerfile`).

@@ -22,8 +22,13 @@ public class Snapshots {
         return register(snapshotKey, description, "");
     }
 
+    /**
+     * Идентификатор снапшота равен ключу, если ключ — UUID: воркер читает данные по {@code snapshot_id} ClickHouse, а
+     * сессия хранит и передаёт воркеру {@code id} снапшота (сквозной тест backend#4 нашёл расхождение: у снапшота из
+     * импортёра {@code id} был случайным, воркер отвечал «версия данных не найдена»).
+     */
     public Snapshot register(String snapshotKey, String description, String dataHash) {
-        UUID id = Uuid7.next();
+        UUID id = asUuid(snapshotKey);
         jdbc.sql("INSERT INTO marketdata.snapshot (id, snapshot_key, description, data_hash) "
                         + "VALUES (:id, :k, :d, :h)")
                 .param("id", id)
@@ -71,5 +76,13 @@ public class Snapshots {
                         rs.getString("description"),
                         rs.getString("data_hash")))
                 .list();
+    }
+
+    private static UUID asUuid(String snapshotKey) {
+        try {
+            return UUID.fromString(snapshotKey);
+        } catch (IllegalArgumentException e) {
+            return Uuid7.next();
+        }
     }
 }
