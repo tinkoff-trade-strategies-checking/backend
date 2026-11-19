@@ -8,6 +8,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -77,6 +78,7 @@ class Player {
     private final BlindMasking masking;
     private final PlayerTimer timer;
     private final PlayerProperties properties;
+    private final ApplicationEventPublisher publisher;
     private final TransactionTemplate transaction;
     private final Map<UUID, Running> running = new ConcurrentHashMap<>();
 
@@ -91,6 +93,7 @@ class Player {
             BlindMasking masking,
             PlayerTimer timer,
             PlayerProperties properties,
+            ApplicationEventPublisher publisher,
             PlatformTransactionManager transactionManager) {
         this.sessions = sessions;
         this.arena = arena;
@@ -102,6 +105,7 @@ class Player {
         this.masking = masking;
         this.timer = timer;
         this.properties = properties;
+        this.publisher = publisher;
         this.transaction = new TransactionTemplate(transactionManager);
     }
 
@@ -374,6 +378,7 @@ class Player {
         }
         Map<String, Object> result = masking.finishResult(state, endReason(status));
         events.append(id, "finished", masking.finishedEvent(result));
+        publisher.publishEvent(new SessionFinished(id));
         afterCommit(() -> stopRunning(id));
         return new Completed(state, result, stepResult);
     }
