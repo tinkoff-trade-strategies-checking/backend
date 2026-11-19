@@ -443,6 +443,14 @@ class LaunchPlannerTest {
     }
 
     @Test
+    void snapshotWithoutBenchmarkSecurityFailsClearlyAtLaunch() {
+        archive.benchmark = false;
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> planner.plan(random(Regime.CALM, 2), null, 1L))
+                .isInstanceOf(ru.tinvest.trainer.api.DependencyUnavailableException.class)
+                .hasMessageContaining("старой версией импортёра");
+    }
+
+    @Test
     void poolIsConfiguredAndOwnPapersMustBelongToIt() {
         LaunchPlanner small = new DefaultLaunchPlanner(snapshots, archive, worker, Set.of("A", "B"), 5000, () -> 1L);
         assertThat(small.papers(null)).extracting(PlannedPaper::secid).containsExactly("A", "B");
@@ -568,6 +576,7 @@ class LaunchPlannerTest {
         static final int SPLIT_AT = 200;
 
         boolean ready = true;
+        boolean benchmark = true;
         Set<Integer> intervals = Set.of(60);
         int lastCandleInterval;
         int steps = 100;
@@ -584,6 +593,11 @@ class LaunchPlannerTest {
 
         private final Map<String, ArchivePaper> papers = new HashMap<>();
         private final Map<String, Integer> firstDay = new HashMap<>();
+
+        @Override
+        public boolean hasBenchmark(String snapshotKey) {
+            return benchmark;
+        }
 
         FakeArchive() {
             add("A", "Финансы", 0);

@@ -81,6 +81,7 @@ class Replay {
             Map<String, Object> snapshot = OpenViews.snapshot(state);
             // воспроизведение — не плеер: состояния плеера нет (контракт: null в снимке воспроизведения)
             snapshot.put("playing", null);
+            snapshot.put("lastEventId", null);
             snapshot.put("speed", null);
             snapshot.put("finished", finished);
             out.put("snapshot", snapshot);

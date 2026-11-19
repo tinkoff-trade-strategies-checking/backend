@@ -1,5 +1,7 @@
 package ru.tinvest.trainer.api;
 
+import java.io.IOException;
+import java.util.Locale;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,6 +15,7 @@ import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 /** Общий обработчик исключений HTTP API в формате RFC 9457 (ProblemDetail). */
@@ -50,6 +53,50 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setTitle("Service Unavailable");
         ErrorCode.SERVICE_UNAVAILABLE.applyTo(problem);
         return problem;
+    }
+
+    /**
+     * Обрыв соединения клиентом у потока SSE (закрыл вкладку, EventSource переподключился, сеть пропала): отвечать некому, а у
+     * потока {@code text/event-stream} тело {@code ProblemDetail} писать нельзя. Не ошибка сервера: DEBUG и пустой ответ.
+     * {@link AsyncRequestNotUsableException} уже обрабатывает {@link ResponseEntityExceptionHandler} (пустой ответ).
+     * Прочие {@link IOException} — обычная необработанная ошибка.
+     */
+    @ExceptionHandler(IOException.class)
+    ResponseEntity<ProblemDetail> handleIo(
+            IOException ex,
+            jakarta.servlet.http.HttpServletRequest request,
+            jakarta.servlet.http.HttpServletResponse response) {
+        if (isEventStream(request, response) && isClientGone(ex)) {
+            log.debug("Клиент оборвал соединение: {}", ex.getMessage());
+            return ResponseEntity.ok().build();
+        }
+        return ResponseEntity.internalServerError().body(handleUnexpected(ex));
+    }
+
+    /** Ответ — поток SSE: тип уже выставлен эмиттером или клиент просил {@code text/event-stream}. */
+    private static boolean isEventStream(
+            jakarta.servlet.http.HttpServletRequest request, jakarta.servlet.http.HttpServletResponse response) {
+        String type = response.getContentType();
+        String accept = request.getHeader(HttpHeaders.ACCEPT);
+        return (type != null && type.startsWith("text/event-stream"))
+                || (accept != null && accept.contains("text/event-stream"));
+    }
+
+    private static boolean isClientGone(Throwable ex) {
+        for (Throwable t = ex; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t.getClass().getSimpleName().equals("ClientAbortException")
+                    || t instanceof AsyncRequestNotUsableException) {
+                return true;
+            }
+            String message = t.getMessage() == null ? "" : t.getMessage().toLowerCase(Locale.ROOT);
+            if (message.contains("broken pipe")
+                    || message.contains("connection reset")
+                    || message.contains("connection abort")
+                    || message.contains("client is gone")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @ExceptionHandler(Exception.class)

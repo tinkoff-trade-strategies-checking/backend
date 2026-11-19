@@ -61,7 +61,7 @@ class BlindMasking {
 
     /** Снимок сессии на курсоре ({@code Snapshot}). */
     Map<String, Object> snapshot(ArenaState state) {
-        if (!state.session().blind()) {
+        if (state.session().revealed()) {
             return OpenViews.snapshot(state);
         }
         BlindViewData view = blindView(state);

@@ -109,6 +109,38 @@ class ProblemDetailTest {
                 .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
     }
 
+    @Test
+    void clientDisconnectOnEventStreamIsNotAnErrorAndWritesNoProblem() throws Exception {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(ApiExceptionHandler.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            for (String path :
+                    new String[] {"/api/test/sse-broken-pipe", "/api/test/sse-gone", "/api/test/sse-async"}) {
+                mockMvc.perform(get(path).accept(MediaType.TEXT_EVENT_STREAM))
+                        .andExpect(content().string(""))
+                        .andExpect(result -> org.assertj.core.api.Assertions.assertThat(
+                                        String.valueOf(result.getResponse().getContentType()))
+                                .doesNotContain("problem+json"));
+            }
+            org.assertj.core.api.Assertions.assertThat(appender.list)
+                    .noneMatch(e -> e.getLevel().isGreaterOrEqual(ch.qos.logback.classic.Level.WARN));
+            // тот же обрыв вне потока SSE — обычная ошибка сервера
+            mockMvc.perform(get("/api/test/io-gone-json")).andExpect(status().isInternalServerError());
+            // обычная ошибка ввода-вывода остаётся ошибкой сервера
+            mockMvc.perform(get("/api/test/io-other"))
+                    .andExpect(status().isInternalServerError())
+                    .andExpect(jsonPath("$.code").value("INTERNAL_ERROR"));
+            org.assertj.core.api.Assertions.assertThat(appender.list)
+                    .anyMatch(e -> e.getLevel() == ch.qos.logback.classic.Level.ERROR);
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
     @RestController
     @RequestMapping("/api/test")
     static class FailingController {
@@ -149,6 +181,31 @@ class ProblemDetailTest {
         @GetMapping("/db-no-connection")
         void dbNoConnection() {
             throw new CannotGetJdbcConnectionException("password=secret", new java.sql.SQLException("x"));
+        }
+
+        @GetMapping(path = "/sse-broken-pipe", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+        void sseBrokenPipe() throws java.io.IOException {
+            throw new java.io.IOException("Broken pipe");
+        }
+
+        @GetMapping(path = "/sse-gone", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+        void sseGone() throws java.io.IOException {
+            throw new java.io.IOException("Client is gone or too slow");
+        }
+
+        @GetMapping(path = "/sse-async", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+        void sseAsync() throws Exception {
+            throw new org.springframework.web.context.request.async.AsyncRequestNotUsableException("gone");
+        }
+
+        @GetMapping("/io-gone-json")
+        void ioGoneJson() throws java.io.IOException {
+            throw new java.io.IOException("Broken pipe");
+        }
+
+        @GetMapping("/io-other")
+        void ioOther() throws java.io.IOException {
+            throw new java.io.IOException("disk secret");
         }
 
         @GetMapping("/internal")

@@ -28,6 +28,15 @@ class CommandRunner {
         this.transaction = new TransactionTemplate(transactionManager);
     }
 
+    /**
+     * Чтение под блокировкой строки сессии: команды и события этой сессии ждут, поэтому прочитанное внутри согласовано
+     * между собой (снимок и номер последнего события).
+     */
+    <T> T readLocked(UUID sessionId, Function<SessionRecord, T> body) {
+        sessions.requireOwned(sessionId);
+        return transaction.execute(status -> body.apply(sessions.requireOwnedForUpdate(sessionId)));
+    }
+
     Object run(
             UUID sessionId,
             @Nullable UUID key,

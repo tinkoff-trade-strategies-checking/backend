@@ -137,6 +137,11 @@ final class CachingArchiveCatalog implements ArchiveCatalog {
     }
 
     @Override
+    public boolean hasBenchmark(String snapshotKey) {
+        return memo(snapshotKey, "benchmark", () -> delegate.hasBenchmark(snapshotKey));
+    }
+
+    @Override
     public List<LocalDate> tradingDays(String snapshotKey) {
         return memo(snapshotKey, "days", () -> delegate.tradingDays(snapshotKey));
     }

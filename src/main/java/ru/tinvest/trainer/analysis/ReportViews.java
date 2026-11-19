@@ -90,7 +90,7 @@ final class ReportViews {
             out.put("blindLabel", ViewFormat.label(paper.paperIndex()));
             out.put("ticker", paper.secid());
             // названий в архиве нет: name = тикер, как в GET /papers
-            out.put("name", paper.secid());
+            out.put("name", paper.displayName());
             out.put("sector", paper.sector());
             out.put("startPrice", ViewFormat.number(startPrice(session, paper, replay)));
             out.put("lotSize", paper.lotSize());
@@ -146,15 +146,6 @@ final class ReportViews {
         return out;
     }
 
-    /**
-     * Капитал бенчмарка до копейки. ВРЕМЕННО, до core#58: core отдаёт {@code benchmark_equity} с 9 знаками, а строгий
-     * {@link ViewFormat#money} на нём падает и отчёт не строится. Единственное округление денег в Java; когда core#58
-     * закроют, убрать округление и оставить {@code ViewFormat.money(bench)}.
-     */
-    static String benchmarkMoney(BigDecimal bench) {
-        return ViewFormat.money(bench.setScale(2, RoundingMode.HALF_UP));
-    }
-
     private static List<Object> equityCurve(ReportData report, Map<Long, Long> times) {
         Map<Long, BigDecimal> benchmark = new TreeMap<>();
         for (EquityPointData p : report.benchmarkEquity()) {
@@ -168,7 +159,7 @@ final class ReportViews {
             out.put("humanCapital", ViewFormat.money(p.equity()));
             out.put("algoCapital", null);
             BigDecimal bench = benchmark.get(p.step());
-            out.put("benchmarkCapital", bench == null ? null : benchmarkMoney(bench));
+            out.put("benchmarkCapital", bench == null ? null : ViewFormat.money(bench));
             points.add(out);
         }
         return points;

@@ -39,8 +39,11 @@ public final class ArchiveImporter {
 
     private static final Logger log = LoggerFactory.getLogger(ArchiveImporter.class);
 
-    /** 2: сектор по наибольшему весу, столбец {@code securities.name}, хэш снапшота (backend#21). */
-    static final String SCHEMA_VERSION = "2";
+    /**
+     * 3: строка бенчмарка IMOEX в {@code securities} (backend#42). 2: сектор по наибольшему весу, столбец
+     * {@code securities.name}, хэш снапшота (backend#21).
+     */
+    static final String SCHEMA_VERSION = "3";
     /** Версия схемы до backend#21: загрузки с ней докачивать нельзя ({@link #rejectLegacyLoad}). */
     static final String LEGACY_SCHEMA_VERSION = "1";
 
@@ -201,6 +204,7 @@ public final class ArchiveImporter {
     private void load(Params p, UUID id) {
         loadBenchmark(p, id);
         loadSecurities(p, id);
+        loadBenchmarkSecurity(id);
         List<String> secids = archive.secids(id);
         Set<LocalDate> trading = new HashSet<>(archive.candleDates(id, BENCHMARK, DAY));
         for (String secid : secids) {
@@ -296,6 +300,21 @@ public final class ArchiveImporter {
             warnings.add("ряд кончается " + days.last() + ", ожидалось около " + till);
         }
         return warnings;
+    }
+
+    /**
+     * Строка {@code IMOEX} в {@code securities}: воркер требует её для бенчмарка отчёта и {@code ClassifyPeriods}
+     * (иначе {@code FAILED_PRECONDITION}). Лот 1, шаг 0,01, сектор пустой — как ждёт core; в пул бумаг сессии она не
+     * входит ({@link ClickHouseArchive#secids}, каталог исключает её).
+     */
+    private void loadBenchmarkSecurity(UUID id) {
+        if (archive.hasBenchmarkSecurity(id)) {
+            return;
+        }
+        archive.insertSecurities(
+                id,
+                List.of(new ClickHouseArchive.SecurityRow(
+                        BENCHMARK, "", 1, new BigDecimal("0.01"), "Индекс МосБиржи")));
     }
 
     private void loadSecurities(Params p, UUID id) {

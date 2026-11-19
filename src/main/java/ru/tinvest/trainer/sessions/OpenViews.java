@@ -49,8 +49,8 @@ final class OpenViews {
             out.put("label", ViewFormat.label(paper.paperIndex()));
             out.put("sector", paper.sector());
             out.put("ticker", paper.secid());
-            // названий в архиве нет: name = тикер, как в GET /papers
-            out.put("name", paper.secid());
+            // название из каталога на момент запуска; нет названия — тикер, как в GET /papers
+            out.put("name", paper.displayName());
             out.put("lotSize", paper.lotSize());
             out.put("candles", candles.getOrDefault(paper.secid(), List.of()));
             out.put("stat", stat);

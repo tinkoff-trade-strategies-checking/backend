@@ -138,7 +138,8 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         // TINY (шаг < 1e-6) и GONE (нет на TQBR) не попали
         assertThat(q("SELECT secid, sector, lot_size, toString(price_step), name FROM securities WHERE snapshot_id = '"
                         + id + "' ORDER BY secid"))
-                .isEqualTo("GAZP\tНефть и газ\t10\t0.01\tГазпром ПАО ао\nSBER\tНефть и газ\t1\t0.01\tСбербанк");
+                .isEqualTo(
+                        "GAZP\tНефть и газ\t10\t0.01\tГазпром ПАО ао\nIMOEX\t\t1\t0.01\tИндекс МосБиржи\nSBER\tНефть и газ\t1\t0.01\tСбербанк");
     }
 
     @Test
@@ -235,8 +236,9 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
                 .isEqualTo("30");
         assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + id + "' AND secid = 'GAZP'"))
                 .isEqualTo("30");
+        // GAZP, SBER и бенчмарк IMOEX (ровно одна строка после докачки)
         assertThat(q("SELECT count() FROM securities WHERE snapshot_id = '" + id + "'"))
-                .isEqualTo("2");
+                .isEqualTo("3");
         assertThat(snapshots.findByKey(id.toString())).isPresent();
         // докачка частями даёт тот же хэш, что загрузка за один раз
         assertThat(r.snapshot().dataHash())
@@ -622,7 +624,11 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         // IMOEX в поддельном ISS: SBER, GAZP, TINY (шаг 1e-7 — пропуск), GONE (нет на TQBR — пропуск)
         assertThat(q("SELECT groupArray(secid) FROM (SELECT secid FROM securities WHERE snapshot_id = '"
                         + p.snapshotId() + "' ORDER BY secid)"))
-                .isEqualTo("['GAZP','SBER']");
+                .isEqualTo("['GAZP','IMOEX','SBER']");
+        // бенчмарк в securities нужен ядру, но свечей «как бумага» (минутных) у него нет и в пул он не входит
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + p.snapshotId()
+                        + "' AND secid = 'IMOEX' AND interval_sec = 60"))
+                .isEqualTo("0");
     }
 
     @Test

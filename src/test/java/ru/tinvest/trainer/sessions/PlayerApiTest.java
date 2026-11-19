@@ -554,6 +554,26 @@ class PlayerApiTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void snapshotLastEventIdSplitsPastFromFutureForTheStream() throws Exception {
+        UUID id = newSession(false);
+        assertThat(body(httpGet(id, "")).get("lastEventId").asString()).isEqualTo("0");
+
+        body(play(id, "step", null, null));
+        body(play(id, "step", null, null));
+        JsonNode snapshot = body(httpGet(id, ""));
+        long last = Long.parseLong(snapshot.get("lastEventId").asString());
+        assertThat(last).isEqualTo(2);
+
+        // событие после снимка приходит в поток с Last-Event-ID = lastEventId, события до снимка — нет
+        body(play(id, "step", null, null));
+        Collector collector = subscribe(id, last);
+        assertThat(collector.received).hasSize(1);
+        assertThat(collector.received.getFirst().id()).isGreaterThan(last);
+        String text = stream(id, Long.toString(last)).getResponse().getContentAsString();
+        assertThat(text).contains("id:3").doesNotContain("id:1\n").doesNotContain("id:2\n");
+    }
+
+    @Test
     void lastEventIdOverHttpReplaysAndRejectsGarbage() throws Exception {
         UUID id = newSession(false);
         body(play(id, "step", null, null));

@@ -83,6 +83,13 @@ class DefaultLaunchPlanner implements LaunchPlanner {
         }
         Snapshot snapshot = resolveSnapshot(snapshotId);
         String key = snapshot.snapshotKey();
+        if (!archive.hasBenchmark(key)) {
+            // снапшот версии схемы импортёра до 3: без IMOEX в securities воркер ответил бы FAILED_PRECONDITION
+            throw new DependencyUnavailableException(
+                    "Снапшот " + snapshot.id() + " загружен старой версией импортёра (нет IMOEX в securities): "
+                            + "перезагрузите архив с новой меткой",
+                    null);
+        }
 
         Set<Integer> intervals = archive.intervals(key);
         int source;

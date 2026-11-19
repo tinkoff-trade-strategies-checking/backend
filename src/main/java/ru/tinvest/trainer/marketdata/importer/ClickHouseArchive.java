@@ -31,6 +31,9 @@ final class ClickHouseArchive {
     /** Максимум строк в одном INSERT; меньше {@code max_insert_block_size} (1 048 576). */
     private static final int MAX_ROWS = 200_000;
 
+    /** Бенчмарк: строка в {@code securities} нужна ядру, но бумагой для торговли он не является. */
+    static final String BENCHMARK_SECID = "IMOEX";
+
     private final ClickHouse ch;
 
     ClickHouseArchive(ClickHouse ch) {
@@ -134,10 +137,20 @@ final class ClickHouseArchive {
         ch.execute("INSERT INTO securities (snapshot_id, secid, sector, lot_size, price_step, name) VALUES " + values);
     }
 
+    /** Строка бенчмарка есть в {@code securities} снапшота. */
+    boolean hasBenchmarkSecurity(UUID snapshot) {
+        return ch.count("SELECT count() FROM securities WHERE snapshot_id = '" + snapshot + "' AND secid = "
+                        + str(BENCHMARK_SECID))
+                > 0;
+    }
+
+    /** Торгуемые бумаги снапшота: без бенчмарка. */
     List<String> secids(UUID snapshot) {
         String out = ch.execute(
                 "SELECT secid FROM securities WHERE snapshot_id = '" + snapshot + "' ORDER BY secid FORMAT TSV");
-        return out.isBlank() ? List.of() : out.trim().lines().toList();
+        return out.isBlank()
+                ? List.of()
+                : out.trim().lines().filter(s -> !s.equals(BENCHMARK_SECID)).toList();
     }
 
     /** Даты МСК, на которые есть свеча {@code secid} с интервалом {@code intervalSec}. */
