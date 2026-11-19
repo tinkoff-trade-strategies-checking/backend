@@ -2,6 +2,9 @@ spring:
   application:
     name: trainer-backend
   datasource:
+    hikari:
+      # такты плеера (lab.session.max-concurrent-ticks) держат соединения; запас оставляет их HTTP-запросам
+      maximum-pool-size: 20
     url: ${SPRING_DATASOURCE_URL}
     username: ${SPRING_DATASOURCE_USERNAME}
     password: ${SPRING_DATASOURCE_PASSWORD}

@@ -96,8 +96,8 @@ class GrpcSimulationWorkerClient implements SimulationWorkerClient {
                 .setMarket(WorkerMapper.market(market))
                 .addAllJournal(WorkerMapper.journal(journal))
                 .setUpToStep(upToStep)
-                // ядро отдаёт события шагов с events_from_step включительно: нужны шаги после fromStep
-                .setEventsFromStep(fromStep + 1)
+                // у ядра интервал событий (events_from_step; up_to_step]: левая граница не входит
+                .setEventsFromStep(fromStep)
                 .setIncludeHistory(false)
                 .setIncludeReport(false)
                 .setBlind(blind)

@@ -126,8 +126,19 @@ class PlayerApiTest extends PostgresIntegrationTest {
         /** Если задан, {@code send} ждёт его (клиент завис: TCP-буфер полон). */
         volatile java.util.concurrent.CountDownLatch block;
 
+        volatile int pings;
+
         @Override
         public void abort() {
+            // как ResponseBodyEmitter: обрыв ждёт ту же блокировку записи, что и зависшая отправка
+            java.util.concurrent.CountDownLatch latch = block;
+            if (latch != null) {
+                try {
+                    latch.await(30, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             aborted = true;
         }
 
@@ -146,6 +157,7 @@ class PlayerApiTest extends PostgresIntegrationTest {
 
         @Override
         public void ping() throws Exception {
+            pings++;
             if (broken) {
                 throw new java.io.IOException("клиент ушёл");
             }
@@ -867,6 +879,40 @@ class PlayerApiTest extends PostgresIntegrationTest {
         assertThat(worker.historyCalls.get()).isZero();
     }
 
+    @Test
+    void everyTickCarriesItsCandleAtSpeedOneAndAtSpeedTen() throws Exception {
+        UUID one = newSession(false);
+        Collector oneEvents = subscribe(one, null);
+        body(play(one, "play", null, null));
+        timer.advance(Duration.ofSeconds(1));
+        JsonNode first = lastOfType(oneEvents, "step").get("result");
+        for (JsonNode candles : first.get("bars")) {
+            assertThat(candles).hasSize(1);
+            assertThat(candles.get(0).get("step").asInt()).isEqualTo(1);
+            assertThat(candles.get(0).get("candleInDay").asInt()).isEqualTo(2);
+        }
+        body(play(one, "pause", null, null));
+
+        UUID ten = newSession(false);
+        Collector tenEvents = subscribe(ten, null);
+        body(play(ten, "speed", 10, null));
+        body(play(ten, "play", null, null));
+        timer.advance(Duration.ofMillis(400));
+        List<JsonNode> steps = tenEvents.received.stream()
+                .filter(e -> e.type().equals("step"))
+                .map(e -> json.readTree(e.data()).get("result"))
+                .toList();
+        assertThat(steps).hasSize(2);
+        // вторая пачка: шаги 3 и 4, свеча первого шага пачки на месте, номера свечи в дне продолжают счёт (день 2 с
+        // шага 3)
+        for (JsonNode candles : steps.get(1).get("bars")) {
+            assertThat(candles.get(0).get("step").asInt()).isEqualTo(3);
+            assertThat(candles.get(0).get("candleInDay").asInt()).isEqualTo(1);
+            assertThat(candles.get(1).get("step").asInt()).isEqualTo(4);
+            assertThat(candles.get(1).get("candleInDay").asInt()).isEqualTo(2);
+        }
+    }
+
     // ---------- pause и speed без воркера ----------
 
     @Test
@@ -953,9 +999,12 @@ class PlayerApiTest extends PostgresIntegrationTest {
         // пульс идёт, а отправка висит дольше двух периодов пульса: подписка снимается, поток обрывается
         timer.advance(Duration.ofSeconds(7));
         assertThat(events.subscribers(slow)).isZero();
-        assertThat(hanging.aborted).isTrue();
+        // обрыв зависшего клиента ждёт его запись, но пульс остальных сессий не стоит
+        assertThat(hanging.aborted).isFalse();
+        awaitTrue(() -> healthy.pings >= 1);
         assertThat(events.subscribers(other)).isEqualTo(1);
         hanging.block.countDown();
+        awaitTrue(() -> hanging.aborted);
     }
 
     // ---------- I3: «нет подписчиков» ----------

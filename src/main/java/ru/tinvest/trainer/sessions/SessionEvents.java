@@ -151,20 +151,26 @@ public class SessionEvents {
             }
             long since = sendingSinceMs;
             if (since != 0 && timer.nowMs() - since > hangLimitMs) {
-                abort();
+                abortAsync();
                 return;
             }
             pingRequested.set(true);
             startIfIdle();
         }
 
-        private void abort() {
+        /**
+         * Обрыв зависшего клиента. Подписка снимается сразу, а {@code abort} вызывается на отдельном потоке: он берёт
+         * ту же блокировку записи, что и зависшая отправка, и ждал бы её в цикле пульса всех сессий.
+         */
+        private void abortAsync() {
             close();
-            try {
-                sink.abort();
-            } catch (RuntimeException e) {
-                log.debug("Поток уже закрыт", e);
-            }
+            timer.execute(() -> {
+                try {
+                    sink.abort();
+                } catch (RuntimeException e) {
+                    log.debug("Поток уже закрыт", e);
+                }
+            });
         }
 
         /** Снимает подписку; безопасно вызывать повторно и из любого потока. */
