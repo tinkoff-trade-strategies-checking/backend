@@ -12,7 +12,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestClient;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "marketdata.clickhouse.url=http://localhost:1")
 class TrainerApplicationTest extends PostgresIntegrationTest {
 
     @LocalServerPort

@@ -8,7 +8,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * База для интеграционных тестов с PostgreSQL и миграциями Flyway. Контейнер один на JVM: Spring кэширует контекст
  * между классами, поэтому контейнер нельзя останавливать после первого класса.
  */
-@SpringBootTest
+// Подбор запуска обязателен, поэтому в тестах ClickHouse — заглушка; реальные запросы проверяет
+// ClickHouseArchiveCatalogTest.
+@SpringBootTest(properties = "marketdata.clickhouse.url=http://localhost:1")
 public abstract class PostgresIntegrationTest {
 
     @ServiceConnection

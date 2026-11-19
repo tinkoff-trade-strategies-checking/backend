@@ -67,6 +67,10 @@ services:
       CLICKHOUSE_URL: jdbc:clickhouse://clickhouse:8123/ttsc
       CLICKHOUSE_USER: ttsc
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      MARKETDATA_CLICKHOUSE_URL: http://clickhouse:8123
+      MARKETDATA_CLICKHOUSE_DATABASE: ttsc
+      MARKETDATA_CLICKHOUSE_USER: ttsc
+      MARKETDATA_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     networks: [internal]
     depends_on:
       postgres:

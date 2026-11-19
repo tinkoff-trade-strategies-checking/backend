@@ -1,6 +1,7 @@
 package ru.tinvest.trainer.marketdata;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -48,5 +49,17 @@ public class Snapshots {
                         rs.getObject("loaded_at", OffsetDateTime.class),
                         rs.getString("description")))
                 .optional();
+    }
+
+    /** Все снапшоты, новые первыми (по времени загрузки). Готовность к чтению проверяет вызывающий. */
+    public List<Snapshot> findAllNewestFirst() {
+        return jdbc.sql("SELECT id, snapshot_key, loaded_at, description FROM marketdata.snapshot "
+                        + "ORDER BY loaded_at DESC, id DESC")
+                .query((rs, n) -> new Snapshot(
+                        rs.getObject("id", UUID.class),
+                        rs.getString("snapshot_key"),
+                        rs.getObject("loaded_at", OffsetDateTime.class),
+                        rs.getString("description")))
+                .list();
     }
 }

@@ -4,6 +4,12 @@ spring:
     username: trainer
     password: trainer
 
+marketdata:
+  clickhouse:
+    url: http://localhost:8123
+    database: ttsc
+    user: ttsc
+
 server:
   port: 8080
 
