@@ -34,7 +34,8 @@ class ImportConfiguration {
                 new ClickHouseArchive(ch),
                 snapshots,
                 Clock.systemUTC(),
-                SnapshotLocks.postgres(dataSource));
+                SnapshotLocks.postgres(dataSource),
+                props.endOfDayTolerance());
     }
 
     @Bean

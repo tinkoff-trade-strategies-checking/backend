@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -90,13 +91,36 @@ final class IssClient {
 
     /** Дневные свечи индекса (доска SNDX). */
     List<Candle> indexDailyCandles(String indexId, LocalDate from, LocalDate till) {
+        return indexCandles(indexId, 24, from, till);
+    }
+
+    /** Свечи индекса (доска SNDX); {@code issInterval} — 10 (мин), 24 (сутки). */
+    List<Candle> indexCandles(String indexId, int issInterval, LocalDate from, LocalDate till) {
         IssTable t = all(
                 "/engines/stock/markets/index/boards/SNDX/securities/" + indexId + "/candles",
-                Map.of("interval", "24", "from", from.toString(), "till", till.toString()),
+                Map.of("interval", Integer.toString(issInterval), "from", from.toString(), "till", till.toString()),
                 "candles",
                 candlesPage);
         return IssParsers.candles(t);
     }
+
+    /** Период торгов бумаги на TQBR по данным ISS ({@code listed_from}, {@code listed_till}); нет данных — пусто. */
+    Optional<Listing> listing(String secid) {
+        IssTable t =
+                page("/securities/" + secid, Map.of("boards.columns", "boardid,listed_from,listed_till"), "boards");
+        for (List<tools.jackson.databind.JsonNode> r : t.rows()) {
+            if ("TQBR".equals(t.get(r, "boardid").asString())
+                    && !t.get(r, "listed_from").isNull()
+                    && !t.get(r, "listed_till").isNull()) {
+                return Optional.of(new Listing(
+                        LocalDate.parse(t.get(r, "listed_from").asString()),
+                        LocalDate.parse(t.get(r, "listed_till").asString())));
+            }
+        }
+        return Optional.empty();
+    }
+
+    record Listing(LocalDate from, LocalDate till) {}
 
     /** Параметры акции на TQBR: лот и шаг цены; пустая таблица — бумаги нет на доске. */
     IssTable securityInfo(String secid) {

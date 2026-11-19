@@ -3,14 +3,17 @@ package ru.tinvest.trainer.marketdata.importer;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.YearMonth;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
@@ -94,6 +97,12 @@ public final class ArchiveImporter {
     private final Snapshots snapshots;
     private final Clock clock;
     private final SnapshotLocks locks;
+    private final Duration endOfDayTolerance;
+    /** Принятые при {@code allow-gaps} проблемы этого запуска: бумага → дата → описание. */
+    private final Map<String, Map<LocalDate, String>> acceptedProblems = new TreeMap<>();
+
+    private final Map<String, Optional<IssClient.Listing>> listings = new HashMap<>();
+    private final Map<String, Map<LocalDate, LocalTime>> sessionEnds = new HashMap<>();
 
     ArchiveImporter(
             IssClient iss,
@@ -101,8 +110,10 @@ public final class ArchiveImporter {
             ClickHouseArchive archive,
             Snapshots snapshots,
             Clock clock,
-            SnapshotLocks locks) {
+            SnapshotLocks locks,
+            Duration endOfDayTolerance) {
         this.locks = locks;
+        this.endOfDayTolerance = endOfDayTolerance;
         this.iss = iss;
         this.cbr = cbr;
         this.archive = archive;
@@ -131,7 +142,7 @@ public final class ArchiveImporter {
             archive.markReady(id);
         }
         List<String> loaded = archive.secids(id);
-        Snapshot s = snapshots.register(id.toString(), description(p, loaded));
+        Snapshot s = snapshots.register(id.toString(), description(p, id, loaded));
         log.info("Снапшот {} зарегистрирован, бумаг: {}", id, loaded.size());
         return new Result(id, false, s);
     }
@@ -140,56 +151,13 @@ public final class ArchiveImporter {
         loadBenchmark(p, id);
         loadSecurities(p, id);
         List<String> secids = archive.secids(id);
+        Set<LocalDate> trading = new HashSet<>(archive.candleDates(id, BENCHMARK, DAY));
         for (String secid : secids) {
-            loadCandles(p, id, secid);
+            loadCandles(p, id, secid, trading);
         }
         loadCalendar(p, id);
         loadActions(id, secids);
         loadRuonia(p, id);
-        verifyCoverage(p, id, secids);
-    }
-
-    /**
-     * Перед {@code snapshots_ready}: у каждой бумаги должны быть минутные свечи в каждый торговый день календаря между
-     * её первой и последней свечой (кусок загружается целиком или не загружается, но пустая страница ISS не должна
-     * превращаться в дыру). Пробелы — отчёт в лог и {@link ImportException}, если не {@code allowGaps}.
-     */
-    private void verifyCoverage(Params p, UUID id, List<String> secids) {
-        List<LocalDate> trading = archive.tradingDays(id).stream()
-                .filter(d -> !d.isBefore(p.from()) && !d.isAfter(p.to()))
-                .toList();
-        Map<String, List<LocalDate>> gaps = new TreeMap<>();
-        for (String secid : secids) {
-            Set<LocalDate> have = new HashSet<>(archive.candleDates(id, secid, MINUTE));
-            if (have.isEmpty()) {
-                gaps.put(secid, trading);
-                continue;
-            }
-            LocalDate first = Collections.min(have);
-            LocalDate last = Collections.max(have);
-            List<LocalDate> missing = trading.stream()
-                    .filter(d -> !d.isBefore(first) && !d.isAfter(last) && !have.contains(d))
-                    .toList();
-            if (!missing.isEmpty()) {
-                gaps.put(secid, missing);
-            }
-        }
-        if (gaps.isEmpty()) {
-            return;
-        }
-        StringBuilder report = new StringBuilder("Пробелы в минутных свечах (торговые дни без свечей):");
-        gaps.forEach((secid, days) -> report.append("\n  ")
-                .append(secid)
-                .append(": ")
-                .append(days.size())
-                .append(" дн., первые ")
-                .append(days.stream().limit(20).toList()));
-        if (!p.allowGaps()) {
-            log.error("{}", report);
-            throw new ImportException(
-                    report + "\nСнапшот не помечен готовым; --import.allow-gaps=true принимает пробелы");
-        }
-        log.warn("{}\nПробелы приняты (allow-gaps)", report);
     }
 
     private void loadBenchmark(Params p, UUID id) {
@@ -262,8 +230,9 @@ public final class ArchiveImporter {
         archive.insertSecurities(id, rows);
     }
 
-    private void loadCandles(Params p, UUID id, String secid) {
+    private void loadCandles(Params p, UUID id, String secid, Set<LocalDate> trading) {
         int total = 0;
+        Optional<IssClient.Listing> listing = listing(secid);
         for (YearMonth ym = YearMonth.from(p.from()); !ym.isAfter(YearMonth.from(p.to())); ym = ym.plusMonths(1)) {
             LocalDate from = max(p.from(), ym.atDay(1));
             LocalDate till = min(p.to(), ym.atEndOfMonth());
@@ -271,6 +240,18 @@ public final class ArchiveImporter {
                 continue;
             }
             List<Candle> candles = inRange(iss.shareCandles(secid, 1, from, till), from, till);
+            Map<LocalDate, String> problems = coverageProblems(from, till, candles, trading, listing);
+            if (!problems.isEmpty()) {
+                String report = report(secid + " " + ym, problems);
+                if (!p.allowGaps()) {
+                    log.error("{}", report);
+                    throw new ImportException(
+                            report
+                                    + "\nКусок не вставлен, повторный запуск перекачает его; --import.allow-gaps=true принимает пробелы");
+                }
+                log.warn("{}\nПробелы приняты (allow-gaps)", report);
+                acceptedProblems.computeIfAbsent(secid, k -> new TreeMap<>()).putAll(problems);
+            }
             archive.insertCandles(id, secid, MINUTE, candles);
             total += candles.size();
             log.info("{} {}: {} свечей", secid, ym, candles.size());
@@ -329,11 +310,113 @@ public final class ArchiveImporter {
         log.info("RUONIA: {} ставок", rates.size());
     }
 
-    private String description(Params p, List<String> secids) {
-        return "источник: MOEX ISS (свечи interval=1, IMOEX interval=24), ЦБ РФ (RUONIA); тикеры: "
+    /**
+     * Покрытие куска ДО вставки. Ожидаемые дни — торговые дни календаря IMOEX внутри куска и периода торгов бумаги
+     * (ISS, {@code listed_from}…{@code listed_till}; нет данных — весь кусок, тогда пропуск в начале или конце
+     * периода — пробел). Для каждого ожидаемого дня: свечи есть, и последняя не раньше конца сессии IMOEX в этот день
+     * минус допуск (обрыв посреди дня). Не проверяется: пропуск минут внутри дня и день, где бумага торговалась
+     * меньше, чем индекс (допуск {@code end-of-day-tolerance}); день, на который у ISS нет внутридневных свечей IMOEX,
+     * проверяется только на наличие свечей.
+     */
+    private Map<LocalDate, String> coverageProblems(
+            LocalDate from,
+            LocalDate till,
+            List<Candle> candles,
+            Set<LocalDate> trading,
+            Optional<IssClient.Listing> listing) {
+        Map<LocalDate, Instant> lastOfDay = new HashMap<>();
+        for (Candle c : candles) {
+            lastOfDay.merge(IssParsers.mskDate(c), c.tsOpen(), (a, b) -> a.isAfter(b) ? a : b);
+        }
+        Map<LocalDate, String> problems = new TreeMap<>();
+        Map<LocalDate, LocalTime> ends = null;
+        for (LocalDate d = from; !d.isAfter(till); d = d.plusDays(1)) {
+            if (!trading.contains(d) || !tradesOn(listing, d)) {
+                continue;
+            }
+            Instant last = lastOfDay.get(d);
+            if (last == null) {
+                problems.put(d, "нет свечей");
+                continue;
+            }
+            if (ends == null) {
+                ends = sessionEnds(from, till);
+            }
+            LocalTime end = ends.get(d);
+            LocalTime lastTime = last.atOffset(IssParsers.MSK).toLocalTime();
+            if (end != null && lastTime.isBefore(end.minus(endOfDayTolerance))) {
+                problems.put(d, "оборван день: последняя свеча " + lastTime + ", сессия индекса до " + end);
+            }
+        }
+        return problems;
+    }
+
+    private static boolean tradesOn(Optional<IssClient.Listing> listing, LocalDate d) {
+        return listing.map(l -> !d.isBefore(l.from()) && !d.isAfter(l.till())).orElse(true);
+    }
+
+    private Optional<IssClient.Listing> listing(String secid) {
+        return listings.computeIfAbsent(secid, iss::listing);
+    }
+
+    /** Начало последней 10-минутной свечи IMOEX за каждый день (МСК): не раньше этого времени обязана торговаться бумага. */
+    private Map<LocalDate, LocalTime> sessionEnds(LocalDate from, LocalDate till) {
+        return sessionEnds.computeIfAbsent(from + "|" + till, k -> {
+            Map<LocalDate, LocalTime> ends = new HashMap<>();
+            for (Candle c : iss.indexCandles(BENCHMARK, 10, from, till)) {
+                ends.merge(
+                        IssParsers.mskDate(c),
+                        c.tsOpen().atOffset(IssParsers.MSK).toLocalTime(),
+                        (a, b) -> a.isAfter(b) ? a : b);
+            }
+            return ends;
+        });
+    }
+
+    private static String report(String what, Map<LocalDate, String> problems) {
+        StringBuilder sb = new StringBuilder("Покрытие свечей " + what + ": " + problems.size() + " дн. с проблемами");
+        problems.entrySet().stream()
+                .limit(20)
+                .forEach(e -> sb.append("\n  ").append(e.getKey()).append(": ").append(e.getValue()));
+        return sb.toString();
+    }
+
+    /** Пропущенные торговые дни, уже лежащие в снапшоте (включая принятые в прошлых запусках). */
+    private Map<LocalDate, String> storedMissingDays(Params p, UUID id, String secid, Set<LocalDate> trading) {
+        Optional<IssClient.Listing> listing = listing(secid);
+        Set<LocalDate> have = new HashSet<>(archive.candleDates(id, secid, MINUTE));
+        Map<LocalDate, String> missing = new TreeMap<>();
+        for (LocalDate d = p.from(); !d.isAfter(p.to()); d = d.plusDays(1)) {
+            if (trading.contains(d) && tradesOn(listing, d) && !have.contains(d)) {
+                missing.put(d, "нет свечей");
+            }
+        }
+        return missing;
+    }
+
+    private String description(Params p, UUID id, List<String> secids) {
+        String base = "источник: MOEX ISS (свечи interval=1, IMOEX interval=24), ЦБ РФ (RUONIA); тикеры: "
                 + String.join(",", secids) + "; интервал: 1 мин; период: " + p.from() + "…" + p.to()
                 + "; получен: " + Instant.now(clock) + "; версия схемы: " + SCHEMA_VERSION
                 + (p.label().isEmpty() ? "" : "; метка: " + p.label());
+        if (!p.allowGaps()) {
+            return base;
+        }
+        Set<LocalDate> trading = new HashSet<>(archive.candleDates(id, BENCHMARK, DAY));
+        StringBuilder gaps = new StringBuilder();
+        for (String secid : secids) {
+            Map<LocalDate, String> all = new TreeMap<>(storedMissingDays(p, id, secid, trading));
+            all.putAll(acceptedProblems.getOrDefault(secid, Map.of()));
+            if (!all.isEmpty()) {
+                gaps.append(gaps.length() == 0 ? "" : "; ")
+                        .append(secid)
+                        .append(": ")
+                        .append(all.size())
+                        .append(" дн. ")
+                        .append(all.keySet());
+            }
+        }
+        return base + "; allow-gaps: " + (gaps.length() == 0 ? "пробелов нет" : "пробелы приняты (" + gaps + ")");
     }
 
     /** Свечи с датой МСК внутри периода (ISS отдаёт даты включительно, но проверяем сами). */

@@ -86,7 +86,8 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
                 new ClickHouseArchive(chClient),
                 snapshots,
                 Clock.systemUTC(),
-                SnapshotLocks.postgres(dataSource));
+                SnapshotLocks.postgres(dataSource),
+                Duration.ofMinutes(8));
     }
 
     private ArchiveImporter.Params params() {
@@ -227,7 +228,8 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         assertThat(r.alreadyLoaded()).isFalse();
         // GAZP, IMOEX и список бумаг не запрашивались заново
         assertThat(server.requestsContaining("/GAZP/candles")).isZero();
-        assertThat(server.requestsContaining("/IMOEX/candles")).isZero();
+        // дневной ряд IMOEX не перекачивается (10-минутный для проверки конца сессии — нужен)
+        assertThat(server.requests).noneMatch(req -> req.contains("/IMOEX/candles") && req.contains("interval=24"));
         assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + id + "' AND secid = 'SBER'"))
                 .isEqualTo("30");
         assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + id + "' AND secid = 'GAZP'"))
@@ -267,6 +269,85 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         assertThat(q("SELECT count() FROM snapshots_ready WHERE snapshot_id = '" + id + "'"))
                 .isEqualTo("0");
         assertThat(snapshots.findByKey(id.toString())).isEmpty();
+    }
+
+    @Test
+    void lostTailOfPeriodIsAGapAndChunkIsNotInserted() {
+        ArchiveImporter.Params p = params();
+        server.skipDays.add("GAZP|2024-03-11");
+        server.skipDays.add("GAZP|2024-03-12");
+
+        assertThatThrownBy(() -> importer.run(p))
+                .isInstanceOf(ImportException.class)
+                .hasMessageContaining("2024-03-11")
+                .hasMessageContaining("2024-03-12");
+
+        // мартовский кусок GAZP не вставлен целиком, февральский (6 свечей) на месте
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + p.snapshotId() + "' AND secid = 'GAZP'"))
+                .isEqualTo("6");
+        assertThat(q("SELECT count() FROM snapshots_ready WHERE snapshot_id = '" + p.snapshotId() + "'"))
+                .isEqualTo("0");
+    }
+
+    @Test
+    void lostStartOfPeriodIsAGap() {
+        ArchiveImporter.Params p = params();
+        server.skipDays.add("GAZP|2024-02-28");
+        server.skipDays.add("GAZP|2024-02-29");
+
+        assertThatThrownBy(() -> importer.run(p))
+                .isInstanceOf(ImportException.class)
+                .hasMessageContaining("2024-02-28")
+                .hasMessageContaining("нет свечей");
+    }
+
+    @Test
+    void dayCutInTheMiddleIsAGapAndFixedByRerun() {
+        ArchiveImporter.Params p = params();
+        server.truncateDays.add("GAZP|2024-03-06");
+
+        assertThatThrownBy(() -> importer.run(p))
+                .isInstanceOf(ImportException.class)
+                .hasMessageContaining("2024-03-06")
+                .hasMessageContaining("оборван день");
+
+        // ISS «вылечился»: докачка перекачивает кусок и снапшот становится готовым
+        server.truncateDays.clear();
+        assertThat(importer.run(p).alreadyLoaded()).isFalse();
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + p.snapshotId() + "' AND secid = 'GAZP'"))
+                .isEqualTo("30");
+    }
+
+    @Test
+    void securityListedInTheMiddleOfPeriodIsNotAGapWhenListingIsKnown() {
+        ArchiveImporter.Params p = params();
+        // GAZP торгуется на TQBR с 04.03: свечей до этой даты нет, и это не пробел
+        server.listings.put("GAZP", new LocalDate[] {LocalDate.of(2024, 3, 4), LocalDate.of(2030, 1, 1)});
+        for (String d : new String[] {"2024-02-28", "2024-02-29", "2024-03-01"}) {
+            server.skipDays.add("GAZP|" + d);
+        }
+
+        ArchiveImporter.Result r = importer.run(p);
+
+        assertThat(r.alreadyLoaded()).isFalse();
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + p.snapshotId() + "' AND secid = 'GAZP'"))
+                .isEqualTo("21");
+        assertThat(r.snapshot().description()).doesNotContain("allow-gaps");
+    }
+
+    @Test
+    void allowGapsWritesAcceptedGapsIntoDescription() {
+        ArchiveImporter.Params p = params();
+        server.skipDays.add("GAZP|2024-03-05");
+        server.truncateDays.add("SBER|2024-03-06");
+        ArchiveImporter.Params lenient = new ArchiveImporter.Params(p.from(), p.to(), p.tickers(), p.label(), true);
+
+        String description = importer.run(lenient).snapshot().description();
+
+        assertThat(description)
+                .contains("allow-gaps: пробелы приняты")
+                .contains("GAZP: 1 дн. [2024-03-05]")
+                .contains("SBER: 1 дн. [2024-03-06]");
     }
 
     @Test

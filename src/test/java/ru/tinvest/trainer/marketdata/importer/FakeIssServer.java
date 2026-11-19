@@ -40,6 +40,10 @@ final class FakeIssServer implements AutoCloseable {
     final java.util.Set<String> skipDays = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     final List<String> userAgents = new CopyOnWriteArrayList<>();
+    /** Дни, где отдаётся только начало дня (обрыв посреди дня), ключ {@code SECID|yyyy-MM-dd}. */
+    final java.util.Set<String> truncateDays = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** Период торгов TQBR по секции boards: secid → {from, till}; по умолчанию весь период теста. */
+    final Map<String, LocalDate[]> listings = new java.util.concurrent.ConcurrentHashMap<>();
 
     FakeIssServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -99,8 +103,14 @@ final class FakeIssServer implements AutoCloseable {
         } else if (path.endsWith("/candles.json") && path.contains("/boards/TQBR/")) {
             String secid = path.substring(path.indexOf("/securities/") + 12, path.indexOf("/candles"));
             body = candles(secid, q, empty, false);
+        } else if (path.matches("/iss/securities/[A-Z]+\\.json")) {
+            String secid = path.substring(path.lastIndexOf('/') + 1, path.length() - 5);
+            LocalDate[] l =
+                    listings.getOrDefault(secid, new LocalDate[] {LocalDate.of(2000, 1, 1), LocalDate.of(2030, 1, 1)});
+            body = "{\"boards\": {\"columns\": [\"boardid\", \"listed_from\", \"listed_till\"], \"data\": "
+                    + "[[\"SMAL\", \"2011-11-21\", \"2025-08-01\"], [\"TQBR\", \"" + l[0] + "\", \"" + l[1] + "\"]]}}";
         } else if (path.endsWith("/candles.json") && path.contains("/boards/SNDX/")) {
-            body = candles("IMOEX", q, empty, true);
+            body = "10".equals(q.get("interval")) ? imoexIntraday(q, empty) : candles("IMOEX", q, empty, true);
         } else if (path.contains("/analytics/")) {
             String index = path.substring(path.lastIndexOf('/') + 1, path.length() - 5);
             body = analytics(index, q, empty);
@@ -141,7 +151,8 @@ final class FakeIssServer implements AutoCloseable {
                                 price(secid, i, 0), price(secid, i, 1), price(secid, i, 2), price(secid, i, 0), d, d));
                 continue;
             }
-            for (int k = 0; k < CANDLES_PER_DAY; k++) {
+            int perDay = truncateDays.contains(secid + "|" + d) ? CANDLES_PER_DAY - 1 : CANDLES_PER_DAY;
+            for (int k = 0; k < perDay; k++) {
                 rows.add("[%s, %s, %s, %s, 40851055.69999998, %d, \"%s 10:0%d:00\", \"%s 10:0%d:59\"]"
                         .formatted(
                                 price(secid, i, 0),
@@ -161,6 +172,23 @@ final class FakeIssServer implements AutoCloseable {
                 : rows.subList(start, Math.min(rows.size(), start + pageSize));
         return "{\"candles\": {\"columns\": [\"open\", \"close\", \"high\", \"low\", \"value\", \"volume\", \"begin\", "
                 + "\"end\"], \"data\": [" + String.join(", ", page) + "]}}";
+    }
+
+    /** Одна 10-минутная свеча IMOEX в день, начало 10:10 МСК: бумага должна торговаться до 10:02 (допуск 8 минут в тестах). */
+    private String imoexIntraday(Map<String, String> q, boolean empty) {
+        LocalDate from = LocalDate.parse(q.get("from"));
+        LocalDate till = LocalDate.parse(q.get("till"));
+        int start = Integer.parseInt(q.getOrDefault("start", "0"));
+        List<String> rows = new ArrayList<>();
+        for (LocalDate d : tradingDays()) {
+            if (!d.isBefore(from) && !d.isAfter(till)) {
+                rows.add("[100, 100, 100, 100, 1.5, 0, \"" + d + " 10:10:00\", \"" + d + " 10:19:59\"]");
+            }
+        }
+        List<String> page =
+                empty || start >= rows.size() ? List.of() : rows.subList(start, Math.min(rows.size(), start + PAGE));
+        return "{\"candles\": {\"columns\": [\"open\", \"close\", \"high\", \"low\", \"value\", \"volume\", "
+                + "\"begin\", \"end\"], \"data\": [" + String.join(", ", page) + "]}}";
     }
 
     private static final Map<String, List<String>> SECTORS = Map.of(
