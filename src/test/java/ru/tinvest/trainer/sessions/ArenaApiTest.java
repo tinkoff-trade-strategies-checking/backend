@@ -988,6 +988,24 @@ class ArenaApiTest extends PostgresIntegrationTest {
             boolean without = "LKOH".equals(paper.get("ticker").asString());
             assertThat(paper.get("candles").isEmpty()).isEqualTo(without);
             assertThat(paper.get("stat").get("lastPrice").isNull()).isEqualTo(without);
+            // у бумаги без бара на курсоре изменения цены нет
+            assertThat(paper.get("stat").get("changePct").isNull()).isEqualTo(without);
+            if (!without) {
+                assertThat(paper.get("stat").get("changePct").asString()).isEqualTo("4.56");
+            }
+        }
+    }
+
+    @Test
+    void blindPaperWithoutBarIsAbsentSoItsChangeIsNeverNull() throws Exception {
+        UUID id = newSession(true);
+        worker.noBars = Set.of("LKOH");
+
+        JsonNode snapshot = body(httpGet(id, ""));
+
+        assertThat(snapshot.get("papers")).hasSize(2);
+        for (JsonNode paper : snapshot.get("papers")) {
+            assertThat(paper.get("stat").get("changePct").asString()).isEqualTo("4.56");
         }
     }
 

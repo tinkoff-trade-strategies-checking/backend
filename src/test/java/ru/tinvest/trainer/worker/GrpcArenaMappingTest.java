@@ -95,6 +95,39 @@ class GrpcArenaMappingTest {
     }
 
     @Test
+    void unsetOptionalDerivedValuesMapToNull() {
+        var response = ReplaySessionResponse.newBuilder()
+                .setStatus(pac.simulation.v1.SessionStatus.RUNNING)
+                .setCurrentDay(3)
+                .addInstrumentChanges(pac.simulation.v1.InstrumentChange.newBuilder()
+                        .setInstrumentKey("SBER")
+                        .setPeriodPct(dec(4, 560_000_000)))
+                .addInstrumentChanges(
+                        pac.simulation.v1.InstrumentChange.newBuilder().setInstrumentKey("GAZP"))
+                .setBlindView(pac.simulation.v1.BlindSessionView.newBuilder()
+                        .addInstruments(pac.simulation.v1.BlindInstrument.newBuilder()
+                                .setInstrumentIndex(0)
+                                .setChangeStepPct(dec(1, 230_000_000)))
+                        .addInstruments(
+                                pac.simulation.v1.BlindInstrument.newBuilder().setInstrumentIndex(1)))
+                .build();
+
+        var result = WorkerMapper.replay(response);
+
+        assertThat(result.currentDay()).isEqualTo(3);
+        var changes = result.instrumentChanges();
+        assertThat(changes.get(0).stepPct()).isNull();
+        assertThat(changes.get(0).periodPct()).isEqualByComparingTo("4.56");
+        assertThat(changes.get(1).stepPct()).isNull();
+        assertThat(changes.get(1).periodPct()).isNull();
+        var papers = result.blindView().papers();
+        assertThat(papers.get(0).changeStepPct()).isEqualByComparingTo("1.23");
+        assertThat(papers.get(0).changePeriodPct()).isNull();
+        assertThat(papers.get(0).lotValueAtStart()).isNull();
+        assertThat(papers.get(1).changeStepPct()).isNull();
+    }
+
+    @Test
     void decimalKeepsAllNineDigitsAndSign() {
         assertThat(WorkerMapper.decimal(new BigDecimal("-12.000000001"))).isEqualTo(dec(-12, -1));
         assertThat(WorkerMapper.decimal(dec(-12, -1))).isEqualByComparingTo("-12.000000001");
