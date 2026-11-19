@@ -131,6 +131,30 @@ class ClickHouseArchiveCatalogTest {
     }
 
     @Test
+    void securitiesOfArchiveWithoutNameColumnHaveEmptyNames() throws Exception {
+        exec("CREATE DATABASE IF NOT EXISTS legacy_arch");
+        exec("CREATE TABLE legacy_arch.securities (snapshot_id UUID, secid String, sector String, lot_size Int64, "
+                + "price_step Decimal(18, 6)) ENGINE = MergeTree() ORDER BY (snapshot_id, secid)");
+        exec("INSERT INTO legacy_arch.securities VALUES ('" + SNAP + "', 'SBER', 'Финансы', 10, 0.01)");
+        var legacy = new ClickHouseArchiveCatalog(HTTP, url(), "legacy_arch", "ttsc", "secret", Duration.ofSeconds(10));
+
+        var list = legacy.securities(SNAP);
+
+        assertThat(list).extracting(ArchiveCatalog.ArchivePaper::secid).containsExactly("SBER");
+        assertThat(list.get(0).name()).isEmpty();
+        assertThat(list.get(0).sector()).isEqualTo("Финансы");
+    }
+
+    @Test
+    void nameWithEscapedCharactersIsReadBack() throws Exception {
+        exec("INSERT INTO securities VALUES ('" + OTHER + "', 'ESC', '', 1, 0.5, 'О\\'Брайен \\\\ ПАО')");
+
+        var list = catalog(url()).securities(OTHER);
+
+        assertThat(list).extracting(ArchiveCatalog.ArchivePaper::name).contains("О'Брайен \\ ПАО");
+    }
+
+    @Test
     void candleDaysAreMoscowDatesPerPaper() {
         var c = catalog(url());
         // SBER: 04.03, 05.03 (00:00 МСК = 21:00 UTC предыдущего дня) и 10.03; бенчмарк IMOEX исключён

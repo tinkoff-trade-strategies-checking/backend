@@ -39,7 +39,11 @@ public final class ArchiveImporter {
 
     private static final Logger log = LoggerFactory.getLogger(ArchiveImporter.class);
 
-    static final String SCHEMA_VERSION = "1";
+    /** 2: сектор по наибольшему весу, столбец {@code securities.name}, хэш снапшота (backend#21). */
+    static final String SCHEMA_VERSION = "2";
+    /** Версия схемы до backend#21: загрузки с ней докачивать нельзя ({@link #rejectLegacyLoad}). */
+    static final String LEGACY_SCHEMA_VERSION = "1";
+
     static final int MINUTE = 60;
     static final int DAY = 86400;
     static final String BENCHMARK = "IMOEX";
@@ -92,8 +96,12 @@ public final class ArchiveImporter {
 
         /** UUID по имени: те же параметры — тот же снапшот. */
         public UUID snapshotId() {
+            return snapshotId(SCHEMA_VERSION);
+        }
+
+        UUID snapshotId(String schemaVersion) {
             String name =
-                    "iss-v" + SCHEMA_VERSION + "|" + from + "|" + to + "|" + String.join(",", tickers) + "|" + label;
+                    "iss-v" + schemaVersion + "|" + from + "|" + to + "|" + String.join(",", tickers) + "|" + label;
             return UUID.nameUUIDFromBytes(name.getBytes(StandardCharsets.UTF_8));
         }
     }
@@ -149,6 +157,7 @@ public final class ArchiveImporter {
             return new Result(id, true, existing.get());
         }
         archive.createSchema();
+        rejectLegacyLoad(p);
         if (!archive.isReady(id)) {
             load(p, id);
             archive.markReady(id);
@@ -158,6 +167,21 @@ public final class ArchiveImporter {
         Snapshot s = snapshots.register(id.toString(), description(p, id, loaded, hash), hash);
         log.info("Снапшот {} зарегистрирован, бумаг: {}", id, loaded.size());
         return new Result(id, false, s);
+    }
+
+    /**
+     * Загрузка с теми же параметрами по схеме версии {@value #LEGACY_SCHEMA_VERSION} (сектор «первый по коду», нет
+     * названий) имеет другой идентификатор, поэтому новый код начал бы новую загрузку с нуля, а недокачанные данные
+     * старой остались бы в ClickHouse. Чтобы это не прошло молча, запуск прекращается: старую загрузку нужно удалить.
+     */
+    private void rejectLegacyLoad(Params p) {
+        UUID legacy = p.snapshotId(LEGACY_SCHEMA_VERSION);
+        if (snapshots.findByKey(legacy.toString()).isEmpty() && archive.countRows("securities", legacy) > 0) {
+            throw new ImportException("В ClickHouse есть недогруженный снапшот " + legacy + " по схеме версии "
+                    + LEGACY_SCHEMA_VERSION + ": сектор и названия там считаются по старым правилам, докачать его"
+                    + " нельзя. Удалите его строки (DELETE … WHERE snapshot_id = '" + legacy + "' во всех таблицах"
+                    + " архива) и запустите импорт заново: новый снапшот грузится с нуля");
+        }
     }
 
     private void load(Params p, UUID id) {

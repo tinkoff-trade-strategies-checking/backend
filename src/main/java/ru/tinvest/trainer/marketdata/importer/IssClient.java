@@ -146,6 +146,14 @@ final class IssClient {
                     String secid = full.get(r, "secids").asString();
                     secids.add(secid);
                     tools.jackson.databind.JsonNode w = full.get(r, "weight");
+                    if (w == null || w.isNull()) {
+                        log.warn(
+                                "{}: в составе {} на {} нет веса {}, вес 0",
+                                indexId,
+                                secid,
+                                d,
+                                "(формат ISS изменился?)");
+                    }
                     BigDecimal weight = w == null || w.isNull() ? BigDecimal.ZERO : new BigDecimal(w.asString());
                     weights.merge(secid, weight, BigDecimal::max);
                 }

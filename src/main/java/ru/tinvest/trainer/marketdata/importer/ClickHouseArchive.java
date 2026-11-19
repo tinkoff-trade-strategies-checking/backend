@@ -46,8 +46,6 @@ final class ClickHouseArchive {
                         + "lot_size Int64, price_step Decimal(18, 6), name String DEFAULT '') ENGINE = MergeTree() ORDER BY (snapshot_id, secid)");
         // название бумаги добавлено после контракта core (core читает столбцы по именам); старые таблицы — ALTER
         ch.execute("ALTER TABLE securities ADD COLUMN IF NOT EXISTS name String DEFAULT ''");
-        // название бумаги добавлено после контракта core (core читает столбцы по именам); старые таблицы — ALTER
-        ch.execute("ALTER TABLE securities ADD COLUMN IF NOT EXISTS name String DEFAULT ''");
         // Кодеки не меняют типы столбцов (контракт core), но сжимают минутные свечи в 2,4 раза (замер 19.11.2026)
         ch.execute("CREATE TABLE IF NOT EXISTS candles (snapshot_id UUID CODEC(ZSTD), secid LowCardinality(String), "
                 + "interval_sec UInt32 CODEC(ZSTD), ts_open DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD), "
@@ -193,7 +191,7 @@ final class ClickHouseArchive {
     }
 
     /**
-     * Хэш данных снапшота: SHA-256 над строками {@code таблица|число строк|сумма sipHash64 по строкам} всех таблиц
+     * Хэш данных снапшота: SHA-256 над строками {@code таблица|число строк|сумма 128-битных sipHash128 по строкам} всех таблиц
      * данных (порядок таблиц фиксирован). Сумма по строкам не зависит от порядка вставки и частей MergeTree, поэтому
      * хэш не зависит от докачки, метки ({@code label}) и идентификатора снапшота — только от самих данных. Вызывать
      * после {@code snapshots_ready}: до этого набор строк ещё меняется.
@@ -201,12 +199,14 @@ final class ClickHouseArchive {
     String dataHash(UUID snapshot, String schemaVersion) {
         StringBuilder canon = new StringBuilder("iss-v").append(schemaVersion).append('\n');
         HASHED.forEach((table, cols) -> {
-            String[] r = ch.execute("SELECT count(), sum(sipHash64(" + cols + ")) FROM " + table
+            String[] r = ch.execute("SELECT count(), sum(reinterpretAsUInt128(sipHash128(" + cols + "))) FROM " + table
                             + " WHERE snapshot_id = '" + snapshot + "' FORMAT TSV")
                     .trim()
                     .split("\t", -1);
             canon.append(table)
-                    .append('|')
+                    .append('(')
+                    .append(cols)
+                    .append(")|")
                     .append(r[0])
                     .append('|')
                     .append(r[1])

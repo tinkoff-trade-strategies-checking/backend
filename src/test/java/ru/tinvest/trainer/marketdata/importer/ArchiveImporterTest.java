@@ -238,6 +238,79 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         assertThat(q("SELECT count() FROM securities WHERE snapshot_id = '" + id + "'"))
                 .isEqualTo("2");
         assertThat(snapshots.findByKey(id.toString())).isPresent();
+        // докачка частями даёт тот же хэш, что загрузка за один раз
+        assertThat(r.snapshot().dataHash())
+                .isEqualTo(importer.run(params()).snapshot().dataHash());
+    }
+
+    @Test
+    void legacySchemaLoadIsNotResumedSilently() {
+        ArchiveImporter.Params p = params();
+        ClickHouseArchive archive = new ClickHouseArchive(ch);
+        archive.createSchema();
+        archive.insertSecurities(
+                p.snapshotId(ArchiveImporter.LEGACY_SCHEMA_VERSION),
+                java.util.List.of(
+                        new ClickHouseArchive.SecurityRow("SBER", "", 1, new java.math.BigDecimal("0.01"), "")));
+
+        assertThatThrownBy(() -> importer.run(p))
+                .isInstanceOf(ImportException.class)
+                .hasMessageContaining("недогруженный снапшот")
+                .hasMessageContaining(
+                        p.snapshotId(ArchiveImporter.LEGACY_SCHEMA_VERSION).toString());
+        assertThat(snapshots.findByKey(p.snapshotId().toString())).isEmpty();
+    }
+
+    private static Candle candle(String time, String close) {
+        java.math.BigDecimal c = new java.math.BigDecimal(close);
+        return new Candle(java.time.Instant.parse(time), c, c, c, c, 100, c);
+    }
+
+    private String hashOfCloses(String first, String second) {
+        UUID id = UUID.randomUUID();
+        ClickHouseArchive archive = new ClickHouseArchive(ch);
+        archive.createSchema();
+        archive.insertCandles(
+                id,
+                "SBER",
+                60,
+                java.util.List.of(candle("2024-03-04T07:00:00Z", first), candle("2024-03-04T07:01:00Z", second)));
+        return archive.dataHash(id, ArchiveImporter.SCHEMA_VERSION);
+    }
+
+    @Test
+    void hashSeesValuesNotOnlyRowCounts() {
+        String base = hashOfCloses("10", "20");
+
+        // то же число строк и тот же набор значений, но на других свечах; и одно другое значение
+        assertThat(hashOfCloses("20", "10")).isNotEqualTo(base);
+        assertThat(hashOfCloses("10", "21")).isNotEqualTo(base);
+        assertThat(hashOfCloses("10", "20")).isEqualTo(base);
+    }
+
+    @Test
+    void hashOfFixedFixtureMatchesReference() {
+        // эталон: хэш не должен меняться при обновлении ClickHouse и кода; изменился — это новая версия схемы
+        UUID id = UUID.fromString("00000000-0000-0000-0000-000000000042");
+        ClickHouseArchive archive = new ClickHouseArchive(ch);
+        archive.createSchema();
+        archive.insertSecurities(
+                id,
+                java.util.List.of(new ClickHouseArchive.SecurityRow(
+                        "SBER", "Финансы", 10, new java.math.BigDecimal("0.01"), "Сбербанк")));
+        archive.insertCandles(
+                id,
+                "SBER",
+                60,
+                java.util.List.of(candle("2024-03-04T07:00:00Z", "290.5"), candle("2024-03-04T07:01:00Z", "291.25")));
+        archive.insertCalendar(id, java.util.Map.of(LocalDate.of(2024, 3, 4), true));
+        archive.insertRuonia(id, java.util.Map.of(LocalDate.of(2024, 3, 4), new java.math.BigDecimal("16.05")));
+        archive.insertActions(
+                id,
+                java.util.List.of(new ClickHouseArchive.ActionRow("SBER", LocalDate.of(2024, 2, 28), "split", 1, 10)));
+
+        assertThat(archive.dataHash(id, "2"))
+                .isEqualTo("06939b914988b7ddf17ffffedb5d15d20a9276866f02126f70da89059962b98a");
     }
 
     @Test

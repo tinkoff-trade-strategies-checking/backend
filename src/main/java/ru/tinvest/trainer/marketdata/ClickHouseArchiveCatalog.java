@@ -41,6 +41,8 @@ final class ClickHouseArchiveCatalog implements ArchiveCatalog {
     private final String user;
     private final String password;
     private final Duration timeout;
+    /** Столбец {@code securities.name} есть; кэшируется только «есть»: импортёр может добавить его позже. */
+    private volatile boolean hasNameColumn;
 
     ClickHouseArchiveCatalog(
             HttpClient http, String url, String database, String user, String password, Duration timeout) {
@@ -81,11 +83,46 @@ final class ClickHouseArchiveCatalog implements ArchiveCatalog {
     @Override
     public List<ArchivePaper> securities(String snapshotKey) {
         List<ArchivePaper> list = new ArrayList<>();
-        for (String[] r : rows("SELECT secid, sector, lot_size, price_step, name FROM securities WHERE snapshot_id = '"
-                + uuid(snapshotKey) + "' ORDER BY secid")) {
-            list.add(new ArchivePaper(r[0], r[1], Long.parseLong(r[2]), new BigDecimal(r[3]), r[4]));
+        // архив, загруженный до backend#21, без столбца name: веб-приложение схему не меняет (ею владеет импортёр)
+        String name = hasNameColumn() ? "name" : "'' AS name";
+        for (String[] r : rows("SELECT secid, sector, lot_size, price_step, " + name
+                + " FROM securities WHERE snapshot_id = '" + uuid(snapshotKey) + "' ORDER BY secid")) {
+            list.add(new ArchivePaper(r[0], r[1], Long.parseLong(r[2]), new BigDecimal(r[3]), unescape(r[4])));
         }
         return list;
+    }
+
+    private boolean hasNameColumn() {
+        if (!hasNameColumn) {
+            hasNameColumn = !rows("SELECT 1 FROM system.columns WHERE database = currentDatabase() "
+                            + "AND table = 'securities' AND name = 'name'")
+                    .isEmpty();
+        }
+        return hasNameColumn;
+    }
+
+    /** Снимает экранирование TSV ClickHouse: {@code \\}, {@code \'}, {@code \t}, {@code \n}. */
+    static String unescape(String s) {
+        if (s.indexOf('\\') < 0) {
+            return s;
+        }
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                char n = s.charAt(++i);
+                sb.append(
+                        switch (n) {
+                            case 't' -> '\t';
+                            case 'n' -> '\n';
+                            case 'r' -> '\r';
+                            default -> n;
+                        });
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     @Override
