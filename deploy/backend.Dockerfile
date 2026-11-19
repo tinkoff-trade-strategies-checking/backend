@@ -3,8 +3,10 @@ FROM eclipse-temurin:25-jdk AS build
 WORKDIR /src
 COPY gradlew settings.gradle.kts build.gradle.kts gradle.properties ./
 COPY gradle gradle
-RUN chmod +x gradlew && ./gradlew --no-daemon --version
+# gradlew может прийти с CRLF (Windows, autocrlf)
+RUN sed -i 's/\r$//' gradlew && chmod +x gradlew && ./gradlew --no-daemon --version
 COPY src src
+COPY proto proto
 COPY api api
 RUN ./gradlew --no-daemon bootJar -x test \
     && cp build/libs/*.jar /app.jar

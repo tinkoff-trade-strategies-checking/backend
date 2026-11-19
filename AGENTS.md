@@ -88,11 +88,16 @@ CI (`.github/workflows/ci.yml`): джоба `format` (`./gradlew spotlessCheck -
 
 ```bash
 cp deploy/.env.example deploy/.env      # задать POSTGRES_PASSWORD и CLICKHOUSE_PASSWORD
-docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d
+# Образы собираем напрямую: `compose build` через bake требует --allow=fs.read=.. для ../../core
+docker build -t simulation-worker ../core          # или путь к core; тяжёлая сборка C++
+docker build -f deploy/backend.Dockerfile -t trainer-backend .
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --no-build
 curl -k https://localhost/api/health    # 200 (-k: сертификат внутреннего CA Caddy)
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env ps   # порты только у caddy
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env down -v
 ```
+
+`CORE_DIR` в `deploy/.env` — путь к репозиторию core для `up --build` (по умолчанию `../../core` от `deploy/`; в worktree задать явно).
 
 Frontend: `FRONTEND_DIST` в `deploy/.env` — каталог сборки (`../../frontend/dist/<имя>/browser`); не задан — Caddy отдаёт заглушку `deploy/frontend-stub`. Сборка образа worker тяжёлая (C++, gRPC).
 

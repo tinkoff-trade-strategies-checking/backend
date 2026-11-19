@@ -41,7 +41,7 @@ services:
   worker:
     image: simulation-worker
     build:
-      context: ../../core
+      context: ${CORE_DIR:-../../core}
     environment:
       WORKER_ADDRESS: 0.0.0.0:50051
       CLICKHOUSE_URL: http://ttsc:${CLICKHOUSE_PASSWORD}@clickhouse:8123/ttsc
