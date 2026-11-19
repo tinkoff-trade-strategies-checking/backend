@@ -158,6 +158,23 @@ class BlindMasking {
         out.put("commissionPct", ViewFormat.number(view.amounts().commissionPct()));
         out.put("exchangeFeePct", ViewFormat.number(view.amounts().exchangeFeePct()));
         out.put("requiredCashPct", ViewFormat.number(view.amounts().requiredCashPct()));
+        List<Object> legs = new ArrayList<>();
+        for (ArenaState.EstimateLeg leg : view.legs()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("type", ViewFormat.legType(leg.kind()));
+            item.put("canPlace", leg.canPlace());
+            item.put("reason", leg.reason() == null ? null : ViewFormat.rejectReason(leg.reason()));
+            item.put("field", leg.field());
+            item.put("amountPct", ViewFormat.number(leg.amounts().amountPct()));
+            item.put("commissionPct", ViewFormat.number(leg.amounts().commissionPct()));
+            item.put("exchangeFeePct", ViewFormat.number(leg.amounts().exchangeFeePct()));
+            item.put("requiredCashPct", ViewFormat.number(leg.amounts().requiredCashPct()));
+            if (!session.blind()) {
+                OpenViews.rubles(item, leg.amounts());
+            }
+            legs.add(item);
+        }
+        out.put("legs", legs);
         if (!session.blind()) {
             return OpenViews.estimate(out, view.amounts());
         }
@@ -195,10 +212,7 @@ class BlindMasking {
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("Исполнение без заявки в состоянии сессии"));
         int[] position = index.at(fill.step());
-        BigDecimal cost = fill.commissionPct()
-                .add(fill.exchangeFeePct())
-                .add(fill.spreadCostPct())
-                .add(fill.slippageCostPct());
+
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", DerivedIds.fill(state.session().id(), fill.orderId(), fill.step()));
         out.put("orderId", state.orderIds().get(fill.orderId()));
@@ -211,7 +225,8 @@ class BlindMasking {
         out.put("lots", fill.lots());
         out.put("price", ViewFormat.number(fill.price()));
         out.put("amountPct", ViewFormat.number(fill.valuePct()));
-        out.put("costPct", ViewFormat.number(cost));
+        // общие издержки сделки в % считает core (core#54), backend ничего не складывает; пока не отдаёт — null
+        out.put("costPct", null);
         out.put("stopAndTakeSameBar", fill.stopAndTakeSameBar());
         return out;
     }

@@ -292,6 +292,15 @@ class LaunchPlannerTest {
     }
 
     @Test
+    void corporateActionInTheWarmupWindowRejectsThePeriodToo() {
+        // окно целиком после сплита, но прогрев (100 шагов до начала) захватывает день сплита
+        int s = FakeArchive.SPLIT_AT + 3;
+        LaunchRejection split = rejection(planner.plan(custom(regimeAt(s), calendar.get(s), "A", "SPLIT")));
+        assertThat(split.reason()).isEqualTo(LaunchRejectReason.CORPORATE_ACTION_ON_PERIOD);
+        assertThat(split.field()).isEqualTo("paperIds");
+    }
+
+    @Test
     void invalidParamsAreRejected() {
         var duration = new LaunchRequest(30, Timeframe.D1, Regime.CALM, StartMode.RANDOM, null, 2, null, CAPITAL);
         assertThat(rejection(planner.plan(duration)).field()).isEqualTo("durationDays");
@@ -480,6 +489,25 @@ class LaunchPlannerTest {
     private final class FakeWorker implements SimulationWorkerClient {
         int calls;
         Set<PeriodCategory> onlyCategories;
+
+        @Override
+        public ru.tinvest.trainer.worker.WorkerTypes.ReplayResult replaySession(
+                ru.tinvest.trainer.worker.WorkerTypes.Market market,
+                java.util.List<ru.tinvest.trainer.worker.WorkerTypes.JournalRecord> journal,
+                long upToStep,
+                boolean includeHistory,
+                boolean blind) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public ru.tinvest.trainer.worker.WorkerTypes.EstimateResult estimateOrder(
+                ru.tinvest.trainer.worker.WorkerTypes.Market market,
+                java.util.List<ru.tinvest.trainer.worker.WorkerTypes.JournalRecord> journal,
+                long upToStep,
+                ru.tinvest.trainer.worker.WorkerTypes.OrderParams order) {
+            throw new UnsupportedOperationException();
+        }
 
         static PeriodCategory category(Regime r) {
             return switch (r) {

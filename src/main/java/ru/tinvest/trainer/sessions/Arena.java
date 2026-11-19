@@ -1,6 +1,5 @@
 package ru.tinvest.trainer.sessions;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -17,7 +16,6 @@ import ru.tinvest.trainer.worker.SimulationWorkerClient;
 import ru.tinvest.trainer.worker.WorkerTypes.BarInterval;
 import ru.tinvest.trainer.worker.WorkerTypes.Command;
 import ru.tinvest.trainer.worker.WorkerTypes.CommandOutcome;
-import ru.tinvest.trainer.worker.WorkerTypes.Costs;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
@@ -37,17 +35,6 @@ import tools.jackson.databind.JsonNode;
  */
 @Service
 class Arena {
-
-    /** Шагов истории до начала периода, которые человек видит на графике (прошлое, INV-1). */
-    static final int WARMUP_BARS = 100;
-
-    /** Издержки по умолчанию ({@code decisions.md}, «Модель исполнения»). */
-    static final Costs COSTS = new Costs(
-            new BigDecimal("0.003"),
-            new BigDecimal("0.0001"),
-            new BigDecimal("0.001"),
-            new BigDecimal("0.1"),
-            new BigDecimal("0.1"));
 
     private static final String STATUS_RUNNING = "running";
     private static final String BENCHMARK = "IMOEX";
@@ -89,10 +76,10 @@ class Arena {
                 BarInterval.valueOf(session.timeframe().name()),
                 session.periodStart(),
                 session.periodEnd(),
-                COSTS,
+                session.costs(),
                 session.initialCapital(),
                 BENCHMARK,
-                WARMUP_BARS);
+                session.warmupBars());
     }
 
     // ---------- снимок ----------
@@ -115,33 +102,38 @@ class Arena {
             return masking.estimate(
                     session,
                     new ArenaState.EstimateView(
-                            false, RejectCode.SESSION_NOT_ACTIVE, null, ArenaState.EstimateView.zeros()));
+                            false, RejectCode.SESSION_NOT_ACTIVE, null, ArenaState.EstimateView.zeros(), List.of()));
         }
         try {
             List<OrderParams> legs = request.legs(session, session.blind());
             List<JournalRecord> journal = journals.records(session);
-            EstimateResult first = null;
-            EstimateResult failed = null;
+            // каждая нога оценивается отдельно (у OCO — стоп и тейк-профит); canPlace — по всем ногам
+            List<ArenaState.EstimateLeg> results = new ArrayList<>(legs.size());
+            ArenaState.EstimateLeg failed = null;
             for (OrderParams leg : legs) {
                 EstimateResult result = worker.estimateOrder(market(session), journal, session.currentStep(), leg);
-                if (first == null) {
-                    first = result;
-                }
-                if (!result.canPlace() && failed == null) {
-                    failed = result;
+                ArenaState.EstimateLeg item = new ArenaState.EstimateLeg(
+                        leg.kind(),
+                        result.canPlace(),
+                        result.canPlace() ? null : result.reason(),
+                        result.canPlace() ? null : legField(result.invalidField(), legs, session),
+                        result);
+                results.add(item);
+                if (!item.canPlace() && failed == null) {
+                    failed = item;
                 }
             }
-            if (failed != null) {
-                return masking.estimate(
-                        session,
-                        new ArenaState.EstimateView(
-                                false, failed.reason(), legField(failed.invalidField(), legs, session), first));
-            }
-            return masking.estimate(session, new ArenaState.EstimateView(true, null, null, first));
+            EstimateResult first = results.getFirst().amounts();
+            return masking.estimate(
+                    session,
+                    failed == null
+                            ? new ArenaState.EstimateView(true, null, null, first, results)
+                            : new ArenaState.EstimateView(false, failed.reason(), failed.field(), first, results));
         } catch (FormRejection e) {
             return masking.estimate(
                     session,
-                    new ArenaState.EstimateView(false, e.reason(), e.field(), ArenaState.EstimateView.zeros()));
+                    new ArenaState.EstimateView(
+                            false, e.reason(), e.field(), ArenaState.EstimateView.zeros(), List.of()));
         }
     }
 
@@ -214,24 +206,33 @@ class Arena {
             Function<SessionRecord, Map<String, Object>> body) {
         // чужая и несуществующая сессия — 404 до любой записи
         sessions.requireOwned(sessionId);
+        Idempotency.Claim claim = null;
         if (key != null) {
-            Optional<JsonNode> previous = idempotency.claim(sessionId, key, operation, requestHash);
-            if (previous.isPresent()) {
-                return previous.get();
+            claim = idempotency.claim(sessionId, key, operation, requestHash);
+            if (!claim.owned()) {
+                return claim.previous().get();
             }
         }
+        Idempotency.Claim owned = claim;
         try {
             return transaction.execute(status -> {
                 SessionRecord session = sessions.requireOwnedForUpdate(sessionId);
+                if (owned != null) {
+                    // под блокировкой сессии: ответ по ключу мог быть записан, пока ждали очередь
+                    Optional<JsonNode> done = idempotency.recheck(sessionId, key, owned.token());
+                    if (done.isPresent()) {
+                        return done.get();
+                    }
+                }
                 Map<String, Object> response = body.apply(session);
-                if (key != null) {
-                    idempotency.complete(sessionId, key, response);
+                if (owned != null) {
+                    idempotency.complete(sessionId, key, owned.token(), response);
                 }
                 return response;
             });
         } catch (RuntimeException e) {
-            if (key != null) {
-                idempotency.release(sessionId, key);
+            if (owned != null) {
+                idempotency.release(sessionId, key, owned.token());
             }
             throw e;
         }
@@ -267,7 +268,11 @@ class Arena {
             List<Long> shown = legIds(replay, cancel.orderId());
             return masking.commandResult(state, new ArenaState.CommandReply(true, null, null, List.of(), shown));
         }
-        List<Long> created = outcome.orderIds().isEmpty() ? createdIds(seq, command) : outcome.orderIds();
+        if (outcome.orderIds().isEmpty()) {
+            throw new IllegalStateException("Воркер принял команду " + seq + " без номеров созданных заявок");
+        }
+        List<Long> created = outcome.orderIds();
+
         return masking.commandResult(state, new ArenaState.CommandReply(true, null, null, created, created));
     }
 
@@ -315,12 +320,6 @@ class Arena {
 
     private static List<Long> legIds(ReplayResult replay, long coreId) {
         return legsOf(replay, coreId).stream().map(OrderState::id).toList();
-    }
-
-    /** Номера заявок, созданных командой {@code seq}: {@code seq * 2 + нога} (на случай, если ядро не вернуло). */
-    private static List<Long> createdIds(long seq, Command command) {
-        Command.Place place = command instanceof Command.Replace r ? r.replacement() : (Command.Place) command;
-        return place.ocoWith() == null ? List.of(seq * 2) : List.of(seq * 2, seq * 2 + 1);
     }
 
     // ---------- перевод слепых цен ----------
@@ -379,19 +378,6 @@ class Arena {
 
     /** Имя поля ядра в имени поля запроса: уровень тейка — {@code takeProfitPrice}, бумага — {@code paperIndex/paperId}. */
     private static @Nullable String clientField(String coreField, List<OrderKind> kinds, SessionRecord session) {
-        if (coreField == null || coreField.isEmpty()) {
-            return null;
-        }
-        return switch (coreField) {
-            case "limitPrice" ->
-                kinds.contains(OrderKind.TAKE_PROFIT)
-                                && !kinds.contains(OrderKind.LIMIT)
-                                && !kinds.contains(OrderKind.STOP_LIMIT)
-                        ? "takeProfitPrice"
-                        : "limitPrice";
-            case "trailingPercent" -> "trailingPct";
-            case "instrument" -> session.blind() ? "paperIndex" : "paperId";
-            default -> coreField;
-        };
+        return ViewFormat.clientField(coreField, kinds, session.blind());
     }
 }

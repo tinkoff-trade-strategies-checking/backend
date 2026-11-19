@@ -52,8 +52,8 @@ final class OpenViews {
             Map<String, Object> stat = new LinkedHashMap<>();
             // изменение за день считает core; пока не отдаёт — null
             stat.put("changePct", null);
-            // бумага без бара до курсора: цены ещё нет
-            stat.put("lastPrice", ViewFormat.number(lastClose.getOrDefault(paper.secid(), BigDecimal.ZERO)));
+            // бумага без бара до курсора: цены ещё нет (null), заявку на неё ядро отклоняет до первого бара
+            stat.put("lastPrice", ViewFormat.numberOrNull(lastClose.get(paper.secid())));
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("id", paper.paperId());
             out.put("instrumentIndex", paper.paperIndex());
@@ -104,12 +104,17 @@ final class OpenViews {
 
     static Map<String, Object> estimate(Map<String, Object> base, EstimateResult amounts) {
         base.put("mode", "OPEN");
-        base.put("referencePrice", ViewFormat.number(amounts.referencePrice()));
-        base.put("amount", ViewFormat.money(amounts.amount()));
-        base.put("commission", ViewFormat.money(amounts.commission()));
-        base.put("exchangeFee", ViewFormat.money(amounts.exchangeFee()));
-        base.put("requiredCash", ViewFormat.money(amounts.requiredCash()));
+        rubles(base, amounts);
         return base;
+    }
+
+    /** Рублёвые поля оценки: на верхнем уровне и в каждой ноге. */
+    static void rubles(Map<String, Object> target, EstimateResult amounts) {
+        target.put("referencePrice", ViewFormat.number(amounts.referencePrice()));
+        target.put("amount", ViewFormat.money(amounts.amount()));
+        target.put("commission", ViewFormat.money(amounts.commission()));
+        target.put("exchangeFee", ViewFormat.money(amounts.exchangeFee()));
+        target.put("requiredCash", ViewFormat.money(amounts.requiredCash()));
     }
 
     private static Map<String, Object> order(ArenaState state, OrderState order) {
@@ -137,9 +142,7 @@ final class OpenViews {
                         .findFirst())
                 .map(BarData::timeUnixMs)
                 .orElseThrow(() -> new IllegalStateException("Исполнение без бара на своём шаге"));
-        // издержки исполнения: комиссия, сбор, спред и проскальзывание
-        BigDecimal cost =
-                fill.commission().add(fill.exchangeFee()).add(fill.spreadCost()).add(fill.slippageCost());
+
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", DerivedIds.fill(state.session().id(), fill.orderId(), fill.step()));
         out.put("orderId", state.orderIds().get(fill.orderId()));
@@ -152,11 +155,11 @@ final class OpenViews {
         out.put("type", ViewFormat.legType(order.spec().kind()));
         out.put("lots", fill.lots());
         out.put("price", ViewFormat.number(fill.price()));
-        // проценты считает core; пока не отдаёт — null
+        // проценты и общие издержки сделки считает core (core#54), backend ничего не складывает; пока не отдаёт — null
         out.put("amountPct", null);
         out.put("costPct", null);
         out.put("amount", ViewFormat.money(fill.value()));
-        out.put("cost", ViewFormat.money(cost));
+        out.put("cost", null);
         out.put("stopAndTakeSameBar", fill.stopAndTakeSameBar());
         return out;
     }

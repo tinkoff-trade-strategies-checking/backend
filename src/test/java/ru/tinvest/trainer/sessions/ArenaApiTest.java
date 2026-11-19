@@ -15,9 +15,16 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -76,6 +83,9 @@ class ArenaApiTest extends PostgresIntegrationTest {
     private FakeWorker worker;
 
     @Autowired
+    private Idempotency idempotency;
+
+    @Autowired
     private ObjectMapper json;
 
     private UUID userId;
@@ -130,6 +140,7 @@ class ArenaApiTest extends PostgresIntegrationTest {
     }
 
     private static final Set<String> BLIND_KEYS = Set.of(
+            "legs",
             "sessionId",
             "regime",
             "step",
@@ -564,6 +575,7 @@ class ArenaApiTest extends PostgresIntegrationTest {
         assertThat(blindEstimate.propertyNames())
                 .containsExactlyInAnyOrder(
                         "mode",
+                        "legs",
                         "canPlace",
                         "reason",
                         "field",
@@ -631,39 +643,6 @@ class ArenaApiTest extends PostgresIntegrationTest {
             assertThat(problem.get("code").asString()).isEqualTo("IDEMPOTENCY_KEY_REUSED");
             assertThat(problem.get("status").asInt()).isEqualTo(422);
         }
-        assertThat(journalRows(id)).hasSize(1);
-    }
-
-    @Test
-    void requestWhileTheFirstOneIsInProgressIs409AndStaleKeyIsTakenOver() throws Exception {
-        UUID id = newSession(false);
-        UUID key = UUID.randomUUID();
-        String request = openOrder("SBER", 0, "buy", "limit", 2, "190.00");
-        OrderRequest parsed = json.readValue(request, OrderRequest.class);
-        jdbc.sql("INSERT INTO sessions.idempotency_key (session_id, key, operation, request_hash, status) "
-                        + "VALUES (:s, :k, 'place', :h, 'in_progress')")
-                .param("s", id)
-                .param("k", key)
-                .param("h", parsed.fingerprint("place"))
-                .update();
-
-        MvcResult busy = httpPost(id, "/orders", request, key);
-
-        assertThat(busy.getResponse().getStatus()).isEqualTo(409);
-        assertThat(json.readTree(busy.getResponse().getContentAsString())
-                        .get("code")
-                        .asString())
-                .isEqualTo("IDEMPOTENCY_KEY_IN_PROGRESS");
-        assertThat(journalRows(id)).isEmpty();
-
-        // первый запрос завис давно: журнал не записан (запись и ответ — одна транзакция), ключ занимается заново
-        jdbc.sql("UPDATE sessions.idempotency_key SET created_at = :t WHERE session_id = :s AND key = :k")
-                .param("t", OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(5))
-                .param("s", id)
-                .param("k", key)
-                .update();
-        assertThat(httpPost(id, "/orders", request, key).getResponse().getStatus())
-                .isEqualTo(200);
         assertThat(journalRows(id)).hasSize(1);
     }
 
@@ -851,6 +830,409 @@ class ArenaApiTest extends PostgresIntegrationTest {
                 .update();
     }
 
+    @Test
+    void abandonedInProgressKeysAreDroppedOnStartup() throws Exception {
+        UUID id = newSession(false);
+        UUID key = UUID.randomUUID();
+        String request = openOrder("SBER", 0, "buy", "limit", 2, "190.00");
+        jdbc.sql("INSERT INTO sessions.idempotency_key (session_id, key, operation, request_hash, status) "
+                        + "VALUES (:s, :k, 'place', :h, 'in_progress')")
+                .param("s", id)
+                .param("k", key)
+                .param("h", json.readValue(request, OrderRequest.class).fingerprint("place"))
+                .update();
+        // выполненный ключ остаётся
+        UUID done = UUID.randomUUID();
+        assertThat(httpPost(id, "/orders", request, done).getResponse().getStatus())
+                .isEqualTo(200);
+
+        idempotency.dropAbandoned();
+
+        assertThat(httpPost(id, "/orders", request, key).getResponse().getStatus())
+                .isEqualTo(200);
+        assertThat(httpPost(id, "/orders", request, done).getResponse().getStatus())
+                .isEqualTo(200);
+        assertThat(journalRows(id)).hasSize(2);
+    }
+
+    @Test
+    void repeatWhileTheFirstRequestIsRunningIs409ThenReturnsTheStoredAnswer() throws Exception {
+        UUID id = newSession(false);
+        UUID key = UUID.randomUUID();
+        String request = openOrder("SBER", 0, "buy", "limit", 2, "190.00");
+        worker.entered = new CountDownLatch(1);
+        worker.gate = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<MvcResult> first = pool.submit(() -> httpPost(id, "/orders", request, key));
+            assertThat(worker.entered.await(10, TimeUnit.SECONDS)).isTrue();
+
+            // первый запрос внутри транзакции, журнал ещё не записан
+            MvcResult busy = httpPost(id, "/orders", request, key);
+            assertThat(busy.getResponse().getStatus()).isEqualTo(409);
+            assertThat(json.readTree(busy.getResponse().getContentAsString())
+                            .get("code")
+                            .asString())
+                    .isEqualTo("IDEMPOTENCY_KEY_IN_PROGRESS");
+
+            worker.gate.countDown();
+            MvcResult done = first.get(10, TimeUnit.SECONDS);
+            assertThat(done.getResponse().getStatus()).isEqualTo(200);
+            MvcResult repeat = httpPost(id, "/orders", request, key);
+            assertThat(json.readTree(repeat.getResponse().getContentAsString()))
+                    .isEqualTo(json.readTree(done.getResponse().getContentAsString()));
+            assertThat(journalRows(id)).hasSize(1);
+        } finally {
+            worker.gate.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void simultaneousIdenticalRequestsWriteOneJournalEntry() throws Exception {
+        UUID id = newSession(false);
+        UUID key = UUID.randomUUID();
+        String request = openOrder("SBER", 0, "buy", "limit", 2, "190.00");
+        int threads = 6;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            List<Future<MvcResult>> results = new ArrayList<>();
+            for (int i = 0; i < threads; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    return httpPost(id, "/orders", request, key);
+                }));
+            }
+            start.countDown();
+            int ok = 0;
+            for (Future<MvcResult> result : results) {
+                int status = result.get(30, TimeUnit.SECONDS).getResponse().getStatus();
+                assertThat(status).isIn(200, 409);
+                if (status == 200) {
+                    ok++;
+                }
+            }
+            assertThat(ok).isPositive();
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(journalRows(id)).hasSize(1);
+        // после завершения любой повтор получает один и тот же ответ
+        assertThat(httpPost(id, "/orders", request, key).getResponse().getStatus())
+                .isEqualTo(200);
+        assertThat(journalRows(id)).hasSize(1);
+    }
+
+    @Test
+    void foreignClaimCannotWriteTheAnswer() {
+        UUID id = newSession(false);
+        UUID key = UUID.randomUUID();
+        Idempotency.Claim mine = idempotency.claim(id, key, "place", "hash");
+
+        assertThat(mine.owned()).isTrue();
+        assertThatThrownBy(() -> idempotency.complete(id, key, UUID.randomUUID(), Map.of("x", 1)))
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> idempotency.recheck(id, key, UUID.randomUUID()))
+                .isInstanceOf(IdempotencyException.class);
+        idempotency.complete(id, key, mine.token(), Map.of("x", 1));
+        assertThat(idempotency.recheck(id, key, UUID.randomUUID())).isPresent();
+    }
+
+    // ---------- прогрев, издержки, бумага без бара, оценка по ногам ----------
+
+    @Test
+    void sessionStoresWarmupAndCostsAtLaunchAndPassesThemToTheWorker() throws Exception {
+        UUID id = newSession(false);
+        var row = jdbc.sql("SELECT warmup_bars, commission_rate, exchange_fee_rate, spread, slippage_kappa, "
+                        + "liquidity_share FROM sessions.session WHERE id = :id")
+                .param("id", id)
+                .query()
+                .singleRow();
+        assertThat(row.get("warmup_bars")).isEqualTo(100);
+        assertThat((BigDecimal) row.get("commission_rate")).isEqualByComparingTo("0.003");
+        assertThat((BigDecimal) row.get("liquidity_share")).isEqualByComparingTo("0.1");
+
+        body(httpGet(id, ""));
+
+        assertThat(worker.lastMarket.warmupBars()).isEqualTo(100);
+        assertThat(worker.lastMarket.costs().exchangeFeeRate()).isEqualByComparingTo("0.0001");
+        assertThat(worker.lastMarket.costs().spread()).isEqualByComparingTo("0.001");
+        // план сессии неизменяем, прогрев и издержки тоже (INV-8)
+        assertThatThrownBy(() -> jdbc.sql("UPDATE sessions.session SET warmup_bars = 5 WHERE id = :id")
+                        .param("id", id)
+                        .update())
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.sql("UPDATE sessions.session SET commission_rate = 0 WHERE id = :id")
+                        .param("id", id)
+                        .update())
+                .isInstanceOf(DataIntegrityViolationException.class);
+        // INV-2 в БД: клиент не видел свечу позже курсора
+        assertThatThrownBy(() -> jdbc.sql(
+                                "INSERT INTO sessions.command_journal (session_id, seq, step, seen_step, "
+                                        + "command_type, command, accepted) VALUES (:s, 0, 0, 1, 'cancel', '{\"orderId\":0}', true)")
+                        .param("s", id)
+                        .update())
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void openPaperWithoutBarIsShownWithNullLastPrice() throws Exception {
+        UUID id = newSession(false);
+        worker.noBars = Set.of("LKOH");
+
+        JsonNode snapshot = body(httpGet(id, ""));
+
+        assertThat(snapshot.get("papers")).hasSize(3);
+        for (JsonNode paper : snapshot.get("papers")) {
+            boolean without = "LKOH".equals(paper.get("ticker").asString());
+            assertThat(paper.get("candles").isEmpty()).isEqualTo(without);
+            assertThat(paper.get("stat").get("lastPrice").isNull()).isEqualTo(without);
+        }
+    }
+
+    @Test
+    void estimateReportsEveryLegOfAnOcoSeparately() throws Exception {
+        UUID open = newSession(false);
+        String oco = "{\"paperId\":\"%s\",\"side\":\"sell\",\"type\":\"oco\",\"lots\":%d,\"tif\":\"gtc\","
+                + "\"stopPrice\":\"180.00\",\"takeProfitPrice\":\"220.00\"}";
+
+        JsonNode estimate = body(httpPost(open, "/order-estimate", oco.formatted(Papers.id("SBER"), 1), null));
+
+        assertThat(estimate.get("canPlace").asBoolean()).isTrue();
+        assertThat(estimate.get("legs")).hasSize(2);
+        assertThat(estimate.get("legs").get(0).get("type").asString()).isEqualTo("stop");
+        assertThat(estimate.get("legs").get(1).get("type").asString()).isEqualTo("take_profit");
+        assertThat(estimate.get("legs").get(1).get("amount").asString()).isEqualTo("2000.00");
+        assertThat(estimate.get("legs").get(0).get("canPlace").asBoolean()).isTrue();
+        assertThat(worker.estimated).hasSize(2);
+
+        JsonNode tooMuch = body(httpPost(open, "/order-estimate", oco.formatted(Papers.id("SBER"), 5000), null));
+        assertThat(tooMuch.get("canPlace").asBoolean()).isFalse();
+        assertThat(tooMuch.get("legs").get(0).get("reason").asString()).isEqualTo("INSUFFICIENT_CASH");
+        assertThat(tooMuch.get("legs").get(1).get("reason").asString()).isEqualTo("INSUFFICIENT_CASH");
+
+        // слепая: у ног только проценты
+        UUID blind = newSession(true);
+        JsonNode blindEstimate = body(httpPost(
+                blind,
+                "/order-estimate",
+                "{\"paperIndex\":0,\"side\":\"sell\",\"type\":\"oco\",\"lots\":1,\"tif\":\"gtc\","
+                        + "\"stopPrice\":\"90.00\",\"takeProfitPrice\":\"110.00\"}",
+                null));
+        assertThat(blindEstimate.get("legs")).hasSize(2);
+        for (JsonNode leg : blindEstimate.get("legs")) {
+            assertThat(leg.propertyNames())
+                    .containsExactlyInAnyOrder(
+                            "type",
+                            "canPlace",
+                            "reason",
+                            "field",
+                            "amountPct",
+                            "commissionPct",
+                            "exchangeFeePct",
+                            "requiredCashPct");
+        }
+        assertThat(journalRows(open)).isEmpty();
+        assertThat(journalRows(blind)).isEmpty();
+    }
+
+    @Test
+    void fillCostsAreLeftToCoreAndTheMoneyIsNotRounded() throws Exception {
+        UUID open = newSession(false);
+        UUID blind = newSession(true);
+        body(httpPost(open, "/orders", openOrder("SBER", 0, "buy", "market", 1, null), null));
+        body(httpPost(blind, "/orders", blindOrder(0, "buy", "market", 1, null), null));
+        setStep(open, 2);
+        setStep(blind, 2);
+
+        JsonNode openFill = body(httpGet(open, "")).get("fills").get(0);
+        JsonNode blindFill = body(httpGet(blind, "")).get("fills").get(0);
+
+        assertThat(openFill.get("cost").isNull()).isTrue();
+        assertThat(openFill.get("costPct").isNull()).isTrue();
+        assertThat(openFill.get("amount").asString())
+                .isEqualTo("%d.00".formatted((201 + 10 * index(open, "SBER")) * 10));
+        assertThat(blindFill.get("costPct").isNull()).isTrue();
+        assertThat(blindFill.get("amountPct").asString()).isEqualTo("0.40");
+        // лишний знак у суммы ядра — ошибка, а не тихое округление
+        assertThatThrownBy(() -> ViewFormat.money(new BigDecimal("10.005"))).isInstanceOf(ArithmeticException.class);
+        assertThat(ViewFormat.money(new BigDecimal("10.5"))).isEqualTo("10.50");
+    }
+
+    // ---------- свойство маскировки (INV-7) ----------
+
+    private static final Set<String> PROBLEM_KEYS = Set.of("type", "title", "status", "detail", "instance", "code");
+    private static final Set<String> PRICE_KEYS = Set.of(
+            "limitPrice",
+            "stopPrice",
+            "takeProfitPrice",
+            "trailingStopLevel",
+            "open",
+            "high",
+            "low",
+            "close",
+            "price",
+            "avgPrice",
+            "lastPrice");
+    private static final Pattern TIME = Pattern.compile("\\d{2}:\\d{2}");
+
+    @Test
+    void blindMaskingHoldsForEveryAnswerOfGeneratedSessions() throws Exception {
+        for (long seed = 1; seed <= 6; seed++) {
+            Random random = new Random(seed);
+            List<String> secids = new ArrayList<>();
+            while (secids.size() < 3) {
+                String secid =
+                        "Q" + (char) ('A' + random.nextInt(26)) + (char) ('A' + random.nextInt(26)) + secids.size();
+                if (!secids.contains(secid)) {
+                    secids.add(secid);
+                }
+            }
+            LocalDate start = LocalDate.of(2015 + random.nextInt(9), 1 + random.nextInt(12), 1 + random.nextInt(27));
+            UUID id = newSession(true, secids, start);
+            List<String> orderIds = new ArrayList<>();
+            List<UUID> keys = new ArrayList<>();
+            List<String> keyBodies = new ArrayList<>();
+            int step = 0;
+            for (int n = 0; n < 24; n++) {
+                MvcResult result;
+                switch (random.nextInt(11)) {
+                    case 0, 1, 2 -> {
+                        UUID key = random.nextBoolean() ? UUID.randomUUID() : null;
+                        String body = randomBlindOrder(random, step);
+                        result = httpPost(id, "/orders", body, key);
+                        if (key != null) {
+                            keys.add(key);
+                            keyBodies.add(body);
+                        }
+                    }
+                    case 3 -> result = httpPost(id, "/order-estimate", randomBlindOrder(random, step), null);
+                    case 4 -> result = httpGet(id, "");
+                    case 5 -> {
+                        // отмена известной заявки, иначе неизвестной
+                        String order = orderIds.isEmpty()
+                                ? UUID.randomUUID().toString()
+                                : orderIds.get(random.nextInt(orderIds.size()));
+                        result = httpDelete(id, "/orders/" + order + "?seenStep=" + step, null);
+                    }
+                    case 6 -> {
+                        String order = orderIds.isEmpty()
+                                ? UUID.randomUUID().toString()
+                                : orderIds.get(random.nextInt(orderIds.size()));
+                        result = httpPut(
+                                id,
+                                "/orders/" + order,
+                                "{\"seenStep\":%d,\"lots\":%d,\"tif\":\"day\",\"limitPrice\":\"%s\"}"
+                                        .formatted(step, 1 + random.nextInt(3), blindPrice(random)),
+                                null);
+                    }
+                    case 7 -> {
+                        // повтор по ключу: тот же ответ или 422 при другом теле
+                        if (keys.isEmpty()) {
+                            result = httpGet(id, "");
+                        } else {
+                            int k = random.nextInt(keys.size());
+                            String body = random.nextBoolean() ? keyBodies.get(k) : randomBlindOrder(random, step);
+                            result = httpPost(id, "/orders", body, keys.get(k));
+                        }
+                    }
+                    case 8 -> {
+                        worker.down = true;
+                        result = httpPost(id, "/orders", randomBlindOrder(random, step), null);
+                        worker.down = false;
+                    }
+                    case 9 -> result = httpPost(id, "/orders", "{\"paperIndex\":\"x\"", null);
+                    default -> {
+                        step = Math.min(8, step + 1 + random.nextInt(2));
+                        setStep(id, step);
+                        result = httpGet(id, "");
+                    }
+                }
+                String text = result.getResponse().getContentAsString();
+                if (!text.isEmpty()) {
+                    JsonNode node = json.readTree(text);
+                    assertBlindStrict(node, secids, start, text);
+                    if (node.has("order") && !node.get("order").isNull()) {
+                        for (JsonNode created : node.get("orderIds")) {
+                            orderIds.add(created.asString());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private String randomBlindOrder(Random random, int step) {
+        int paper = random.nextInt(3);
+        return switch (random.nextInt(5)) {
+            case 0 ->
+                "{\"seenStep\":%d,\"paperIndex\":%d,\"side\":\"buy\",\"type\":\"market\",\"lots\":%d,\"tif\":\"day\"}"
+                        .formatted(step, paper, 1 + random.nextInt(4));
+            case 1 ->
+                ("{\"seenStep\":%d,\"paperIndex\":%d,\"side\":\"sell\",\"type\":\"oco\",\"lots\":1,\"tif\":\"gtc\","
+                                + "\"stopPrice\":\"%s\",\"takeProfitPrice\":\"%s\"}")
+                        .formatted(step, paper, blindPrice(random), blindPrice(random));
+            case 2 ->
+                "{\"seenStep\":%d,\"paperIndex\":%d,\"side\":\"buy\",\"type\":\"limit\",\"lots\":%d,\"tif\":\"gtc\"}"
+                        .formatted(step, paper, 1 + random.nextInt(3));
+            // seenStep из будущего или бумага вне сессии — отказы до воркера
+            case 3 ->
+                "{\"seenStep\":%d,\"paperIndex\":%d,\"side\":\"buy\",\"type\":\"limit\",\"lots\":1,\"tif\":\"gtc\",\"limitPrice\":\"%s\"}"
+                        .formatted(step + random.nextInt(3), random.nextInt(5), blindPrice(random));
+            default ->
+                "{\"seenStep\":%d,\"paperIndex\":%d,\"side\":\"buy\",\"type\":\"limit\",\"lots\":%d,\"tif\":\"day\",\"limitPrice\":\"%s\"}"
+                        .formatted(step, paper, random.nextBoolean() ? 1 : 5000, blindPrice(random));
+        };
+    }
+
+    /** Цена слепой шкалы: от 90 до 130; рубли в тестовом воркере вдвое больше. */
+    private static String blindPrice(Random random) {
+        return "%d.%02d".formatted(90 + random.nextInt(40), random.nextInt(100));
+    }
+
+    /**
+     * Ответ слепой сессии любого вида (200, отказ, ошибка): только поля слепых схем и тел ошибок; ни тикера, ни реальной
+     * даты или времени; все цены — в слепой шкале (рубли тестового воркера вдвое больше).
+     */
+    private void assertBlindStrict(JsonNode node, List<String> secids, LocalDate start, String raw) {
+        Set<String> keys = new HashSet<>();
+        collectKeys(node, keys);
+        Set<String> allowed = new HashSet<>(BLIND_KEYS);
+        allowed.addAll(PROBLEM_KEYS);
+        assertThat(keys).as(raw).isSubsetOf(allowed);
+        for (String secid : secids) {
+            assertThat(raw.toUpperCase(Locale.ROOT)).as(raw).doesNotContain(secid);
+        }
+        assertThat(raw).doesNotContain(start.toString()).doesNotContain("T00:").doesNotContain("500000");
+        assertPrices(node, raw);
+        List<String> texts = new ArrayList<>();
+        collectTexts(node, texts);
+        for (String text : texts) {
+            if (UUID_TEXT.matcher(text).matches()) {
+                continue;
+            }
+            assertThat(DATE.matcher(text).find()).as("дата в «%s»", text).isFalse();
+            assertThat(TIME.matcher(text).find()).as("время в «%s»", text).isFalse();
+        }
+    }
+
+    private void assertPrices(JsonNode node, String raw) {
+        if (node.isObject()) {
+            for (String name : node.propertyNames()) {
+                JsonNode child = node.get(name);
+                if (PRICE_KEYS.contains(name) && child.isString()) {
+                    assertThat(new BigDecimal(child.asString()))
+                            .as("%s в %s", name, raw)
+                            .isLessThan(new BigDecimal("150"));
+                }
+                assertPrices(child, raw);
+            }
+        } else if (node.isArray()) {
+            node.forEach(child -> assertPrices(child, raw));
+        }
+    }
+
     // ---------- вспомогательное ----------
 
     private UUID createUser(String address) {
@@ -973,18 +1355,22 @@ class ArenaApiTest extends PostgresIntegrationTest {
     }
 
     private UUID newSession(boolean blind) {
+        return newSession(blind, SECIDS, LocalDate.of(2022, 3, 14));
+    }
+
+    private UUID newSession(boolean blind, List<String> secids, LocalDate start) {
         List<PlannedPaper> list = new ArrayList<>();
-        for (int i = 0; i < SECIDS.size(); i++) {
+        for (int i = 0; i < secids.size(); i++) {
             list.add(new PlannedPaper(
-                    Papers.id(SECIDS.get(i)), SECIDS.get(i), "Сектор" + i, 10 + i, new BigDecimal("0.01")));
+                    Papers.id(secids.get(i)), secids.get(i), "Сектор" + i, 10 + i, new BigDecimal("0.01")));
         }
         Snapshot snapshot =
                 new Snapshot(UUID.randomUUID(), UUID.randomUUID().toString(), OffsetDateTime.now(ZoneOffset.UTC), "t");
         LaunchPlan plan = new LaunchPlan(
                 snapshot,
                 blind,
-                LocalDate.of(2022, 3, 14),
-                LocalDate.of(2022, 4, 8),
+                start,
+                start.plusDays(26),
                 20,
                 Regime.CALM,
                 0.123456,

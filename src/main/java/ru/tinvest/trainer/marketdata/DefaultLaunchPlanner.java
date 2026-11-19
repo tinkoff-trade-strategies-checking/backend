@@ -188,7 +188,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
         }
         List<LocalDate> windowDays = windowDays(ctx, window);
         Map<String, List<LocalDate>> actions = archive.corporateActions(key);
-        if (chosen.stream().anyMatch(p -> hasAction(actions, p.secid(), window))) {
+        if (chosen.stream().anyMatch(p -> hasAction(actions, p.secid(), window, warmupStart(ctx, window)))) {
             return LaunchRejection.of(LaunchRejectReason.CORPORATE_ACTION_ON_PERIOD, "paperIds");
         }
         Map<String, Set<LocalDate>> candleDays = archive.candleDays(key, ctx.sourceInterval());
@@ -223,8 +223,10 @@ class DefaultLaunchPlanner implements LaunchPlanner {
         int overLimit = 0;
         for (PeriodWindow window : windows) {
             List<LocalDate> windowDays = windowDays(ctx, window);
+            LocalDate warmupStart = warmupStart(ctx, window);
             List<ArchivePaper> eligible = withSector.stream()
-                    .filter(p -> !hasAction(actions, p.secid(), window) && covers(candleDays, p.secid(), windowDays))
+                    .filter(p -> !hasAction(actions, p.secid(), window, warmupStart)
+                            && covers(candleDays, p.secid(), windowDays))
                     .collect(Collectors.toCollection(ArrayList::new));
             if (eligible.size() < count) {
                 continue;
@@ -272,9 +274,22 @@ class DefaultLaunchPlanner implements LaunchPlanner {
         return dates != null && dates.containsAll(windowDays);
     }
 
-    private static boolean hasAction(Map<String, List<LocalDate>> actions, String secid, PeriodWindow window) {
+    private static boolean hasAction(
+            Map<String, List<LocalDate>> actions, String secid, PeriodWindow window, LocalDate warmupStart) {
         return actions.getOrDefault(secid, List.of()).stream()
-                .anyMatch(d -> !d.isBefore(window.startDate()) && !d.isAfter(window.endDate()));
+                .anyMatch(d -> !d.isBefore(warmupStart) && !d.isAfter(window.endDate()));
+    }
+
+    /**
+     * Начало окна прогрева: торговый день, с которого могут взяться {@link LaunchPlanner#WARMUP_BARS} шагов до начала
+     * периода. Консервативно — по нижней границе числа свечей в дне ({@code Timeframe.minCandlesPerDay}) и с запасом в
+     * один день; не дальше первого дня календаря.
+     */
+    private static LocalDate warmupStart(Context ctx, PeriodWindow window) {
+        int perDay = ctx.request().timeframe().minCandlesPerDay();
+        int warmupDays = (LaunchPlanner.WARMUP_BARS + perDay - 1) / perDay + 1;
+        int from = Collections.binarySearch(ctx.days(), window.startDate());
+        return ctx.days().get(Math.max(0, from - warmupDays));
     }
 
     /** Точное число шагов шкалы сессии по архиву и сравнение с лимитом ручной сессии (на одну бумагу). */

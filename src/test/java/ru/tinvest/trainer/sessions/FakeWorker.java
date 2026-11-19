@@ -5,8 +5,11 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import ru.tinvest.trainer.api.DependencyUnavailableException;
 import ru.tinvest.trainer.worker.PeriodClassification;
 import ru.tinvest.trainer.worker.SimulationWorkerClient;
@@ -48,12 +51,25 @@ final class FakeWorker implements SimulationWorkerClient {
     static final long BASE_TIME_MS = 1_647_241_200_000L; // 2022-03-14T07:00:00Z
 
     volatile boolean down;
+    /** Бумаги без баров до курсора (в раскрытом виде их свечей нет). */
+    volatile Set<String> noBars = Set.of();
+    /** Если задан, {@code replaySession} сообщает о входе в {@code entered} и ждёт {@code gate}. */
+    volatile CountDownLatch entered;
+
+    volatile CountDownLatch gate;
+    volatile Market lastMarket;
+
     final List<List<JournalRecord>> replayJournals = new CopyOnWriteArrayList<>();
     final List<List<JournalRecord>> estimateJournals = new CopyOnWriteArrayList<>();
     final List<OrderParams> estimated = new CopyOnWriteArrayList<>();
 
     void reset() {
         down = false;
+        noBars = Set.of();
+        entered = null;
+        gate = null;
+        lastMarket = null;
+
         replayJournals.clear();
         estimateJournals.clear();
         estimated.clear();
@@ -129,6 +145,8 @@ final class FakeWorker implements SimulationWorkerClient {
     public ReplayResult replaySession(
             Market market, List<JournalRecord> journal, long upToStep, boolean includeHistory, boolean blind) {
         checkUp();
+        lastMarket = market;
+        waitAtGate();
         replayJournals.add(List.copyOf(journal));
         Map<Long, OrderState> orders = new TreeMap<>();
         List<CommandOutcome> outcomes = new ArrayList<>();
@@ -214,6 +232,9 @@ final class FakeWorker implements SimulationWorkerClient {
         if (includeHistory) {
             for (long step = -WARMUP; step <= upToStep; step++) {
                 for (int i = 0; i < market.papers().size(); i++) {
+                    if (noBars.contains(market.papers().get(i).key())) {
+                        continue;
+                    }
                     int day = step < 0 ? 0 : (int) (1 + step / 3);
                     history.add(new BarData(
                             step,
@@ -359,6 +380,22 @@ final class FakeWorker implements SimulationWorkerClient {
                             o.ocoSiblingId(),
                             null,
                             step));
+        }
+    }
+
+    private void waitAtGate() {
+        CountDownLatch g = gate;
+        if (g == null) {
+            return;
+        }
+        entered.countDown();
+        try {
+            if (!g.await(30, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("gate не открыт");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
         }
     }
 

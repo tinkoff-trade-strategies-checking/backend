@@ -854,7 +854,7 @@ components:
         lots: { type: integer, minimum: 1 }
         price: { $ref: '#/components/schemas/Price' }
         amountPct: { $ref: '#/components/schemas/Pct' }
-        costPct: { $ref: '#/components/schemas/Pct' }
+        costPct: { $ref: '#/components/schemas/PctOrNull', description: 'Общие издержки сделки в % капитала считает core (core#54); null, пока core не отдаёт' }
         stopAndTakeSameBar: { type: boolean, description: Стоп и тейк задеты одной свечой — исполнен стоп (INV-3) }
     OpenFill:
       type: object
@@ -877,7 +877,7 @@ components:
         amountPct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
         costPct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
         amount: { $ref: '#/components/schemas/Money' }
-        cost: { $ref: '#/components/schemas/Money' }
+        cost: { $ref: '#/components/schemas/MoneyOrNull', description: 'Общие издержки сделки считает core (core#54); null, пока core не отдаёт' }
         stopAndTakeSameBar: { type: boolean, description: Стоп и тейк задеты одной свечой — исполнен стоп (INV-3) }
     BlindPosition:
       type: object
@@ -936,7 +936,9 @@ components:
       required: [changePct, lastPrice]
       properties:
         changePct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
-        lastPrice: { $ref: '#/components/schemas/Price' }
+        lastPrice:
+          $ref: '#/components/schemas/PriceOrNull'
+          description: 'Close последнего бара до курсора; `null` только у бумаги раскрытой сессии без бара до курсора (заявку на неё ядро отклоняет до первого бара), в слепой сессии такой бумаги в списке нет'
     BlindPaper:
       type: object
       description: |

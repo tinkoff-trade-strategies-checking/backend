@@ -26,6 +26,25 @@ class MarketdataConfigurationTest {
                         String snapshotKey, int windowLength, LocalDate from, LocalDate to, LocalDate startDate) {
                     throw new UnsupportedOperationException();
                 }
+
+                @Override
+                public ru.tinvest.trainer.worker.WorkerTypes.ReplayResult replaySession(
+                        ru.tinvest.trainer.worker.WorkerTypes.Market market,
+                        java.util.List<ru.tinvest.trainer.worker.WorkerTypes.JournalRecord> journal,
+                        long upToStep,
+                        boolean includeHistory,
+                        boolean blind) {
+                    throw new UnsupportedOperationException();
+                }
+
+                @Override
+                public ru.tinvest.trainer.worker.WorkerTypes.EstimateResult estimateOrder(
+                        ru.tinvest.trainer.worker.WorkerTypes.Market market,
+                        java.util.List<ru.tinvest.trainer.worker.WorkerTypes.JournalRecord> journal,
+                        long upToStep,
+                        ru.tinvest.trainer.worker.WorkerTypes.OrderParams order) {
+                    throw new UnsupportedOperationException();
+                }
             });
 
     @Test

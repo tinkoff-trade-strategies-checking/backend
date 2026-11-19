@@ -1,7 +1,6 @@
 package ru.tinvest.trainer.sessions;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -35,9 +34,12 @@ final class ViewFormat {
         return value == null ? null : number(value);
     }
 
-    /** Рубли ({@code Money}): два знака; суммы ядра уже округлены до копейки. */
+    /**
+     * Рубли ({@code Money}): два знака. Суммы ядра уже округлены до копейки; лишний знак — ошибка ядра
+     * ({@link ArithmeticException}), backend не округляет (INV-6, «Кто считает»).
+     */
     static String money(BigDecimal value) {
-        return value.setScale(2, RoundingMode.HALF_UP).toPlainString();
+        return value.setScale(2).toPlainString();
     }
 
     /** Время бара: RFC 3339, секунды всегда. */
@@ -108,6 +110,27 @@ final class ViewFormat {
         };
     }
 
+    /**
+     * Имя поля ядра в имени поля запроса: уровень тейка — {@code takeProfitPrice}, процент трейлинга —
+     * {@code trailingPct}, бумага — {@code paperIndex}/{@code paperId}. {@code null} — поля нет.
+     */
+    static @Nullable String clientField(@Nullable String coreField, List<OrderKind> kinds, boolean blind) {
+        if (coreField == null || coreField.isEmpty()) {
+            return null;
+        }
+        return switch (coreField) {
+            case "limitPrice" ->
+                kinds.contains(OrderKind.TAKE_PROFIT)
+                                && !kinds.contains(OrderKind.LIMIT)
+                                && !kinds.contains(OrderKind.STOP_LIMIT)
+                        ? "takeProfitPrice"
+                        : "limitPrice";
+            case "trailingPercent" -> "trailingPct";
+            case "instrument" -> blind ? "paperIndex" : "paperId";
+            default -> coreField;
+        };
+    }
+
     /** Общие поля заявки ({@code OrderBase}); цены уже в шкале режима. */
     static Map<String, Object> orderBase(
             ArenaState state, OrderState order, BigDecimal[] levels, @Nullable BigDecimal trailingStopLevel) {
@@ -129,7 +152,12 @@ final class ViewFormat {
         out.put("trailingPct", numberOrNull(order.spec().trailingPercent()));
         out.put("trailingStopLevel", numberOrNull(trailingStopLevel));
         out.put("reason", orderReason(order.reason()));
-        out.put("rejectField", order.invalidField().isEmpty() ? null : order.invalidField());
+        out.put(
+                "rejectField",
+                clientField(
+                        order.invalidField(),
+                        List.of(order.spec().kind()),
+                        state.session().blind()));
         return out;
     }
 

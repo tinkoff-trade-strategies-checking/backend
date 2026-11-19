@@ -42,10 +42,8 @@ public interface SimulationWorkerClient {
      * @param blind добавить слепой вид ({@code blindView}); рублёвые поля остаются в ответе и клиенту не уходят
      * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
      */
-    default ReplayResult replaySession(
-            Market market, List<JournalRecord> journal, long upToStep, boolean includeHistory, boolean blind) {
-        throw new UnsupportedOperationException("replaySession не поддержан этой реализацией");
-    }
+    ReplayResult replaySession(
+            Market market, List<JournalRecord> journal, long upToStep, boolean includeHistory, boolean blind);
 
     /**
      * Оценивает заявку по {@code close} последнего бара до курсора, журнал не меняет (INV-8). Для слепых цен
@@ -53,7 +51,5 @@ public interface SimulationWorkerClient {
      *
      * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
      */
-    default EstimateResult estimateOrder(Market market, List<JournalRecord> journal, long upToStep, OrderParams order) {
-        throw new UnsupportedOperationException("estimateOrder не поддержан этой реализацией");
-    }
+    EstimateResult estimateOrder(Market market, List<JournalRecord> journal, long upToStep, OrderParams order);
 }
