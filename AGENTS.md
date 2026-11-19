@@ -64,6 +64,8 @@
 npx -y @redocly/cli@latest lint api/openapi.yaml   # контракт REST и SSE (джоба CI `openapi`)
 ```
 
+INV-10 проверяет `DeployExposureTest` (без Docker): порты публикует только caddy (80, 443), postgres/clickhouse/worker/backend — только в сетях `internal: true`, `Caddyfile` без http-сайтов и `tls off`/`auto_https off`.
+
 Контракт `api/openapi.yaml` — источник для frontend (копия там, клиент — `ng-openapi-gen`). Сначала меняется он, потом код; несовместимое изменение — только с новой версией пути (`/api/v2`). После слияния изменения — PR во frontend с копией (`node scripts/api.mjs sync`), иначе там падает `api:check`.
 
 Локальный запуск против PostgreSQL (профиль `local`):
