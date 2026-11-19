@@ -62,3 +62,15 @@ jobs:
   pr-size:
     if: github.event_name == 'pull_request'
     uses: tinkoff-trade-strategies-checking/.github/.github/workflows/pr-size.yml@main
+
+  # Контракт REST и SSE — источник для frontend (backend#8).
+  openapi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Линтер OpenAPI
+        run: npx -y @redocly/cli@latest lint api/openapi.yaml
