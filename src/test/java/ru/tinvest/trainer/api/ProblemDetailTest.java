@@ -128,6 +128,8 @@ class ProblemDetailTest {
             }
             org.assertj.core.api.Assertions.assertThat(appender.list)
                     .noneMatch(e -> e.getLevel().isGreaterOrEqual(ch.qos.logback.classic.Level.WARN));
+            // тот же обрыв вне потока SSE — обычная ошибка сервера
+            mockMvc.perform(get("/api/test/io-gone-json")).andExpect(status().isInternalServerError());
             // обычная ошибка ввода-вывода остаётся ошибкой сервера
             mockMvc.perform(get("/api/test/io-other"))
                     .andExpect(status().isInternalServerError())
@@ -194,6 +196,11 @@ class ProblemDetailTest {
         @GetMapping(path = "/sse-async", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
         void sseAsync() throws Exception {
             throw new org.springframework.web.context.request.async.AsyncRequestNotUsableException("gone");
+        }
+
+        @GetMapping("/io-gone-json")
+        void ioGoneJson() throws java.io.IOException {
+            throw new java.io.IOException("Broken pipe");
         }
 
         @GetMapping("/io-other")

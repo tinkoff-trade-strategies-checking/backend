@@ -93,6 +93,13 @@ final class ClickHouseArchiveCatalog implements ArchiveCatalog {
         return list;
     }
 
+    @Override
+    public boolean hasBenchmark(String snapshotKey) {
+        return !rows("SELECT 1 FROM securities WHERE snapshot_id = '" + uuid(snapshotKey)
+                        + "' AND secid = 'IMOEX' LIMIT 1")
+                .isEmpty();
+    }
+
     private boolean hasNameColumn() {
         if (!hasNameColumn) {
             hasNameColumn = !rows("SELECT 1 FROM system.columns WHERE database = currentDatabase() "

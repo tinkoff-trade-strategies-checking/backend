@@ -556,12 +556,12 @@ class PlayerApiTest extends PostgresIntegrationTest {
     @Test
     void snapshotLastEventIdSplitsPastFromFutureForTheStream() throws Exception {
         UUID id = newSession(false);
-        assertThat(body(httpGet(id, "")).get("lastEventId").isNull()).isTrue();
+        assertThat(body(httpGet(id, "")).get("lastEventId").asString()).isEqualTo("0");
 
         body(play(id, "step", null, null));
         body(play(id, "step", null, null));
         JsonNode snapshot = body(httpGet(id, ""));
-        long last = snapshot.get("lastEventId").asLong();
+        long last = Long.parseLong(snapshot.get("lastEventId").asString());
         assertThat(last).isEqualTo(2);
 
         // событие после снимка приходит в поток с Last-Event-ID = lastEventId, события до снимка — нет

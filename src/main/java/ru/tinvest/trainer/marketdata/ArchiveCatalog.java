@@ -32,6 +32,14 @@ interface ArchiveCatalog {
 
     List<ArchivePaper> securities(String snapshotKey);
 
+    /**
+     * В {@code securities} снапшота есть строка бенчмарка IMOEX: воркер требует её для отчёта и {@code ClassifyPeriods}.
+     * Снапшоты импортёра до версии схемы 3 её не содержат.
+     */
+    default boolean hasBenchmark(String snapshotKey) {
+        return true;
+    }
+
     /** Для каждой бумаги — даты (МСК), в которые есть свечи интервала {@code intervalSec}. */
     Map<String, Set<LocalDate>> candleDays(String snapshotKey, int intervalSec);
 

@@ -56,18 +56,30 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Обрыв соединения клиентом (закрыл вкладку, EventSource переподключился, сеть пропала): отвечать некому, а у
+     * Обрыв соединения клиентом у потока SSE (закрыл вкладку, EventSource переподключился, сеть пропала): отвечать некому, а у
      * потока {@code text/event-stream} тело {@code ProblemDetail} писать нельзя. Не ошибка сервера: DEBUG и пустой ответ.
      * {@link AsyncRequestNotUsableException} уже обрабатывает {@link ResponseEntityExceptionHandler} (пустой ответ).
      * Прочие {@link IOException} — обычная необработанная ошибка.
      */
     @ExceptionHandler(IOException.class)
-    ResponseEntity<ProblemDetail> handleIo(IOException ex) {
-        if (isClientGone(ex)) {
+    ResponseEntity<ProblemDetail> handleIo(
+            IOException ex,
+            jakarta.servlet.http.HttpServletRequest request,
+            jakarta.servlet.http.HttpServletResponse response) {
+        if (isEventStream(request, response) && isClientGone(ex)) {
             log.debug("Клиент оборвал соединение: {}", ex.getMessage());
             return ResponseEntity.ok().build();
         }
         return ResponseEntity.internalServerError().body(handleUnexpected(ex));
+    }
+
+    /** Ответ — поток SSE: тип уже выставлен эмиттером или клиент просил {@code text/event-stream}. */
+    private static boolean isEventStream(
+            jakarta.servlet.http.HttpServletRequest request, jakarta.servlet.http.HttpServletResponse response) {
+        String type = response.getContentType();
+        String accept = request.getHeader(HttpHeaders.ACCEPT);
+        return (type != null && type.startsWith("text/event-stream"))
+                || (accept != null && accept.contains("text/event-stream"));
     }
 
     private static boolean isClientGone(Throwable ex) {

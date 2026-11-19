@@ -121,6 +121,13 @@ class ClickHouseArchiveCatalogTest {
     }
 
     @Test
+    void benchmarkRowIsDetectedPerSnapshot() {
+        assertThat(catalog(url()).hasBenchmark(SNAP)).isTrue();
+        // снапшот без строки IMOEX (загружен импортёром до версии схемы 3)
+        assertThat(catalog(url()).hasBenchmark(OTHER)).isFalse();
+    }
+
+    @Test
     void securitiesOfSnapshot() {
         var list = catalog(url()).securities(SNAP);
         // строка бенчмарка IMOEX в securities есть, в каталог бумаг для торговли не входит

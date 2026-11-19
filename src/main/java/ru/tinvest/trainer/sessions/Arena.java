@@ -85,16 +85,24 @@ class Arena {
 
     /** Снимок на текущем шаге; курсор не двигает. */
     Map<String, Object> snapshot(UUID sessionId) {
-        // под блокировкой сессии: состояние и номер последнего события согласованы (клиент открывает SSE с ним)
-        return commands.readLocked(sessionId, session -> {
-            long lastEventId = events.lastEventId(session.id());
-            List<JournalRecord> journal = journals.records(session);
-            ReplayResult replay =
-                    worker.replaySession(market(session), journal, session.currentStep(), true, session.blind());
-            Map<String, Object> out = masking.snapshot(state(session, replay, journals.seenSteps(session.id())));
-            out.put("lastEventId", lastEventId == 0 ? null : lastEventId);
-            return out;
-        });
+        // под блокировкой сессии читается только БД: курсор, журнал до него и номер последнего события согласованы
+        // (клиент открывает SSE с ним); воркер зовётся после снятия блокировки, журнал до курсора неизменен
+        record Locked(SessionRecord session, List<JournalRecord> journal, Map<Long, Long> seen, long lastEventId) {}
+        Locked locked = commands.readLocked(
+                sessionId,
+                session -> new Locked(
+                        session,
+                        journals.records(session),
+                        journals.seenSteps(session.id()),
+                        events.lastEventId(session.id())));
+        SessionRecord session = locked.session();
+        // раскрытая сессия слепого вида у воркера не просит
+        ReplayResult replay = worker.replaySession(
+                market(session), locked.journal(), session.currentStep(), true, !session.revealed());
+        Map<String, Object> out = masking.snapshot(state(session, replay, locked.seen()));
+        // строка, как eventId; 0 — событий ещё не было
+        out.put("lastEventId", Long.toString(locked.lastEventId()));
+        return out;
     }
 
     // ---------- оценка ----------

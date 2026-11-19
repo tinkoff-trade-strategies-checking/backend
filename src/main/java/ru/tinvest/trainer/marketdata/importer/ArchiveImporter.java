@@ -39,8 +39,11 @@ public final class ArchiveImporter {
 
     private static final Logger log = LoggerFactory.getLogger(ArchiveImporter.class);
 
-    /** 2: сектор по наибольшему весу, столбец {@code securities.name}, хэш снапшота (backend#21). */
-    static final String SCHEMA_VERSION = "2";
+    /**
+     * 3: строка бенчмарка IMOEX в {@code securities} (backend#42). 2: сектор по наибольшему весу, столбец
+     * {@code securities.name}, хэш снапшота (backend#21).
+     */
+    static final String SCHEMA_VERSION = "3";
     /** Версия схемы до backend#21: загрузки с ней докачивать нельзя ({@link #rejectLegacyLoad}). */
     static final String LEGACY_SCHEMA_VERSION = "1";
 
