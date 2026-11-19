@@ -58,7 +58,7 @@ final class OpenViews {
 
         List<Object> fills = new ArrayList<>();
         for (FillState fill : replay.fills()) {
-            fills.add(fill(state, fill, index, replay));
+            fills.add(fill(state, fill, index, replay.history()));
         }
         List<Object> orders = new ArrayList<>();
         for (OrderState order : replay.orders()) {
@@ -75,20 +75,21 @@ final class OpenViews {
     }
 
     /** Результат шага раскрытой сессии ({@code OpenStepResult}); правила набора — {@link BlindMasking#stepResult}. */
-    static Map<String, Object> stepResult(ArenaState state, long fromStep) {
-        ReplayResult replay = state.replay();
-        ViewFormat.StepIndex index = new ViewFormat.StepIndex();
-        replay.history().forEach(b -> index.add(b.step(), b.tradingDay()));
-        index.build();
+    static Map<String, Object> stepResult(
+            ArenaState state, long fromStep, List<BarData> bars, Map<Long, int[]> positions, int day) {
+        ViewFormat.StepIndex index = ViewFormat.StepIndex.of(positions);
         long step = state.step();
 
-        Map<String, Object> bars = new LinkedHashMap<>();
+        Map<String, List<Object>> candles = new LinkedHashMap<>();
         Map<String, BigDecimal> lastClose = new HashMap<>();
-        for (BarData bar : replay.history()) {
+        List<BarData> batch = bars.stream()
+                .filter(b -> b.step() > fromStep && b.step() <= step)
+                .sorted(java.util.Comparator.comparingLong(BarData::step))
+                .toList();
+        for (BarData bar : batch) {
             lastClose.put(bar.paperKey(), bar.close());
-            if (bar.step() == step) {
-                bars.put(paper(state, bar.paperKey()).paperId().toString(), candle(bar, index.at(step)[1]));
-            }
+            candles.computeIfAbsent(paper(state, bar.paperKey()).paperId().toString(), k -> new ArrayList<>())
+                    .add(candle(bar, index.at(bar.step())[1]));
         }
         Map<String, Object> paperStats = new LinkedHashMap<>();
         for (PaperRecord paper : state.session().papers()) {
@@ -101,18 +102,18 @@ final class OpenViews {
             paperStats.put(paper.paperId().toString(), stat);
         }
         List<Object> fills = new ArrayList<>();
-        for (FillState fill : replay.fills()) {
+        for (FillState fill : state.replay().fills()) {
             if (fill.step() > fromStep && fill.step() <= step) {
-                fills.add(fill(state, fill, index, replay));
+                fills.add(fill(state, fill, index, batch));
             }
         }
         List<Object> orders = new ArrayList<>();
         for (OrderState order : ViewFormat.changedOrders(state, fromStep)) {
             orders.add(order(state, order));
         }
-        Map<String, Object> out = ViewFormat.stepBase(state, index.at(step)[0]);
+        Map<String, Object> out = ViewFormat.stepBase(state, day);
         out.put("mode", "OPEN");
-        out.put("bars", bars);
+        out.put("bars", candles);
         out.put("paperStats", paperStats);
         out.put("portfolio", portfolio(state));
         out.put("fills", fills);
@@ -176,19 +177,17 @@ final class OpenViews {
     }
 
     private static Map<String, Object> fill(
-            ArenaState state, FillState fill, ViewFormat.StepIndex index, ReplayResult replay) {
-        OrderState order = replay.orders().stream()
+            ArenaState state, FillState fill, ViewFormat.StepIndex index, List<BarData> bars) {
+        OrderState order = state.replay().orders().stream()
                 .filter(o -> o.id() == fill.orderId())
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("Исполнение без заявки в состоянии сессии"));
         int[] position = index.at(fill.step());
-        long openedAt = replay.history().stream()
+        long openedAt = bars.stream()
                 .filter(b -> b.step() == fill.step())
                 .filter(b -> b.paperKey().equals(fill.paperKey()))
                 .findFirst()
-                .or(() -> replay.history().stream()
-                        .filter(b -> b.step() == fill.step())
-                        .findFirst())
+                .or(() -> bars.stream().filter(b -> b.step() == fill.step()).findFirst())
                 .map(BarData::timeUnixMs)
                 .orElseThrow(() -> new IllegalStateException("Исполнение без бара на своём шаге"));
 

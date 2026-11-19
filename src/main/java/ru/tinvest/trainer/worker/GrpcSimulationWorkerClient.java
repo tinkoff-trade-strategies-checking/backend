@@ -22,6 +22,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderParams;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
+import ru.tinvest.trainer.worker.WorkerTypes.StepReplay;
 
 /** Реализация {@link SimulationWorkerClient} на {@link ManagedChannel}. */
 class GrpcSimulationWorkerClient implements SimulationWorkerClient {
@@ -86,6 +87,23 @@ class GrpcSimulationWorkerClient implements SimulationWorkerClient {
                 .setBlind(blind)
                 .build();
         return WorkerMapper.replay(call(() -> stub().replaySession(request)));
+    }
+
+    @Override
+    public StepReplay replaySteps(
+            Market market, List<JournalRecord> journal, long upToStep, long fromStep, boolean blind) {
+        ReplaySessionRequest request = ReplaySessionRequest.newBuilder()
+                .setMarket(WorkerMapper.market(market))
+                .addAllJournal(WorkerMapper.journal(journal))
+                .setUpToStep(upToStep)
+                // ядро отдаёт события шагов с events_from_step включительно: нужны шаги после fromStep
+                .setEventsFromStep(fromStep + 1)
+                .setIncludeHistory(false)
+                .setIncludeReport(false)
+                .setBlind(blind)
+                .build();
+        pac.simulation.v1.ReplaySessionResponse response = call(() -> stub().replaySession(request));
+        return new StepReplay(WorkerMapper.replay(response), WorkerMapper.stepBars(response, fromStep));
     }
 
     @Override

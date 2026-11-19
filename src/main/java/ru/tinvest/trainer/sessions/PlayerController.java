@@ -79,6 +79,11 @@ class PlayerController {
             public void ping() throws Exception {
                 emitter.send(SseEmitter.event().comment("keepalive"));
             }
+
+            @Override
+            public void abort() {
+                emitter.completeWithError(new java.io.IOException("Client is gone or too slow"));
+            }
         });
         emitter.onCompletion(subscription::close);
         emitter.onTimeout(subscription::close);

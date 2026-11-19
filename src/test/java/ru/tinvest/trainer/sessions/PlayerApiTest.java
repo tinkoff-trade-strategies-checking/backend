@@ -121,9 +121,23 @@ class PlayerApiTest extends PostgresIntegrationTest {
 
         final List<Event> received = new CopyOnWriteArrayList<>();
         volatile boolean broken;
+        volatile boolean aborted;
+        volatile boolean entered;
+        /** Если задан, {@code send} ждёт его (клиент завис: TCP-буфер полон). */
+        volatile java.util.concurrent.CountDownLatch block;
+
+        @Override
+        public void abort() {
+            aborted = true;
+        }
 
         @Override
         public void send(long eventId, String type, String data) throws Exception {
+            entered = true;
+            java.util.concurrent.CountDownLatch latch = block;
+            if (latch != null) {
+                latch.await(30, java.util.concurrent.TimeUnit.SECONDS);
+            }
             if (broken) {
                 throw new java.io.IOException("клиент ушёл");
             }
@@ -238,7 +252,9 @@ class PlayerApiTest extends PostgresIntegrationTest {
         assertThat(result.get("step").asInt()).isEqualTo(1);
         assertThat(result.get("bars")).hasSize(SECIDS.size());
         for (String paperId : result.get("bars").propertyNames()) {
-            assertThat(result.get("bars").get(paperId).get("step").asInt()).isEqualTo(1);
+            assertThat(result.get("bars").get(paperId)).hasSize(1);
+            assertThat(result.get("bars").get(paperId).get(0).get("step").asInt())
+                    .isEqualTo(1);
         }
         assertThat(step(id)).isEqualTo(1);
         // остальные действия stepResult не возвращают
@@ -419,7 +435,7 @@ class PlayerApiTest extends PostgresIntegrationTest {
         // следующее событие или пульс не доходит: подписка снята, дальше — пять секунд без подписчиков
         timer.advance(Duration.ofSeconds(2));
         assertThat(events.subscribers(id)).isZero();
-        timer.advance(Duration.ofSeconds(5));
+        timer.advance(Duration.ofSeconds(6));
 
         assertThat(playing(id)).isFalse();
         assertThat(pausedReasons(id)).containsExactly("disconnect");
@@ -467,9 +483,8 @@ class PlayerApiTest extends PostgresIntegrationTest {
         timer.advance(Duration.ofSeconds(10));
         assertThat(step(id)).isEqualTo(1);
         assertThat(body(httpGet(id, "")).get("playing").asBoolean()).isFalse();
-        JsonNode last = lastStored(id);
-        assertThat(lastStoredType(id)).isEqualTo("player");
-        assertThat(last.get("playing").asBoolean()).isFalse();
+        assertThat(pausedReasons(id)).containsExactly("restart");
+        assertThat(lastStoredType(id)).isEqualTo("paused");
     }
 
     // ---------- поток событий ----------
@@ -608,8 +623,12 @@ class PlayerApiTest extends PostgresIntegrationTest {
                     long eventStep = data.get("result").get("step").asLong();
                     // каждое событие шага содержит свечи только своего шага и исполнения не дальше него
                     JsonNode result = data.get("result");
-                    for (JsonNode bar : result.get("bars")) {
-                        assertThat(bar.get("step").asLong()).isEqualTo(eventStep);
+                    for (JsonNode candles : result.get("bars")) {
+                        for (JsonNode bar : candles) {
+                            assertThat(bar.get("step").asLong())
+                                    .isLessThanOrEqualTo(eventStep)
+                                    .isGreaterThan(previousStep);
+                        }
                     }
                     for (JsonNode fill : result.get("fills")) {
                         assertThat(fill.get("step").asLong()).isLessThanOrEqualTo(eventStep);
@@ -790,7 +809,335 @@ class PlayerApiTest extends PostgresIntegrationTest {
                 .isEqualTo(id.toString());
     }
 
+    // ---------- пачка шагов, история не нужна ----------
+
+    @Test
+    void batchStepEventCarriesEveryCandleOfTheBatchWithoutHistory() throws Exception {
+        UUID id = newSession(false);
+        Collector collector = subscribe(id, null);
+        body(play(id, "speed", 10, null));
+        body(play(id, "play", null, null));
+
+        timer.advance(Duration.ofMillis(200));
+
+        assertThat(step(id)).isEqualTo(2);
+        JsonNode result = json.readTree(collector.received.stream()
+                        .filter(e -> e.type().equals("step"))
+                        .findFirst()
+                        .orElseThrow()
+                        .data())
+                .get("result");
+        assertThat(collector.types().stream().filter("step"::equals).count()).isEqualTo(1);
+        assertThat(result.get("step").asInt()).isEqualTo(2);
+        assertThat(result.get("bars")).hasSize(SECIDS.size());
+        for (JsonNode candles : result.get("bars")) {
+            assertThat(candles).hasSize(2);
+            assertThat(candles.get(0).get("step").asInt()).isEqualTo(1);
+            assertThat(candles.get(1).get("step").asInt()).isEqualTo(2);
+            // номера свечи в дне продолжают счёт: шаг 0 — первая свеча первого дня
+            assertThat(candles.get(0).get("candleInDay").asInt()).isEqualTo(2);
+            assertThat(candles.get(1).get("candleInDay").asInt()).isEqualTo(3);
+            assertThat(candles.get(1).get("day").asInt()).isEqualTo(1);
+        }
+        assertThat(result.get("paperStats")).hasSize(SECIDS.size());
+        // такты не тянут историю: полный replay не запрашивался ни на play, ни на такте
+        assertThat(worker.historyCalls.get()).isZero();
+        assertThat(worker.stepCalls.get()).isEqualTo(1);
+    }
+
+    @Test
+    void candleNumberRestartsOnTheNextDayAndBlindBatchesAreArraysByIndex() throws Exception {
+        UUID id = newSession(true);
+        Collector collector = subscribe(id, null);
+        body(play(id, "speed", 5, null));
+        body(play(id, "play", null, null));
+
+        // фейк: день = 1 + шаг / 3, шаг 3 — первая свеча второго дня
+        timer.advance(Duration.ofMillis(600));
+
+        assertThat(step(id)).isEqualTo(3);
+        JsonNode last = lastOfType(collector, "step").get("result");
+        assertThat(last.get("day").asInt()).isEqualTo(2);
+        for (String index : last.get("bars").propertyNames()) {
+            assertThat(index).matches("\\d+");
+            JsonNode candle = last.get("bars").get(index).get(0);
+            assertThat(candle.get("day").asInt()).isEqualTo(2);
+            assertThat(candle.get("candleInDay").asInt()).isEqualTo(1);
+        }
+        assertThat(worker.historyCalls.get()).isZero();
+    }
+
+    // ---------- pause и speed без воркера ----------
+
+    @Test
+    void pauseAndSpeedAnswerWithoutTheWorker() throws Exception {
+        UUID id = newSession(false);
+        subscribe(id, null);
+        // у новой сессии воркер не нужен совсем
+        worker.down = true;
+        JsonNode fresh = body(play(id, "pause", null, null));
+        assertThat(fresh.get("day").asInt()).isEqualTo(1);
+        assertThat(body(play(id, "speed", 5, null)).get("speed").asInt()).isEqualTo(5);
+        worker.down = false;
+
+        body(play(id, "speed", 1, null));
+        body(play(id, "play", null, null));
+        timer.advance(Duration.ofSeconds(4));
+        assertThat(step(id)).isEqualTo(4);
+
+        worker.down = true;
+        JsonNode paused = body(play(id, "pause", null, null));
+        assertThat(paused.get("playing").asBoolean()).isFalse();
+        assertThat(paused.get("step").asInt()).isEqualTo(4);
+        // фейк: день = 1 + шаг / 3
+        assertThat(paused.get("day").asInt()).isEqualTo(2);
+        assertThat(body(play(id, "speed", 10, null)).get("speed").asInt()).isEqualTo(10);
+        // play и повторный pause тоже обходятся без воркера: число шагов и день уже известны
+        assertThat(body(play(id, "play", null, null)).get("playing").asBoolean())
+                .isTrue();
+        assertThat(body(play(id, "pause", null, null)).get("playing").asBoolean())
+                .isFalse();
+        assertThat(pausedReasons(id)).containsExactly("user", "user");
+    }
+
+    // ---------- I2: подписка во время записи событий ----------
+
+    @Test
+    void subscribingWhileEventsAreWrittenNeverReplaysTheHistory() throws Exception {
+        UUID id = newSession(false);
+        for (int i = 0; i < 40; i++) {
+            events.reportReady(id);
+        }
+        java.util.concurrent.atomic.AtomicBoolean stop = new java.util.concurrent.atomic.AtomicBoolean();
+        Thread writer = Thread.ofPlatform().start(() -> {
+            while (!stop.get()) {
+                events.reportReady(id);
+            }
+        });
+        try {
+            for (int i = 0; i < 300; i++) {
+                long before = events.lastEventId(id);
+                Collector collector = new Collector();
+                SessionEvents.Subscription subscription = events.subscribe(id, null, collector);
+                subscription.close();
+                for (Collector.Event event : collector.received) {
+                    assertThat(event.id()).as("получено событие из прошлого").isGreaterThan(before);
+                }
+            }
+        } finally {
+            stop.set(true);
+            writer.join();
+        }
+    }
+
+    // ---------- I1: медленный клиент ----------
+
+    @Test
+    void hangingClientDoesNotBlockOthersAndIsDroppedByTheWatchdog() throws Exception {
+        timer.asyncExecute = true;
+        UUID slow = newSession(false);
+        UUID other = newSession(false);
+        Collector hanging = new Collector();
+        hanging.block = new java.util.concurrent.CountDownLatch(1);
+        open.add(events.subscribe(slow, null, hanging));
+        Collector healthy = subscribe(other, null);
+
+        body(play(slow, "step", null, null));
+        awaitTrue(() -> hanging.entered);
+        // событие зависшего клиента отправляется на своём потоке, остальные сессии не ждут
+        body(play(other, "step", null, null));
+        body(play(other, "step", null, null));
+        awaitTrue(() -> healthy.types().size() == 2);
+        assertThat(healthy.types()).containsExactly("step", "step");
+
+        // пульс идёт, а отправка висит дольше двух периодов пульса: подписка снимается, поток обрывается
+        timer.advance(Duration.ofSeconds(7));
+        assertThat(events.subscribers(slow)).isZero();
+        assertThat(hanging.aborted).isTrue();
+        assertThat(events.subscribers(other)).isEqualTo(1);
+        hanging.block.countDown();
+    }
+
+    // ---------- I3: «нет подписчиков» ----------
+
+    @Test
+    void secondDisconnectAfterAReconnectPausesToo() throws Exception {
+        UUID id = newSession(false);
+        SessionEvents.Subscription first = subscribeHandle(id, null);
+        body(play(id, "play", null, null));
+        first.close();
+        timer.advance(Duration.ofSeconds(2));
+
+        SessionEvents.Subscription second = subscribeHandle(id, null);
+        timer.advance(Duration.ofSeconds(1));
+        second.close();
+        timer.advance(Duration.ofSeconds(6));
+
+        assertThat(playing(id)).isFalse();
+        assertThat(step(id)).isEqualTo(8);
+        assertThat(status(id)).isEqualTo("running");
+        assertThat(pausedReasons(id)).containsExactly("disconnect");
+    }
+
+    // ---------- I4: такты разных сессий независимы ----------
+
+    @Test
+    void slowSessionDoesNotStopTheTicksOfOthers() throws Exception {
+        timer.asyncExecute = true;
+        UUID slow = newSession(false);
+        UUID fast = newSession(false);
+        subscribe(slow, null);
+        subscribe(fast, null);
+        body(play(slow, "play", null, null));
+        body(play(fast, "play", null, null));
+        worker.slowSnapshot = sessions.reload(slow).snapshotId().toString();
+        worker.slowEntered = new java.util.concurrent.CountDownLatch(1);
+        worker.slowGate = new java.util.concurrent.CountDownLatch(1);
+
+        timer.advance(Duration.ofSeconds(1));
+        assertThat(worker.slowEntered.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                .isTrue();
+        awaitTrue(() -> step(fast) == 1);
+        timer.advance(Duration.ofSeconds(1));
+        awaitTrue(() -> step(fast) == 2);
+
+        // медленная сессия стоит на своём такте и не копит параллельные такты
+        assertThat(step(slow)).isZero();
+        assertThat(worker.stepCalls.get()).isEqualTo(3);
+        worker.slowGate.countDown();
+        awaitTrue(() -> step(slow) >= 1);
+        assertThat(playing(slow)).isTrue();
+    }
+
+    // ---------- I6: состояние в БД и таймер ----------
+
+    @Test
+    void playWhilePlayingInTheDatabaseButWithoutATimerRestartsTheTimer() throws Exception {
+        UUID id = newSession(false);
+        subscribe(id, null);
+        jdbc.sql("INSERT INTO sessions.player_state (session_id, playing) VALUES (:id, true) "
+                        + "ON CONFLICT (session_id) DO UPDATE SET playing = true")
+                .param("id", id)
+                .update();
+        assertThat(timer.pendingGameTasks()).isZero();
+
+        assertThat(body(play(id, "play", null, null)).get("playing").asBoolean())
+                .isTrue();
+        timer.advance(Duration.ofSeconds(2));
+
+        assertThat(step(id)).isEqualTo(2);
+    }
+
+    @Test
+    void failedPauseKeepsBothTheStateAndTheTimer() throws Exception {
+        UUID id = newSession(false);
+        subscribe(id, null);
+        body(play(id, "play", null, null));
+        timer.advance(Duration.ofSeconds(1));
+        jdbc.sql(
+                        "CREATE OR REPLACE FUNCTION sessions.test_fail_player() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION "
+                                + "'тест: сбой записи' USING ERRCODE = 'integrity_constraint_violation'; END; $$ LANGUAGE plpgsql")
+                .update();
+        jdbc.sql("CREATE TRIGGER test_fail_player BEFORE UPDATE ON sessions.player_state FOR EACH ROW "
+                        + "EXECUTE FUNCTION sessions.test_fail_player()")
+                .update();
+        try {
+            assertThat(play(id, "pause", null, null).getResponse().getStatus()).isEqualTo(500);
+        } finally {
+            jdbc.sql("DROP TRIGGER test_fail_player ON sessions.player_state").update();
+        }
+
+        // пауза откатилась: игра идёт и таймер на месте
+        assertThat(playing(id)).isTrue();
+        timer.advance(Duration.ofSeconds(2));
+        assertThat(step(id)).isEqualTo(3);
+        assertThat(pausedReasons(id)).isEmpty();
+    }
+
+    @Test
+    void leftoverTimerOfAPausedSessionRemovesItselfWithoutMovingTheCursor() throws Exception {
+        UUID id = newSession(false);
+        subscribe(id, null);
+        body(play(id, "play", null, null));
+        timer.advance(Duration.ofSeconds(1));
+        jdbc.sql("UPDATE sessions.player_state SET playing = false WHERE session_id = :id")
+                .param("id", id)
+                .update();
+
+        timer.advance(Duration.ofSeconds(3));
+
+        assertThat(step(id)).isEqualTo(1);
+        assertThat(timer.pendingGameTasks()).isZero();
+    }
+
+    @Test
+    void pauseThenPlayLeavesTheNewTimerRunning() throws Exception {
+        UUID id = newSession(false);
+        subscribe(id, null);
+        body(play(id, "play", null, null));
+        timer.advance(Duration.ofSeconds(1));
+
+        body(play(id, "pause", null, null));
+        body(play(id, "play", null, null));
+        timer.advance(Duration.ofSeconds(2));
+
+        assertThat(step(id)).isEqualTo(3);
+        assertThat(timer.pendingGameTasks()).isEqualTo(1);
+    }
+
+    // ---------- хранение событий ----------
+
+    @Test
+    void cleanupDeletesOldEventsOfFinishedSessionsOnly() throws Exception {
+        UUID finished = newSession(false);
+        UUID live = newSession(false);
+        body(httpPost(finished, "/finish", ""));
+        for (UUID id : new UUID[] {finished, live}) {
+            jdbc.sql("INSERT INTO sessions.session_event (session_id, event_id, type, payload, created_at) "
+                            + "VALUES (:id, 1000, 'report_ready', '{}'::jsonb, now() - interval '48 hours')")
+                    .param("id", id)
+                    .update();
+        }
+        long freshBefore = eventCount(finished, "finished");
+
+        int deleted = events.cleanup();
+
+        assertThat(deleted).isEqualTo(1);
+        assertThat(eventCount(finished, "report_ready")).isZero();
+        assertThat(eventCount(live, "report_ready")).isEqualTo(1);
+        // свежие события завершённой сессии остаются
+        assertThat(eventCount(finished, "finished")).isEqualTo(freshBefore).isEqualTo(1);
+    }
+
+    @Test
+    void eventsOfARunningSessionCannotBeDeletedOrChanged() throws Exception {
+        UUID id = newSession(false);
+        body(play(id, "step", null, null));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> jdbc.sql("DELETE FROM sessions.session_event WHERE session_id = :id")
+                                .param("id", id)
+                                .update())
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> jdbc.sql("UPDATE sessions.session_event SET type = 'step' WHERE session_id = :id")
+                                .param("id", id)
+                                .update())
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(eventCount(id, "step")).isEqualTo(1);
+    }
+
     // ---------- вспомогательное ----------
+
+    private static void awaitTrue(java.util.function.BooleanSupplier condition) throws InterruptedException {
+        long end = System.currentTimeMillis() + 10_000;
+        while (!condition.getAsBoolean()) {
+            if (System.currentTimeMillis() > end) {
+                throw new AssertionError("условие не выполнилось за 10 с");
+            }
+            Thread.sleep(20);
+        }
+    }
 
     private Collector subscribe(UUID id, Long lastEventId) {
         Collector collector = new Collector();
@@ -889,11 +1236,6 @@ class PlayerApiTest extends PostgresIntegrationTest {
                 .reduce((a, b) -> b)
                 .map(e -> json.readTree(e.data()))
                 .orElseThrow(() -> new AssertionError("нет события " + type + " среди " + collector.types()));
-    }
-
-    private JsonNode lastStored(UUID id) {
-        List<String> bodies = storedBodies(id);
-        return json.readTree(bodies.get(bodies.size() - 1));
     }
 
     private String lastStoredType(UUID id) {

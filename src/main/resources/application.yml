@@ -29,6 +29,9 @@ lab:
     disconnect-pause-after: 5s
     min-tick: 200ms
     heartbeat: 2s
+    event-retention: 24h
+    max-concurrent-ticks: 8
+    max-concurrent-sends: 256
 
 worker:
   address: ${WORKER_ADDRESS:localhost:50051}

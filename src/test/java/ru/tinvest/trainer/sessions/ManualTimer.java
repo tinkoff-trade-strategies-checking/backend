@@ -55,14 +55,22 @@ final class ManualTimer implements PlayerTimer {
         return t;
     }
 
+    /** Включает выполнение {@link #execute} на виртуальных потоках: тест с «медленной» сессией. */
+    volatile boolean asyncExecute;
+
     @Override
     public void execute(Runnable task) {
-        task.run();
+        if (asyncExecute) {
+            Thread.startVirtualThread(task);
+        } else {
+            task.run();
+        }
     }
 
     /** Задачи, созданные при старте контекста (пульс потока), остаются; остальные снимаются перед каждым тестом. */
     synchronized void reset() {
         baseline = true;
+        asyncExecute = false;
         tasks.removeIf(t -> !t.permanent);
     }
 

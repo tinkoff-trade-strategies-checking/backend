@@ -18,6 +18,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.BlindPaperData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindPositionData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindViewData;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderState;
+import ru.tinvest.trainer.worker.WorkerTypes.StepBars;
 
 /**
  * Единственная точка маскирования ответов сессии (INV-1, INV-7; {@code architecture.md}). Всё, что уходит клиенту о
@@ -174,28 +175,38 @@ class BlindMasking {
 
     // ---------- плеер и события ----------
 
+    /** Результат шага ({@code StepResult}) по режиму сессии; свечи пачки — из событий шагов воркера. */
+    Map<String, Object> stepResult(
+            ArenaState state, long fromStep, StepBars steps, Map<Long, int[]> positions, int day) {
+        return state.session().blind()
+                ? stepResult(state, fromStep, steps.blindBars(), positions, day)
+                : OpenViews.stepResult(state, fromStep, steps.bars(), positions, day);
+    }
+
     /**
-     * Результат шага ({@code StepResult}) на курсоре: свеча курсора, исполнения и заявки, изменившиеся после шага
-     * {@code fromStep} (исключительно), портфель и статистика на курсоре. За одну пачку шагов (быстрая скорость) события
-     * одно — на последнем шаге пачки; промежуточные исполнения и заявки в нём есть, промежуточных свечей нет.
+     * Результат шага ({@code StepResult}) на курсоре: свечи всех шагов пачки {@code (fromStep; курсор]} по бумагам
+     * (массив на бумагу, шаги по возрастанию), исполнения и заявки, изменившиеся за пачку, портфель на курсоре. Статистика
+     * ({@code paperStats}) — по бумагам, у которых в пачке есть свеча. {@code positions} — день и номер свечи в дне шагов
+     * пачки, {@code day} — день курсора.
      */
-    Map<String, Object> stepResult(ArenaState state, long fromStep) {
+    Map<String, Object> stepResult(
+            ArenaState state, long fromStep, List<BlindBarData> bars, Map<Long, int[]> positions, int day) {
         if (!state.session().blind()) {
-            return OpenViews.stepResult(state, fromStep);
+            throw new IllegalStateException("stepResult слепого вида вызван для раскрытой сессии");
         }
         BlindViewData view = blindView(state);
-        ViewFormat.StepIndex index = new ViewFormat.StepIndex();
-        view.history().forEach(b -> index.add(b.step(), b.tradingDay()));
-        index.build();
+        ViewFormat.StepIndex index = ViewFormat.StepIndex.of(positions);
         long step = state.step();
 
-        Map<String, Object> bars = new LinkedHashMap<>();
+        Map<String, List<Object>> candles = new LinkedHashMap<>();
         Map<Integer, BigDecimal> lastClose = new HashMap<>();
-        for (BlindBarData bar : view.history()) {
+        for (BlindBarData bar : bars.stream()
+                .filter(b -> b.step() > fromStep && b.step() <= step)
+                .sorted(java.util.Comparator.comparingLong(BlindBarData::step))
+                .toList()) {
             lastClose.put(bar.index(), bar.close());
-            if (bar.step() == step) {
-                bars.put(Integer.toString(bar.index()), blindCandle(bar, index.at(step)[1]));
-            }
+            candles.computeIfAbsent(Integer.toString(bar.index()), k -> new ArrayList<>())
+                    .add(blindCandle(bar, index.at(bar.step())[1]));
         }
         Map<String, Object> paperStats = new LinkedHashMap<>();
         for (BlindPaperData paper : view.papers()) {
@@ -217,9 +228,9 @@ class BlindMasking {
         for (OrderState order : ViewFormat.changedOrders(state, fromStep)) {
             orders.add(blindOrder(state, view, order));
         }
-        Map<String, Object> out = ViewFormat.stepBase(state, index.at(step)[0]);
+        Map<String, Object> out = ViewFormat.stepBase(state, day);
         out.put("mode", "BLIND");
-        out.put("bars", bars);
+        out.put("bars", candles);
         out.put("paperStats", paperStats);
         out.put("portfolio", blindPortfolio(view));
         out.put("fills", fills);
@@ -227,16 +238,21 @@ class BlindMasking {
         return out;
     }
 
-    /** Состояние плеера ({@code PlayerState}); {@code stepResult} — только у действия {@code step}. */
-    Map<String, Object> playerState(ArenaState state, @Nullable Map<String, Object> stepResult) {
+    /**
+     * Состояние плеера ({@code PlayerState}); {@code stepResult} — только у действия {@code step}. Строится из строки
+     * сессии и состояния плеера, воркер не нужен.
+     */
+    Map<String, Object> playerState(
+            SessionRecord session, PlayerStates.Row player, int day, @Nullable Map<String, Object> stepResult) {
+        boolean finished = !"running".equals(session.status());
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("sessionId", state.session().id());
-        out.put("playing", state.player().playing() && !ViewFormat.isFinished(state));
-        out.put("speed", state.player().speed());
-        out.put("step", state.step());
-        out.put("day", day(state));
-        out.put("finished", ViewFormat.isFinished(state));
-        out.put("mode", state.session().blind() ? "BLIND" : "OPEN");
+        out.put("sessionId", session.id());
+        out.put("playing", player.playing() && !finished);
+        out.put("speed", player.speed());
+        out.put("step", session.currentStep());
+        out.put("day", day);
+        out.put("finished", finished);
+        out.put("mode", session.blind() ? "BLIND" : "OPEN");
         out.put("stepResult", stepResult);
         return out;
     }
@@ -245,7 +261,7 @@ class BlindMasking {
      * Итог сессии ({@code FinishResult}): причина, шаг и день завершения, портфель и заявки. Слепая сессия и после
      * завершения отвечает слепым видом: раскрытие — в отчёте и воспроизведении.
      */
-    Map<String, Object> finishResult(ArenaState state, String endReason) {
+    Map<String, Object> finishResult(ArenaState state, String endReason, int day) {
         List<Object> orders = new ArrayList<>();
         Map<String, Object> portfolio;
         if (state.session().blind()) {
@@ -264,7 +280,7 @@ class BlindMasking {
         out.put("sessionId", state.session().id());
         out.put("endReason", endReason);
         out.put("finishedAtStep", state.step());
-        out.put("finishedAtDay", day(state));
+        out.put("finishedAtDay", day);
         out.put("mode", state.session().blind() ? "BLIND" : "OPEN");
         out.put("portfolio", portfolio);
         out.put("orders", orders);
@@ -318,12 +334,6 @@ class BlindMasking {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("result", finishResult);
         return out;
-    }
-
-    private static int day(ArenaState state) {
-        ViewFormat.StepIndex index = new ViewFormat.StepIndex();
-        state.replay().history().forEach(b -> index.add(b.step(), b.tradingDay()));
-        return index.build().at(state.step())[0];
     }
 
     private static Map<String, Object> blindCandle(BlindBarData bar, int candleInDay) {

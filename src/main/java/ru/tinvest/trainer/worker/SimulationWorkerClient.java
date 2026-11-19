@@ -8,6 +8,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderParams;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
+import ru.tinvest.trainer.worker.WorkerTypes.StepReplay;
 
 /** Клиент Simulation Worker по gRPC. Единственная точка обращения других модулей к воркеру. */
 public interface SimulationWorkerClient {
@@ -44,6 +45,17 @@ public interface SimulationWorkerClient {
      */
     ReplayResult replaySession(
             Market market, List<JournalRecord> journal, long upToStep, boolean includeHistory, boolean blind);
+
+    /**
+     * Воспроизводит журнал до курсора без истории и отдаёт свечи шагов {@code (fromStep; upToStep]} из событий шагов
+     * ядра: такт плеера не тянет всю историю на каждый шаг.
+     *
+     * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
+     */
+    default StepReplay replaySteps(
+            Market market, List<JournalRecord> journal, long upToStep, long fromStep, boolean blind) {
+        throw new UnsupportedOperationException("replaySteps");
+    }
 
     /**
      * Оценивает заявку по {@code close} последнего бара до курсора, журнал не меняет (INV-8). Для слепых цен

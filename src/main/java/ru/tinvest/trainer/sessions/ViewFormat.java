@@ -212,6 +212,13 @@ final class ViewFormat {
 
         private final TreeMap<Long, Integer> days = new TreeMap<>();
 
+        /** Индекс по готовым позициям шагов: {@code шаг -> [день, свеча в дне]} (шаги пачки плеера). */
+        static StepIndex of(Map<Long, int[]> positions) {
+            StepIndex index = new StepIndex();
+            index.byStep.putAll(positions);
+            return index;
+        }
+
         /** Добавляет шаг с бара; порядок добавления не важен, нумерацию считает {@link #build()}. */
         void add(long step, int tradingDay) {
             days.put(step, tradingDay);
