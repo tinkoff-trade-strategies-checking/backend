@@ -17,3 +17,8 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER snapshot_immutable
     BEFORE UPDATE OR DELETE ON marketdata.snapshot
     FOR EACH ROW EXECUTE FUNCTION marketdata.reject_snapshot_change();
+
+-- TRUNCATE не вызывает row-триггеры, нужен отдельный statement-триггер.
+CREATE TRIGGER snapshot_no_truncate
+    BEFORE TRUNCATE ON marketdata.snapshot
+    FOR EACH STATEMENT EXECUTE FUNCTION marketdata.reject_snapshot_change();

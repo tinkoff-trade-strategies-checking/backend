@@ -44,6 +44,16 @@ class StrategyVersionImmutabilityTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void truncateIsRejected() {
+        StrategyVersion v = versions.publish(UUID.randomUUID(), "buy()", "{}");
+
+        assertThatThrownBy(() -> jdbc.sql("TRUNCATE workshop.strategy_version").update())
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("INV-5");
+        assertThat(versions.find(v.id())).isPresent();
+    }
+
+    @Test
     void newVersionIsCreatedWithNextNumberAndOldStaysIntact() {
         UUID strategy = UUID.randomUUID();
         StrategyVersion first = versions.publish(strategy, "buy()", "{\"a\":1}");

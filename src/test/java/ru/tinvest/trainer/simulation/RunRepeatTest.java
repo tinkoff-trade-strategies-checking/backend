@@ -6,6 +6,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import ru.tinvest.trainer.PostgresIntegrationTest;
 import ru.tinvest.trainer.api.NotFoundException;
 import ru.tinvest.trainer.marketdata.Snapshot;
@@ -18,6 +20,9 @@ class RunRepeatTest extends PostgresIntegrationTest {
 
     @Autowired
     private Runs runs;
+
+    @Autowired
+    private JdbcClient jdbc;
 
     @Autowired
     private StrategyVersions versions;
@@ -41,6 +46,33 @@ class RunRepeatTest extends PostgresIntegrationTest {
         assertThat(repeated.strategyVersionId()).isEqualTo(v1.id());
         assertThat(repeated.snapshotId()).isEqualTo(snap.id());
         assertThat(repeated.repeatOfRunId()).isEqualTo(original.id());
+    }
+
+    @Test
+    void runReferencesCannotBeChanged() {
+        StrategyVersion v = versions.publish(UUID.randomUUID(), "buy()", "{}");
+        Snapshot snap = snapshots.register("snap-" + UUID.randomUUID(), "");
+        Run run = runs.create(v.id(), snap.id());
+
+        assertThatThrownBy(() -> jdbc.sql("UPDATE simulation.run SET snapshot_id = :n WHERE id = :id")
+                        .param("n", UUID.randomUUID())
+                        .param("id", run.id())
+                        .update())
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("INV-5");
+        assertThatThrownBy(() -> jdbc.sql("UPDATE simulation.run SET strategy_version_id = :n WHERE id = :id")
+                        .param("n", UUID.randomUUID())
+                        .param("id", run.id())
+                        .update())
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("INV-5");
+        assertThatThrownBy(() -> jdbc.sql("UPDATE simulation.run SET repeat_of_run_id = :n WHERE id = :id")
+                        .param("n", run.id())
+                        .param("id", run.id())
+                        .update())
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("INV-5");
+        assertThat(runs.find(run.id()).orElseThrow().snapshotId()).isEqualTo(snap.id());
     }
 
     @Test

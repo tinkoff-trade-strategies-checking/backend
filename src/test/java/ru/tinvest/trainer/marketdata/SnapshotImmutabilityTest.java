@@ -32,6 +32,16 @@ class SnapshotImmutabilityTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void truncateIsRejected() {
+        Snapshot s = snapshots.register("snap-" + UUID.randomUUID(), "");
+
+        assertThatThrownBy(() -> jdbc.sql("TRUNCATE marketdata.snapshot").update())
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("INV-5");
+        assertThat(snapshots.find(s.id())).isPresent();
+    }
+
+    @Test
     void deleteIsRejected() {
         Snapshot s = snapshots.register("snap-" + UUID.randomUUID(), "");
 
