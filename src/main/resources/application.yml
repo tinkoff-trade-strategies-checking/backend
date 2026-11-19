@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: trainer-backend
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/trainer}
+    username: ${DB_USERNAME:trainer}
+    password: ${DB_PASSWORD:trainer}
+  flyway:
+    enabled: true
+  mvc:
+    problemdetails:
+      enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
