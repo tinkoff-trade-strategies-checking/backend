@@ -28,6 +28,7 @@ class CachingArchiveCatalogTest {
         final AtomicInteger candleDays = new AtomicInteger();
         final AtomicInteger actions = new AtomicInteger();
         final AtomicInteger steps = new AtomicInteger();
+        final AtomicInteger maxPerDay = new AtomicInteger();
         volatile boolean isReady;
 
         @Override
@@ -70,6 +71,12 @@ class CachingArchiveCatalogTest {
         public int sessionSteps(String k, int s, int t, Collection<String> c, List<LocalDate> days) {
             return steps.incrementAndGet();
         }
+
+        @Override
+        public Map<Integer, Integer> maxStepsPerDay(String k, int source, List<Integer> steps) {
+            maxPerDay.incrementAndGet();
+            return Map.of();
+        }
     }
 
     @Test
@@ -85,6 +92,10 @@ class CachingArchiveCatalogTest {
         }
         cache.candleDays("a", 300);
         cache.tradingDays("b");
+        cache.maxStepsPerDay("a", 60, List.of(60, 300));
+        cache.maxStepsPerDay("a", 60, List.of(60, 300));
+        cache.maxStepsPerDay("a", 60, List.of(60));
+        assertThat(delegate.maxPerDay).hasValue(2);
         assertThat(delegate.days).hasValue(2);
         assertThat(delegate.intervals).hasValue(1);
         assertThat(delegate.securities).hasValue(1);

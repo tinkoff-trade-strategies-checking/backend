@@ -2,6 +2,7 @@ package ru.tinvest.trainer.marketdata;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
@@ -56,4 +57,12 @@ public interface LaunchPlanner {
 
     /** Шаги свечей, для которых в архиве есть данные; {@code null} — последний готовый снапшот. */
     List<Timeframe> availableTimeframes(@Nullable UUID snapshotId);
+
+    /**
+     * Для каждого доступного шага — наибольшая длительность в торговых днях, при которой шагов шкалы сессии заведомо не
+     * больше лимита ({@code max-bars}): оценка консервативная, по наибольшему числу шагов за день в архиве снапшота
+     * по всем бумагам. Дни и порядок — как у {@link #availableTimeframes}; пограничные случаи решает отказ
+     * {@code TOO_MANY_BARS} при запуске. Нет данных за день у шага — {@code max-bars}.
+     */
+    Map<Timeframe, Integer> maxDurations(@Nullable UUID snapshotId);
 }

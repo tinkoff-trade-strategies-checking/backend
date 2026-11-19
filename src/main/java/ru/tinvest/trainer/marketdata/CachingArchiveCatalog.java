@@ -170,4 +170,12 @@ final class CachingArchiveCatalog implements ArchiveCatalog {
             List<LocalDate> windowDays) {
         return delegate.sessionSteps(snapshotKey, sourceIntervalSec, stepSec, secids, windowDays);
     }
+
+    @Override
+    public Map<Integer, Integer> maxStepsPerDay(String snapshotKey, int sourceIntervalSec, List<Integer> stepSecs) {
+        return memo(
+                snapshotKey,
+                "maxStepsPerDay:" + sourceIntervalSec + ":" + stepSecs,
+                () -> delegate.maxStepsPerDay(snapshotKey, sourceIntervalSec, stepSecs));
+    }
 }

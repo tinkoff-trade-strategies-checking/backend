@@ -364,6 +364,49 @@ class LaunchPlannerTest {
     }
 
     @Test
+    void maxDurationsAreConservativeByMostStepsPerDayAndOnlyForAvailableTimeframes() {
+        archive.intervals = Set.of(60);
+        archive.maxPerDay = Map.of(60, 815, 300, 163, 600, 82, 900, 55, 3600, 14, 86400, 1);
+        var limits = planner.maxDurations(null);
+        assertThat(limits.keySet()).containsExactly(Timeframe.values());
+        assertThat(limits)
+                .containsEntry(Timeframe.M1, 6)
+                .containsEntry(Timeframe.M5, 30)
+                .containsEntry(Timeframe.M10, 60)
+                .containsEntry(Timeframe.M15, 90)
+                .containsEntry(Timeframe.H1, 357)
+                .containsEntry(Timeframe.D1, 5000);
+        // граница: ровно 5000 шагов укладываются, 5001 — нет
+        archive.maxPerDay = Map.of(60, 100, 300, 100, 600, 100, 900, 100, 3600, 100, 86400, 3);
+        assertThat(planner.maxDurations(null)).containsEntry(Timeframe.D1, 1666).containsEntry(Timeframe.M1, 50);
+        // один проход на источник свечей и все шаги сразу
+        assertThat(archive.maxPerDayCalls).isEqualTo(2);
+        assertThat(archive.lastMaxPerDaySource).isEqualTo(60);
+        assertThat(archive.lastMaxPerDaySteps).containsExactlyInAnyOrder(60, 300, 600, 900, 3600, 86400);
+
+        // недоступные шаги не попадают; готовые дневные свечи — отдельный источник
+        archive.intervals = Set.of(86400, 3600);
+        archive.maxPerDay = Map.of(3600, 14, 86400, 1);
+        assertThat(planner.maxDurations(null).keySet()).containsExactly(Timeframe.H1, Timeframe.D1);
+        // нет данных по шагу за день — лимит, а не деление на ноль
+        archive.maxPerDay = Map.of();
+        assertThat(planner.maxDurations(null)).containsEntry(Timeframe.D1, 5000);
+    }
+
+    @Test
+    void maxDurationsMatchWhatTheLaunchAccepts() {
+        archive.intervals = Set.of(60);
+        archive.maxPerDay = Map.of(600, 82);
+        int allowed = planner.maxDurations(null).get(Timeframe.M10);
+        assertThat(allowed).isEqualTo(60);
+        // 60 дней × 82 шага = 4920 укладывается, 120 дней — нет (ранний отсев по нижней границе 53 × 120 = 6360)
+        assertThat(allowed * 82).isLessThanOrEqualTo(5000);
+        assertThat((allowed + 1) * 82).isGreaterThan(5000);
+        var m10 = new LaunchRequest(120, Timeframe.M10, Regime.CALM, StartMode.RANDOM, null, 2, null, CAPITAL);
+        assertThat(rejection(planner.plan(m10)).reason()).isEqualTo(LaunchRejectReason.TOO_MANY_BARS);
+    }
+
+    @Test
     void contractCodesOfEnums() {
         assertThat(Timeframe.fromCode("15m")).contains(Timeframe.M15);
         assertThat(Timeframe.fromCode("1d")).contains(Timeframe.D1);
@@ -489,6 +532,10 @@ class LaunchPlannerTest {
         int steps = 100;
         int lastStepSec;
         List<String> lastStepPapers;
+        Map<Integer, Integer> maxPerDay = Map.of();
+        int maxPerDayCalls;
+        int lastMaxPerDaySource;
+        List<Integer> lastMaxPerDaySteps;
         List<LocalDate> lastStepDays;
         int stepCalls;
         java.util.function.Function<List<LocalDate>, Integer> stepsFor;
@@ -572,6 +619,14 @@ class LaunchPlannerTest {
             lastStepDays = windowDays;
             stepCalls++;
             return stepsFor != null ? stepsFor.apply(windowDays) : steps;
+        }
+
+        @Override
+        public Map<Integer, Integer> maxStepsPerDay(String snapshotKey, int sourceIntervalSec, List<Integer> stepSecs) {
+            maxPerDayCalls++;
+            lastMaxPerDaySource = sourceIntervalSec;
+            lastMaxPerDaySteps = stepSecs;
+            return maxPerDay;
         }
     }
 }

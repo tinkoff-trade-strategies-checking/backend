@@ -6,7 +6,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -112,6 +114,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
         for (int interval : archive.intervals(key)) {
             archive.candleDays(key, interval);
         }
+        maxDurations(null);
     }
 
     @Override
@@ -128,6 +131,30 @@ class DefaultLaunchPlanner implements LaunchPlanner {
         return Arrays.stream(Timeframe.values())
                 .filter(t -> intervals.contains(t.seconds()) || intervals.contains(BASE_INTERVAL_SEC))
                 .toList();
+    }
+
+    @Override
+    public Map<Timeframe, Integer> maxDurations(@Nullable UUID snapshotId) {
+        String key = resolveSnapshot(snapshotId).snapshotKey();
+        Set<Integer> intervals = archive.intervals(key);
+        Map<Timeframe, Integer> result = new LinkedHashMap<>();
+        // шаги группируем по источнику свечей: один проход по свечам на источник
+        Map<Integer, List<Timeframe>> bySource = new LinkedHashMap<>();
+        for (Timeframe t : availableTimeframes(snapshotId)) {
+            int source = intervals.contains(t.seconds()) ? t.seconds() : BASE_INTERVAL_SEC;
+            bySource.computeIfAbsent(source, k -> new ArrayList<>()).add(t);
+        }
+        Map<Timeframe, Integer> perDay = new HashMap<>();
+        bySource.forEach((source, frames) -> {
+            Map<Integer, Integer> steps = archive.maxStepsPerDay(
+                    key, source, frames.stream().map(Timeframe::seconds).toList());
+            frames.forEach(t -> perDay.put(t, steps.getOrDefault(t.seconds(), 0)));
+        });
+        for (Timeframe t : availableTimeframes(snapshotId)) {
+            int steps = perDay.get(t);
+            result.put(t, steps <= 0 ? maxBars : maxBars / steps);
+        }
+        return result;
     }
 
     private record Context(

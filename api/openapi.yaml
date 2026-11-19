@@ -705,11 +705,20 @@ components:
         maxBars: { type: integer }
     LaunchOptions:
       type: object
-      required: [durations, defaultDuration, availableTimeframes, defaultTimeframe, regimes, defaultRegime, capitalPresets, defaultCapital, backgroundAlgorithmName, minPapers, maxPapers, defaultPaperCount, executionRules]
+      required: [durations, defaultDuration, availableTimeframes, maxDurationDaysByTimeframe, defaultTimeframe, regimes, defaultRegime, capitalPresets, defaultCapital, backgroundAlgorithmName, minPapers, maxPapers, defaultPaperCount, executionRules]
       properties:
         durations: { type: array, items: { type: integer, enum: [20, 60, 120, 250] } }
         defaultDuration: { type: integer, enum: [20, 60, 120, 250] }
         availableTimeframes: { type: array, items: { $ref: '#/components/schemas/Timeframe' } }
+        maxDurationDaysByTimeframe:
+          type: object
+          description: |
+            Для каждого шага из `availableTimeframes` — наибольшая длительность в торговых днях, при которой шагов
+            шкалы сессии заведомо не больше `executionRules.maxBars`. Оценка консервативная, по наибольшему числу
+            шагов за день в архиве. Длительности из `durations` больше этого значения экран выключает; пограничные
+            случаи решает отказ `TOO_MANY_BARS` при запуске.
+          propertyNames: { $ref: '#/components/schemas/Timeframe' }
+          additionalProperties: { type: integer, minimum: 0 }
         defaultTimeframe: { $ref: '#/components/schemas/Timeframe' }
         regimes: { type: array, items: { $ref: '#/components/schemas/Regime' } }
         defaultRegime: { $ref: '#/components/schemas/Regime' }

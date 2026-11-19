@@ -185,6 +185,17 @@ class ClickHouseArchiveCatalogTest {
     }
 
     @Test
+    void maxStepsPerDayIsTheBusiestMoscowDayOverAllPapersInOnePass() {
+        var c = catalog(url());
+        // дни МСК: 04.03 — SBER 07:00 и 20:49 (23:49 МСК), GAZP 07:00; 05.03 — SBER 00:00 МСК; 06.03 — GAZP; 10.03 —
+        // SBER
+        var limits = c.maxStepsPerDay(SNAP, 60, List.of(60, 3600, 86400));
+        assertThat(limits).containsEntry(60, 2).containsEntry(3600, 2).containsEntry(86400, 1);
+        assertThat(c.maxStepsPerDay(SNAP, 300, List.of(300))).containsEntry(300, 0);
+        assertThat(c.maxStepsPerDay(SNAP, 60, List.of())).isEmpty();
+    }
+
+    @Test
     void clientErrorFromClickHouseIsNotReportedAsUnavailable() {
         var c = new ClickHouseArchiveCatalog(HTTP, url(), "no_such_db", "ttsc", "secret", Duration.ofSeconds(10));
         assertThatThrownBy(() -> c.isReady(SNAP)).isInstanceOf(IllegalStateException.class);

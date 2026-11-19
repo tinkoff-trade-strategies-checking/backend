@@ -45,4 +45,11 @@ interface ArchiveCatalog {
             int stepSec,
             Collection<String> secids,
             List<LocalDate> windowDays);
+
+    /**
+     * Для каждого шага из {@code stepSecs} — наибольшее за торговый день число шагов шкалы (разных начал свечей шага,
+     * собранных из свечей {@code sourceIntervalSec}) по объединению всех бумаг снапшота: верхняя оценка для любого
+     * набора бумаг. Один проход по свечам на все шаги; дни — даты МСК.
+     */
+    Map<Integer, Integer> maxStepsPerDay(String snapshotKey, int sourceIntervalSec, List<Integer> stepSecs);
 }

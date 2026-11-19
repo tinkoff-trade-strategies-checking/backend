@@ -120,9 +120,7 @@ final class ClickHouseArchiveCatalog implements ArchiveCatalog {
             return 0;
         }
         // Торговый день — дата МСК: границы по ts_open (первичный ключ), все сессии дня внутри.
-        String bucket = stepSec >= 86400
-                ? "toDate(ts_open, " + MSK + ")"
-                : "toStartOfInterval(ts_open, INTERVAL " + stepSec + " SECOND)";
+        String bucket = bucket(stepSec);
         String list = secids.stream().map(ClickHouseArchiveCatalog::quote).collect(Collectors.joining(", "));
         LocalDate from = windowDays.getFirst();
         LocalDate to = windowDays.getLast();
@@ -178,5 +176,37 @@ final class ClickHouseArchiveCatalog implements ArchiveCatalog {
             Thread.currentThread().interrupt();
             throw new DependencyUnavailableException("Запрос к ClickHouse прерван", e);
         }
+    }
+
+    private static String bucket(int stepSec) {
+        return stepSec >= 86400
+                ? "toDate(ts_open, " + MSK + ")"
+                : "toStartOfInterval(ts_open, INTERVAL " + stepSec + " SECOND)";
+    }
+
+    @Override
+    public Map<Integer, Integer> maxStepsPerDay(String snapshotKey, int sourceIntervalSec, List<Integer> stepSecs) {
+        if (stepSecs.isEmpty()) {
+            return Map.of();
+        }
+        StringBuilder inner = new StringBuilder();
+        StringBuilder outer = new StringBuilder();
+        for (int i = 0; i < stepSecs.size(); i++) {
+            inner.append(", uniqExact(")
+                    .append(bucket(stepSecs.get(i)))
+                    .append(") AS s")
+                    .append(i);
+            outer.append(i == 0 ? "" : ", ").append("max(s").append(i).append(")");
+        }
+        List<String[]> r = rows("SELECT " + outer + " FROM (SELECT toDate(ts_open, " + MSK + ") AS d" + inner
+                + " FROM candles WHERE snapshot_id = '" + uuid(snapshotKey) + "' AND interval_sec = "
+                + sourceIntervalSec
+                + " AND secid != 'IMOEX' GROUP BY d)");
+        Map<Integer, Integer> result = new HashMap<>();
+        for (int i = 0; i < stepSecs.size(); i++) {
+            // пустой архив: max по пустому набору даёт 0
+            result.put(stepSecs.get(i), r.isEmpty() ? 0 : Integer.parseInt(r.getFirst()[i]));
+        }
+        return result;
     }
 }

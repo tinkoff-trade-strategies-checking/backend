@@ -1,7 +1,9 @@
 package ru.tinvest.trainer.marketdata;
 
 import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -34,10 +36,13 @@ class LaunchCatalogController {
     @GetMapping("/launch/options")
     LaunchOptionsResponse options() {
         MarketdataProperties.Execution e = properties.execution();
+        Map<String, Integer> maxDurations = new LinkedHashMap<>();
+        planner.maxDurations(null).forEach((timeframe, days) -> maxDurations.put(timeframe.code(), days));
         return new LaunchOptionsResponse(
                 LaunchPlanner.DURATIONS.stream().sorted().toList(),
                 LaunchPlanner.DEFAULT_DURATION,
-                planner.availableTimeframes(null).stream().map(Timeframe::code).toList(),
+                maxDurations.keySet().stream().toList(),
+                maxDurations,
                 Timeframe.D1.code(),
                 List.of(Regime.CALM.code(), Regime.MEDIUM.code(), Regime.STRESS.code()),
                 Regime.MEDIUM.code(),
@@ -82,6 +87,7 @@ class LaunchCatalogController {
             List<Integer> durations,
             int defaultDuration,
             List<String> availableTimeframes,
+            Map<String, Integer> maxDurationDaysByTimeframe,
             String defaultTimeframe,
             List<String> regimes,
             String defaultRegime,

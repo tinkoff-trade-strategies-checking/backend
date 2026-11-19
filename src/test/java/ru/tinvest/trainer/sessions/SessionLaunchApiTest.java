@@ -384,7 +384,8 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
 
     @Test
     void launchOptionsFollowContract() throws Exception {
-        planner.timeframes = List.of(Timeframe.H1, Timeframe.D1);
+        planner.maxDurations.put(Timeframe.H1, 357);
+        planner.maxDurations.put(Timeframe.D1, 5000);
 
         mockMvc.perform(get("/api/v1/launch/options").session(session))
                 .andExpect(status().isOk())
@@ -393,6 +394,8 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.defaultDuration").value(60))
                 .andExpect(jsonPath("$.availableTimeframes[0]").value("1h"))
                 .andExpect(jsonPath("$.availableTimeframes[1]").value("1d"))
+                .andExpect(jsonPath("$.maxDurationDaysByTimeframe['1h']").value(357))
+                .andExpect(jsonPath("$.maxDurationDaysByTimeframe['1d']").value(5000))
                 .andExpect(jsonPath("$.defaultTimeframe").value("1d"))
                 .andExpect(jsonPath("$.regimes[2]").value("stress"))
                 .andExpect(jsonPath("$.capitalPresets[0]").value("100000.00"))
@@ -586,6 +589,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
         LaunchRequest lastRequest;
         List<PlannedPaper> papers = List.of();
         List<Timeframe> timeframes = List.of(Timeframe.D1);
+        java.util.Map<Timeframe, Integer> maxDurations = new java.util.LinkedHashMap<>();
 
         void reset() {
             result = null;
@@ -593,6 +597,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
             lastRequest = null;
             papers = List.of();
             timeframes = List.of(Timeframe.D1);
+            maxDurations = new java.util.LinkedHashMap<>();
         }
 
         @Override
@@ -617,6 +622,11 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
         @Override
         public List<Timeframe> availableTimeframes(UUID snapshotId) {
             return timeframes;
+        }
+
+        @Override
+        public java.util.Map<Timeframe, Integer> maxDurations(UUID snapshotId) {
+            return maxDurations;
         }
     }
 
