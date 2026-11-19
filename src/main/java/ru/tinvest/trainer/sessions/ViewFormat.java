@@ -166,6 +166,8 @@ public final class ViewFormat {
         SessionRecord session = state.session();
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("sessionId", session.id());
+        // режим запуска: у раскрытой слепой сессии mode = OPEN, а blind остаётся true
+        out.put("blind", session.blind());
         out.put("regime", session.regime().code());
         out.put("step", state.step());
         out.put("totalSteps", state.replay().totalSteps());

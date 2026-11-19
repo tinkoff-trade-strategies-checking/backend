@@ -141,6 +141,7 @@ class ArenaApiTest extends PostgresIntegrationTest {
     private static final Set<String> BLIND_KEYS = Set.of(
             "legs",
             "sessionId",
+            "blind",
             "regime",
             "step",
             "totalSteps",

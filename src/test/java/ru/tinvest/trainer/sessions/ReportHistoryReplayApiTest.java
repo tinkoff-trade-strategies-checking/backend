@@ -137,6 +137,29 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         assertThat(worker.lastMarket.snapshotId()).isNotEqualTo(registered.id().toString());
     }
 
+    // ---------- признак blind ----------
+
+    @Test
+    void snapshotCarriesTheLaunchModeBeforeAndAfterFinish() throws Exception {
+        UUID open = newSession(false);
+        assertThat(body(httpGet("/api/v1/sessions/" + open)).get("blind").asBoolean())
+                .isFalse();
+
+        UUID blind = newSession(true);
+        JsonNode running = body(httpGet("/api/v1/sessions/" + blind));
+        assertThat(running.get("mode").asString()).isEqualTo("BLIND");
+        assertThat(running.get("blind").asBoolean()).isTrue();
+
+        setStep(blind, LAST_STEP);
+        finish(blind, "completed");
+        // слепая сессия раскрыта (mode OPEN), но запущена как слепая: и арена, и воспроизведение отдают blind = true
+        JsonNode revealed = body(httpGet("/api/v1/sessions/" + blind));
+        assertThat(revealed.get("mode").asString()).isEqualTo("OPEN");
+        assertThat(revealed.get("blind").asBoolean()).isTrue();
+        JsonNode replay = body(httpGet("/api/v1/sessions/" + blind + "/replay?step=2"));
+        assertThat(replay.get("snapshot").get("blind").asBoolean()).isTrue();
+    }
+
     // ---------- воспроизведение ----------
 
     @Test
