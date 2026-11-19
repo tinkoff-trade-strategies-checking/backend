@@ -61,7 +61,10 @@
 ./gradlew spotlessApply   # автоформатирование исходников
 ./gradlew test            # модульные и интеграционные тесты (Modulith, ProblemDetail, Testcontainers PostgreSQL)
 ./gradlew build           # полная проверка: формат, компиляция с ErrorProne, тесты, сборка JAR
+npx -y @redocly/cli@latest lint api/openapi.yaml   # контракт REST и SSE (джоба CI `openapi`)
 ```
+
+Контракт `api/openapi.yaml` — источник для frontend (копия там, клиент — `ng-openapi-gen`). Сначала меняется он, потом код; несовместимое изменение — только с новой версией пути (`/api/v2`). После слияния изменения — PR во frontend с копией (`node scripts/api.mjs sync`), иначе там падает `api:check`.
 
 Локальный запуск против PostgreSQL (профиль `local`):
 

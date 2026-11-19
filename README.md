@@ -6,3 +6,4 @@ Backend-приложение проекта «Т-Инвестиции: трен�
 - **Форматирование:** `./gradlew spotlessApply` / `./gradlew spotlessCheck`.
 - **Локальный запуск:** см. раздел «Команды» в `AGENTS.md`.
 - **Архитектура и стандарты:** `AGENTS.md`, `../documentation/architecture.md`, `../home/standards.md`.
+- **Контракт REST и SSE:** [`api/openapi.yaml`](api/openapi.yaml) — источник для frontend; проверка: `npx -y @redocly/cli@latest lint api/openapi.yaml`.
