@@ -646,6 +646,16 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void sectorNamesAreTheOnesApprovedByTheProductOwner() {
+        assertThat(ArchiveImporter.SECTOR_INDEXES)
+                .containsEntry("MOEXCN", "Потребсектор")
+                .containsEntry("MOEXIT", "IT")
+                .containsEntry("MOEXRE", "Недвижимость")
+                .containsEntry("MOEXOG", "Нефть и газ")
+                .hasSize(10);
+    }
+
+    @Test
     void paperOutsideSectorIndexesHasNoSector() {
         assertThat(ArchiveImporter.sectorIndex(java.util.Map.of())).isEmpty();
     }

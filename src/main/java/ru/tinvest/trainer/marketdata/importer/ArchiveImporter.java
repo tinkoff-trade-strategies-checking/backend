@@ -56,11 +56,11 @@ public final class ArchiveImporter {
             Map.entry("MOEXTL", "Телекоммуникации"),
             Map.entry("MOEXMM", "Металлы и добыча"),
             Map.entry("MOEXFN", "Финансы"),
-            Map.entry("MOEXCN", "Потребительский сектор"),
+            Map.entry("MOEXCN", "Потребсектор"),
             Map.entry("MOEXCH", "Химия и нефтехимия"),
             Map.entry("MOEXTN", "Транспорт"),
-            Map.entry("MOEXIT", "Информационные технологии"),
-            Map.entry("MOEXRE", "Строительство и недвижимость"));
+            Map.entry("MOEXIT", "IT"),
+            Map.entry("MOEXRE", "Недвижимость"));
 
     /** Шаг цены не меньше 1e-6 ₽ ({@code decisions.md}, «Деньги и округление», п. 12). */
     private static final BigDecimal MIN_PRICE_STEP = new BigDecimal("0.000001");
