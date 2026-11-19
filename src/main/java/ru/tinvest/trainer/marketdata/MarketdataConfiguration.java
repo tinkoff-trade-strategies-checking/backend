@@ -6,20 +6,21 @@ import java.time.Duration;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Profile;
 import ru.tinvest.trainer.worker.SimulationWorkerClient;
 
 /**
  * Подбор запуска обязателен: без {@code marketdata.clickhouse.url} ({@code MARKETDATA_CLICKHOUSE_URL}) приложение не
- * стартует. Профиль {@code import} (без веба, импорт архива) подбор не использует.
+ * стартует. Без веб-сервера (профили {@code import}, {@code create-user}) подбор не создаётся, как и всё, что
+ * его использует ({@code LaunchService}, контроллеры): они в той же условной цепочке.
  */
 @Configuration(proxyBeanMethods = false)
-@Profile("!import")
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @EnableConfigurationProperties(MarketdataProperties.class)
 class MarketdataConfiguration {
 

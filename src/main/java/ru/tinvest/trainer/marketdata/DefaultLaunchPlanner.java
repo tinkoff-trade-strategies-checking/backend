@@ -187,6 +187,10 @@ class DefaultLaunchPlanner implements LaunchPlanner {
                 .filter(p -> !p.sector().isBlank())
                 .sorted(Comparator.comparing(ArchivePaper::secid))
                 .toList();
+        if (withSector.size() < count) {
+            // дело в числе бумаг, а не в категории: смена категории не поможет (решение лида)
+            return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "paperCount");
+        }
         Map<String, List<LocalDate>> actions = archive.corporateActions(key);
         Map<String, Set<LocalDate>> candleDays = archive.candleDays(key, ctx.sourceInterval());
         int overLimit = 0;

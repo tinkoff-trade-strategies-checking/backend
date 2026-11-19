@@ -1,6 +1,7 @@
 package ru.tinvest.trainer.sessions;
 
 import java.util.UUID;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.stereotype.Service;
 import ru.tinvest.trainer.identity.CurrentUser;
 import ru.tinvest.trainer.marketdata.LaunchPlan;
@@ -11,6 +12,7 @@ import ru.tinvest.trainer.marketdata.LaunchResult;
 
 /** Запуск ручной сессии: подбор периода и бумаг ({@link LaunchPlanner}) и сохранение неизменного плана. */
 @Service
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 class LaunchService {
 
     private final LaunchPlanner planner;

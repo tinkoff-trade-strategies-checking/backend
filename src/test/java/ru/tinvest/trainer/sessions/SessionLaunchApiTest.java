@@ -90,8 +90,6 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        jdbc.sql("TRUNCATE sessions.command_journal, sessions.session_paper, sessions.session")
-                .update();
         planner.reset();
         email = "u" + UUID.randomUUID() + "@example.com";
         userId = createUser(email);
@@ -170,7 +168,9 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
     }
 
     private long sessionCount() {
-        return jdbc.sql("SELECT count(*) FROM sessions.session")
+        // таблицы очистить нельзя (TRUNCATE и DELETE запрещены), поэтому считаем сессии пользователя теста
+        return jdbc.sql("SELECT count(*) FROM sessions.session WHERE user_id = :u")
+                .param("u", userId)
                 .query(Long.class)
                 .single();
     }
@@ -224,7 +224,8 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
                 .query(String.class)
                 .list());
         assertThat(stored).containsExactlyInAnyOrder("SBER", "GAZP", "LKOH");
-        assertThat(jdbc.sql("SELECT count(*) FROM sessions.command_journal")
+        assertThat(jdbc.sql("SELECT count(*) FROM sessions.command_journal WHERE session_id = :id")
+                        .param("id", id)
                         .query(Long.class)
                         .single())
                 .isZero();
@@ -446,10 +447,76 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
                         .param("id", id)
                         .update())
                 .isInstanceOf(DataIntegrityViolationException.class);
-        // допустим только переход статуса
+        // допустим только переход статуса из running
         assertThat(jdbc.sql("UPDATE sessions.session SET status = 'finished_early' WHERE id = :id")
                         .param("id", id)
                         .update())
+                .isEqualTo(1);
+    }
+
+    private UUID launchedSession() throws Exception {
+        planner.result = plan(true, 2);
+        return UUID.fromString(json.readTree(launch(randomBody()).getResponse().getContentAsString())
+                .get("sessionId")
+                .asString());
+    }
+
+    private void setStatus(UUID id, String status) {
+        jdbc.sql("UPDATE sessions.session SET status = :s WHERE id = :id")
+                .param("s", status)
+                .param("id", id)
+                .update();
+    }
+
+    @Test
+    void statusMovesOnlyFromRunningToAFinalOne() throws Exception {
+        for (String target : List.of("completed", "finished_early", "bankrupt")) {
+            UUID id = launchedSession();
+            setStatus(id, target);
+            // из завершённого нельзя ни обратно в running (после раскрытия слепую сессию нельзя продолжить), ни в
+            // другой
+            for (String other : List.of("running", "completed", "finished_early", "bankrupt")) {
+                if (!other.equals(target)) {
+                    assertThatThrownBy(() -> setStatus(id, other))
+                            .as(target + " -> " + other)
+                            .isInstanceOf(DataIntegrityViolationException.class);
+                }
+            }
+            // тот же статус - не переход
+            setStatus(id, target);
+        }
+        assertThatThrownBy(() -> setStatus(launchedSession(), "finished_end"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        UUID running = launchedSession();
+        setStatus(running, "running");
+    }
+
+    @Test
+    void sessionsCannotBeDeletedAndTablesCannotBeTruncated() throws Exception {
+        UUID id = launchedSession();
+        jdbc.sql("INSERT INTO sessions.command_journal (session_id, seq, step, seen_step, command_type, command, "
+                        + "accepted) VALUES (:id, 0, 0, 0, 'place', '{}'::jsonb, true)")
+                .param("id", id)
+                .update();
+
+        assertThatThrownBy(() -> jdbc.sql("DELETE FROM sessions.session WHERE id = :id")
+                        .param("id", id)
+                        .update())
+                .isInstanceOf(DataIntegrityViolationException.class);
+        for (String table : List.of("sessions.session", "sessions.session_paper", "sessions.command_journal")) {
+            // без CASCADE таблицу с внешним ключом отклоняет сама БД, остальные - триггер
+            assertThatThrownBy(() -> jdbc.sql("TRUNCATE " + table).update())
+                    .as(table)
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+            assertThatThrownBy(() -> jdbc.sql("TRUNCATE " + table + " CASCADE").update())
+                    .as(table + " CASCADE")
+                    .isInstanceOf(DataIntegrityViolationException.class);
+        }
+        assertThat(sessionCount()).isPositive();
+        assertThat(jdbc.sql("SELECT count(*) FROM sessions.command_journal WHERE session_id = :id")
+                        .param("id", id)
+                        .query(Long.class)
+                        .single())
                 .isEqualTo(1);
     }
 

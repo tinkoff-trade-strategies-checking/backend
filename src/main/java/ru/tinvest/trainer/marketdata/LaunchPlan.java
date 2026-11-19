@@ -15,7 +15,7 @@ import java.util.List;
  * @param mdd максимальная просадка окна, доля 0..1
  * @param p33 порог «спокойный» по всему снапшоту
  * @param p80 порог «стрессовый» по всему снапшоту
- * @param barsCount оценка числа свечей на бумагу ({@code tradingDays × свечей в день})
+ * @param barsCount точное число шагов общей шкалы сессии в окне по архиву
  */
 public record LaunchPlan(
         Snapshot snapshot,

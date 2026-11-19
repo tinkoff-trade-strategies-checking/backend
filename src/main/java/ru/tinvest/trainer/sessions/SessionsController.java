@@ -5,6 +5,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import ru.tinvest.trainer.api.InvalidRequestException;
+import ru.tinvest.trainer.marketdata.LaunchPlanner;
 import ru.tinvest.trainer.marketdata.LaunchRequest;
 import ru.tinvest.trainer.marketdata.Regime;
 import ru.tinvest.trainer.marketdata.StartMode;
@@ -25,6 +27,8 @@ import ru.tinvest.trainer.marketdata.Timeframe;
 @RequestMapping("/api/v1")
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 class SessionsController {
+
+    private static final Pattern MONEY = Pattern.compile("^-?[0-9]+(\\.[0-9]{1,2})?$");
 
     private final LaunchService launchService;
     private final BlindMasking masking;
@@ -80,12 +84,14 @@ class SessionsController {
                 case "custom" -> StartMode.CUSTOM;
                 default -> throw new InvalidRequestException("startMode is invalid");
             };
-            BigDecimal capital;
-            try {
-                capital = new BigDecimal(initialCapital == null ? "" : initialCapital);
-            } catch (NumberFormatException e) {
-                throw new InvalidRequestException("initialCapital must be a decimal string");
+            if (!LaunchPlanner.DURATIONS.contains(durationDays)) {
+                throw new InvalidRequestException("durationDays must be one of 20, 60, 120, 250");
             }
+            // формат Money контракта: десятичная строка, без экспоненты, знака плюс и не-ASCII цифр
+            if (initialCapital == null || !MONEY.matcher(initialCapital).matches()) {
+                throw new InvalidRequestException("initialCapital must be a decimal string with up to 2 digits");
+            }
+            BigDecimal capital = new BigDecimal(initialCapital);
             return new LaunchRequest(durationDays, tf, r, mode, customStartDate, paperCount, paperIds, capital);
         }
     }

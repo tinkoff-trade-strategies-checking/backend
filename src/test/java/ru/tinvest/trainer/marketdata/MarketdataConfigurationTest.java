@@ -5,13 +5,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.LocalDate;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import ru.tinvest.trainer.worker.PeriodClassification;
 import ru.tinvest.trainer.worker.SimulationWorkerClient;
 
 /** Планировщик обязателен: без {@code MARKETDATA_CLICKHOUSE_URL} приложение не стартует. */
 class MarketdataConfigurationTest {
 
-    private final ApplicationContextRunner runner = new ApplicationContextRunner()
+    private final WebApplicationContextRunner runner = new WebApplicationContextRunner()
             .withUserConfiguration(MarketdataConfiguration.class)
             .withBean(Snapshots.class, () -> new Snapshots(null))
             .withBean(SimulationWorkerClient.class, () -> new SimulationWorkerClient() {
@@ -56,11 +57,14 @@ class MarketdataConfigurationTest {
     }
 
     @Test
-    void importProfileDoesNotNeedPlanner() {
-        runner.withInitializer(ctx -> ctx.getEnvironment().setActiveProfiles("import"))
+    void withoutWebServerThereIsNoPlannerAndNoUrlIsNeeded() {
+        // профили import и create-user: ни планировщика, ни требования к ClickHouse
+        new ApplicationContextRunner()
+                .withUserConfiguration(MarketdataConfiguration.class)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context).doesNotHaveBean(LaunchPlanner.class);
+                    assertThat(context).doesNotHaveBean(ArchiveCatalog.class);
                 });
     }
 }

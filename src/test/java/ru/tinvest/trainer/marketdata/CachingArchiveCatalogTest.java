@@ -127,6 +127,22 @@ class CachingArchiveCatalogTest {
     }
 
     @Test
+    void notReadySnapshotDoesNotDisplaceReadyOne() {
+        var delegate = new Counting();
+        var cache = new CachingArchiveCatalog(delegate, 1, 2);
+        delegate.isReady = true;
+        assertThat(cache.isReady("ready")).isTrue();
+        cache.tradingDays("ready");
+        delegate.isReady = false;
+        for (int i = 0; i < 3; i++) {
+            assertThat(cache.isReady("new")).isFalse();
+        }
+        cache.tradingDays("ready");
+        assertThat(delegate.days).hasValue(1);
+        assertThat(cache.cachedSnapshots()).isEqualTo(1);
+    }
+
+    @Test
     void failureIsNotCachedAndNextCallReadsAgain() {
         var attempts = new AtomicInteger();
         var delegate = new Counting() {

@@ -6,7 +6,7 @@ CREATE TABLE sessions.session (
     user_id         UUID             NOT NULL,
     blind           BOOLEAN          NOT NULL,
     status          TEXT             NOT NULL DEFAULT 'running'
-        CHECK (status IN ('running', 'finished_end', 'finished_early', 'bankrupt')),
+        CHECK (status IN ('running', 'completed', 'finished_early', 'bankrupt')),
     trader_kind     TEXT             NOT NULL CHECK (trader_kind = 'human'),
     duration_days   INTEGER          NOT NULL CHECK (duration_days > 0),
     timeframe       TEXT             NOT NULL CHECK (timeframe IN ('1m', '5m', '10m', '15m', '1h', '1d')),
@@ -57,11 +57,16 @@ CREATE TABLE sessions.command_journal (
     PRIMARY KEY (session_id, seq)
 );
 
--- Параметры и план сессии не меняются: допустим только переход статуса.
+-- Параметры и план сессии не меняются; статус меняется только из running в завершённый (completed, finished_early,
+-- bankrupt), обратно и между завершёнными — нет: иначе после раскрытия слепую сессию можно продолжить (INV-1, INV-7).
 CREATE FUNCTION sessions.reject_session_plan_change() RETURNS trigger AS $$
 BEGIN
     IF (to_jsonb(NEW) - 'status') IS DISTINCT FROM (to_jsonb(OLD) - 'status') THEN
         RAISE EXCEPTION 'INV-5: параметры и план сессии неизменяемы'
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF OLD.status <> 'running' AND NEW.status IS DISTINCT FROM OLD.status THEN
+        RAISE EXCEPTION 'Статус завершённой сессии не меняется (% -> %)', OLD.status, NEW.status
             USING ERRCODE = 'integrity_constraint_violation';
     END IF;
     RETURN NEW;
@@ -87,3 +92,27 @@ CREATE TRIGGER session_paper_immutable
 CREATE TRIGGER command_journal_append_only
     BEFORE UPDATE OR DELETE ON sessions.command_journal
     FOR EACH ROW EXECUTE FUNCTION sessions.reject_immutable_change();
+
+-- Сессию нельзя удалить, таблицы нельзя очистить (INV-5, INV-8): row-триггеры на TRUNCATE не срабатывают.
+CREATE TRIGGER session_no_delete
+    BEFORE DELETE ON sessions.session
+    FOR EACH ROW EXECUTE FUNCTION sessions.reject_immutable_change();
+
+CREATE FUNCTION sessions.reject_truncate() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'INV-5/INV-8: TRUNCATE sessions.% запрещён', TG_TABLE_NAME
+        USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER session_no_truncate
+    BEFORE TRUNCATE ON sessions.session
+    FOR EACH STATEMENT EXECUTE FUNCTION sessions.reject_truncate();
+
+CREATE TRIGGER session_paper_no_truncate
+    BEFORE TRUNCATE ON sessions.session_paper
+    FOR EACH STATEMENT EXECUTE FUNCTION sessions.reject_truncate();
+
+CREATE TRIGGER command_journal_no_truncate
+    BEFORE TRUNCATE ON sessions.command_journal
+    FOR EACH STATEMENT EXECUTE FUNCTION sessions.reject_truncate();

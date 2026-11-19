@@ -56,6 +56,11 @@ final class CachingArchiveCatalog implements ArchiveCatalog {
         return entry;
     }
 
+    private synchronized boolean known(String snapshotKey) {
+        Entry entry = entries.get(snapshotKey);
+        return entry != null && entry.ready;
+    }
+
     /** Снапшотов в кэше (для тестов). */
     synchronized int cachedSnapshots() {
         return entries.size();
@@ -74,6 +79,12 @@ final class CachingArchiveCatalog implements ArchiveCatalog {
             return await(existing);
         }
         try {
+            // поток мог увидеть пустое значение до записи предыдущего владельца и прийти после его inflight.remove
+            Object late = entry.values.get(name);
+            if (late != null) {
+                mine.complete((T) late);
+                return (T) late;
+            }
             T value = loadLimited(load);
             entry.values.put(name, value);
             mine.complete(value);
@@ -114,12 +125,14 @@ final class CachingArchiveCatalog implements ArchiveCatalog {
 
     @Override
     public boolean isReady(String snapshotKey) {
-        Entry entry = entry(snapshotKey);
-        if (entry.ready) {
+        if (known(snapshotKey)) {
             return true;
         }
         boolean value = delegate.isReady(snapshotKey);
-        entry.ready = value;
+        if (value) {
+            // неготовый снапшот в кэше не заводим: он не должен вытеснять данные готового
+            entry(snapshotKey).ready = true;
+        }
         return value;
     }
 

@@ -109,7 +109,7 @@ public class Sessions {
                 .orElseThrow(() -> new NotFoundException("Session not found"));
     }
 
-    Optional<SessionRecord> find(UUID sessionId) {
+    private Optional<SessionRecord> find(UUID sessionId) {
         return jdbc.sql("SELECT * FROM sessions.session WHERE id = :id")
                 .param("id", sessionId)
                 .query((rs, n) -> new SessionRecord(

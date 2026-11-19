@@ -383,8 +383,10 @@ class LaunchPlannerTest {
         worker.onlyCategories = null;
         LaunchPlanner small =
                 new DefaultLaunchPlanner(snapshots, archive, worker, Set.of("A", "B", "NOSECTOR"), 5000, () -> 1L);
-        assertThat(rejection(small.plan(random(Regime.CALM, 3), null, 1L)).reason())
-                .isEqualTo(LaunchRejectReason.NO_MATCHING_PERIOD);
+        // бумаг с сектором меньше, чем просят: смена категории не поможет - INVALID_PARAMS / paperCount
+        LaunchRejection few = rejection(small.plan(random(Regime.CALM, 3), null, 1L));
+        assertThat(few.reason()).isEqualTo(LaunchRejectReason.INVALID_PARAMS);
+        assertThat(few.field()).isEqualTo("paperCount");
         assertThat(small.plan(random(Regime.CALM, 2), null, 1L)).isInstanceOf(LaunchPlan.class);
     }
 

@@ -13,7 +13,6 @@ import ru.tinvest.trainer.PostgresIntegrationTest;
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
-            "marketdata.clickhouse.url=http://localhost:1",
             "spring.profiles.active=create-user",
             "user.email=Cli.User@Example.com",
             "user.password=s3cret-пароль"
