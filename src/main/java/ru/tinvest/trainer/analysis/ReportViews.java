@@ -159,7 +159,13 @@ final class ReportViews {
             out.put("humanCapital", ViewFormat.money(p.equity()));
             out.put("algoCapital", null);
             BigDecimal bench = benchmark.get(p.step());
-            out.put("benchmarkCapital", bench == null ? null : ViewFormat.money(bench));
+            // core отдаёт капитал бенчмарка с точностью Decimal (9 знаков), не до копейки: сквозной тест backend#4
+            // нашёл, что
+            // строгий money() ронял сборку любого отчёта; здесь единственное округление в Java, результат ядра не
+            // меняется
+            out.put(
+                    "benchmarkCapital",
+                    bench == null ? null : ViewFormat.money(bench.setScale(2, RoundingMode.HALF_UP)));
             points.add(out);
         }
         return points;
