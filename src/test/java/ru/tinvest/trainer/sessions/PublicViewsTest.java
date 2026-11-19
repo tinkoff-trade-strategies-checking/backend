@@ -57,6 +57,7 @@ class PublicViewsTest {
                 Regime.CALM,
                 StartMode.CUSTOM,
                 UUID.randomUUID(),
+                "snapshot-key",
                 LocalDate.of(2020, 2, 26),
                 LocalDate.of(2020, 5, 21),
                 20,

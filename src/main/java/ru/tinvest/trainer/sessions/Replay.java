@@ -137,6 +137,7 @@ class Replay {
                 s.regime(),
                 s.startMode(),
                 s.snapshotId(),
+                s.snapshotKey(),
                 s.periodStart(),
                 s.periodEnd(),
                 s.tradingDays(),

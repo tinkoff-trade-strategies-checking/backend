@@ -70,7 +70,15 @@ sourceSets {
     main {
         proto { srcDir("proto") }
     }
+    // Сквозной сценарий с настоящим воркером ядра (backend#4): отдельный набор, в `build` не входит
+    create("e2eTest") {
+        compileClasspath += sourceSets.main.get().output
+        runtimeClasspath += sourceSets.main.get().output
+    }
 }
+
+configurations["e2eTestImplementation"].extendsFrom(configurations.testImplementation.get())
+configurations["e2eTestRuntimeOnly"].extendsFrom(configurations.testRuntimeOnly.get())
 
 spotless {
     java {
@@ -94,4 +102,22 @@ tasks.withType<JavaCompile>().configureEach {
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+}
+
+// ./gradlew e2eTest — нужны Docker и образ воркера (`simulation-worker`, собирается из core, см. AGENTS.md)
+tasks.register<Test>("e2eTest") {
+    description = "Сквозной сценарий и сверка денег с настоящим воркером ядра (Testcontainers)"
+    group = "verification"
+    testClassesDirs = sourceSets["e2eTest"].output.classesDirs
+    classpath = sourceSets["e2eTest"].runtimeClasspath
+    // образ воркера и пр. передаются системными свойствами
+    systemProperty("e2e.worker.image", System.getProperty("e2e.worker.image") ?: "simulation-worker:latest")
+    // результат не кэшируется: тест ходит во внешние контейнеры
+    outputs.upToDateWhen { false }
+    testLogging {
+        events("failed", "skipped")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showStandardStreams = true
+    }
+    shouldRunAfter(tasks.test)
 }

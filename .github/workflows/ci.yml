@@ -58,6 +58,35 @@ jobs:
           done
           exit $status
 
+  # Сквозной сценарий и сверка денег с настоящим воркером ядра (backend#4): образ собирается из core/main
+  # (Dockerfile из core), ClickHouse и PostgreSQL поднимает Testcontainers. В `build` не входит.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: tinkoff-trade-strategies-checking/core
+          path: core
+          fetch-depth: 1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Образ воркера из core
+        uses: docker/build-push-action@v6
+        with:
+          context: core
+          load: true
+          tags: simulation-worker:latest
+          cache-from: type=gha,scope=simulation-worker
+          cache-to: type=gha,mode=max,scope=simulation-worker
+      - name: Сквозные тесты
+        run: ./gradlew e2eTest --no-daemon
+
   # Размер PR в режиме наблюдения: не падает, только предупреждение (home#29).
   pr-size:
     if: github.event_name == 'pull_request'

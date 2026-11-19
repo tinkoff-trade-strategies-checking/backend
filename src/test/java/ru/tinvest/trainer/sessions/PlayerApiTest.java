@@ -3,13 +3,12 @@ package ru.tinvest.trainer.sessions;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static ru.tinvest.trainer.PostgresIntegrationTest.registeredSnapshot;
 
 import jakarta.servlet.http.Cookie;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -1045,7 +1044,7 @@ class PlayerApiTest extends PostgresIntegrationTest {
         subscribe(fast, null);
         body(play(slow, "play", null, null));
         body(play(fast, "play", null, null));
-        worker.slowSnapshot = sessions.reload(slow).snapshotId().toString();
+        worker.slowSnapshot = sessions.reload(slow).snapshotKey();
         worker.slowEntered = new java.util.concurrent.CountDownLatch(1);
         worker.slowGate = new java.util.concurrent.CountDownLatch(1);
 
@@ -1448,8 +1447,7 @@ class PlayerApiTest extends PostgresIntegrationTest {
             list.add(new PlannedPaper(
                     Papers.id(SECIDS.get(i)), SECIDS.get(i), "Сектор" + i, 10 + i, new BigDecimal("0.01")));
         }
-        Snapshot snapshot =
-                new Snapshot(UUID.randomUUID(), UUID.randomUUID().toString(), OffsetDateTime.now(ZoneOffset.UTC), "t");
+        Snapshot snapshot = registeredSnapshot();
         LocalDate start = LocalDate.of(2022, 3, 14);
         LaunchPlan plan = new LaunchPlan(
                 snapshot,

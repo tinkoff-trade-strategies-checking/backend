@@ -70,7 +70,7 @@ class Arena {
             papers.add(new Paper(p.secid(), p.secid(), p.lotSize(), p.priceStep()));
         }
         return new Market(
-                session.snapshotId().toString(),
+                session.snapshotKey(),
                 papers,
                 BarInterval.valueOf(session.timeframe().name()),
                 session.periodStart(),

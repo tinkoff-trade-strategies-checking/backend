@@ -25,6 +25,7 @@ public record SessionRecord(
         Regime regime,
         StartMode startMode,
         UUID snapshotId,
+        String snapshotKey,
         LocalDate periodStart,
         LocalDate periodEnd,
         int tradingDays,

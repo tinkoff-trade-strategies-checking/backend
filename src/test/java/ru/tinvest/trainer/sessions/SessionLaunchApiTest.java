@@ -7,12 +7,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static ru.tinvest.trainer.PostgresIntegrationTest.registeredSnapshot;
 
 import jakarta.servlet.http.Cookie;
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -50,6 +49,7 @@ import ru.tinvest.trainer.marketdata.Papers;
 import ru.tinvest.trainer.marketdata.PlannedPaper;
 import ru.tinvest.trainer.marketdata.Regime;
 import ru.tinvest.trainer.marketdata.Snapshot;
+import ru.tinvest.trainer.marketdata.Snapshots;
 import ru.tinvest.trainer.marketdata.StartMode;
 import ru.tinvest.trainer.marketdata.Timeframe;
 import tools.jackson.databind.JsonNode;
@@ -64,6 +64,9 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
     private static final LocalDate START = LocalDate.of(2022, 3, 14);
     private static final LocalDate END = LocalDate.of(2022, 4, 8);
     private static final List<String> SECIDS = List.of("SBER", "GAZP", "LKOH", "YNDX", "ROSN");
+
+    @Autowired
+    private Snapshots snapshots;
 
     @Autowired
     private MockMvc mockMvc;
@@ -153,8 +156,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
                     new BigDecimal("0.01"),
                     i == 1 ? "" : "Название" + i));
         }
-        Snapshot snapshot =
-                new Snapshot(UUID.randomUUID(), UUID.randomUUID().toString(), OffsetDateTime.now(ZoneOffset.UTC), "t");
+        Snapshot snapshot = registeredSnapshot();
         return new LaunchPlan(
                 snapshot,
                 blind,
@@ -559,7 +561,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
 
     @Test
     void paperIndexOrderIsRandomNotByTicker() {
-        Sessions sessions = new Sessions(jdbc, currentUser, new Random(7));
+        Sessions sessions = new Sessions(jdbc, currentUser, snapshots, new Random(7));
         List<String> byTicker = SECIDS.stream().sorted().toList();
         boolean different = false;
         for (int i = 0; i < 20; i++) {
