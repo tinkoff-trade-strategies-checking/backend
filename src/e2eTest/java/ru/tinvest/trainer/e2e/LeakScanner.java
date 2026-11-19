@@ -1,6 +1,8 @@
 package ru.tinvest.trainer.e2e;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
@@ -27,7 +29,8 @@ final class LeakScanner {
         TIME,
         PRICE,
         CAPITAL,
-        FIELD
+        FIELD,
+        RUBLE
     }
 
     record Leak(Kind kind, String path, String value) {}
@@ -63,19 +66,44 @@ final class LeakScanner {
 
     private static final Pattern DATE = Pattern.compile("\\d{4}-\\d{2}-\\d{2}|\\d{2}\\.\\d{2}\\.\\d{4}");
     private static final Pattern TIME = Pattern.compile("\\d{2}:\\d{2}(:\\d{2})?");
-    private static final Set<String> SERVICE_FIELDS = Set.of("createdat", "title");
+    /** Служебные даты и заголовок слепой сессии допустимы только в своём виде (INV-7, уточнение 18.11.2026). */
+    private static final Pattern BLIND_TITLE = Pattern.compile("Слепая сессия от \\d{2}\\.\\d{2}\\.\\d{4}");
+
+    private static final Pattern OTHER_DATE =
+            Pattern.compile("\\d{4}/\\d{2}/\\d{2}|\\b20\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\b");
+    private static final Pattern MONTH_WORD = Pattern.compile("(?i)(январ|феврал|март|апрел|мая|июн|июл|август|сентябр"
+            + "|октябр|ноябр|декабр|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[а-яa-z]*\\.?[\\s,]*(\\d{1,2}[\\s,]+)?20\\d{2}"
+            + "|\\d{1,2}\\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)");
+    private static final Pattern RUBLE_TEXT = Pattern.compile("(?i)₽|руб");
+
+    /** Поля, где число бывает большим и не деньгами. */
+    private static final Set<String> COUNT_FIELDS = Set.of("lots", "filledlots", "barscount", "maxbars", "status");
+
+    /** Слепое число не бывает больше этого: цены от 100, проценты, шаги, дни; больше — похоже на рубли. */
+    private static final BigDecimal RUBLE_THRESHOLD = new BigDecimal("1000");
 
     private final List<String> tickers;
     private final List<String> names;
     private final Set<BigDecimal> prices = new HashSet<>();
     private final Set<BigDecimal> capitals;
+    private final LocalDate firstDay;
+    private final LocalDate lastDay;
+    private final Set<Long> epochs = new HashSet<>();
 
     LeakScanner(MarketFixture fixture, Set<BigDecimal> capitals) {
         this.tickers = new ArrayList<>(
                 MarketFixture.PAPERS.stream().map(MarketFixture.Paper::secid).toList());
         this.tickers.add(MarketFixture.INDEX);
-        this.names =
-                MarketFixture.PAPERS.stream().map(MarketFixture.Paper::name).toList();
+        List<String> all = new ArrayList<>(
+                MarketFixture.PAPERS.stream().map(MarketFixture.Paper::name).toList());
+        all.add("Индекс МосБиржи");
+        this.names = all;
+        this.firstDay = fixture.days().getFirst();
+        this.lastDay = fixture.days().getLast();
+        // epoch секунды и миллисекунды любого момента дней фикстуры ±1 сутки: любой отсчёт времени бара
+        for (LocalDate d = firstDay.minusDays(2); !d.isAfter(lastDay.plusDays(2)); d = d.plusDays(1)) {
+            epochs.add(d.atStartOfDay(ZoneOffset.UTC).toEpochSecond() / 86_400L);
+        }
         fixture.allPrices().forEach(p -> prices.add(p.stripTrailingZeros()));
         this.capitals = new HashSet<>();
         capitals.forEach(c -> this.capitals.add(c.stripTrailingZeros()));
@@ -88,9 +116,20 @@ final class LeakScanner {
         return leaks;
     }
 
+    /** Ответы сессии: каталог запуска и бумаг открыт всем и не относится к слепой сессии, его не проверяем. */
     List<Leak> scanAll(List<ApiClient.Response> responses) {
+        return scanAll(responses, false);
+    }
+
+    /** {@code withCatalog} — вместе с открытым каталогом (положительный контроль). */
+    List<Leak> scanAll(List<ApiClient.Response> responses, boolean withCatalog) {
         List<Leak> leaks = new ArrayList<>();
         for (ApiClient.Response response : responses) {
+            if (!withCatalog
+                    && (response.path().startsWith("/api/v1/launch/")
+                            || response.path().startsWith("/api/v1/papers"))) {
+                continue;
+            }
             if (response.json() != null) {
                 walk(response.method() + " " + response.path(), response.json(), null, leaks);
             } else {
@@ -128,15 +167,19 @@ final class LeakScanner {
                 walk(path + "[" + i++ + "]", item, field, leaks);
             }
         } else if (node.isNumber()) {
-            checkNumber(path, node.decimalValue(), leaks);
+            checkNumber(path, field, node.decimalValue(), leaks);
         } else if (node.isString()) {
             String text = node.asString();
-            if (field != null && SERVICE_FIELDS.contains(field)) {
+            if ("title".equals(field) && BLIND_TITLE.matcher(text).matches()) {
+                return;
+            }
+            if ("createdat".equals(field)) {
+                checkCreatedAt(path, text, leaks);
                 return;
             }
             scanText(path, text, leaks);
             if (isDecimal(text)) {
-                checkNumber(path, new BigDecimal(text), leaks);
+                checkNumber(path, field, new BigDecimal(text), leaks);
             }
         }
     }
@@ -161,10 +204,38 @@ final class LeakScanner {
         if (TIME.matcher(text).find()) {
             leaks.add(new Leak(Kind.TIME, path, text));
         }
+        if (OTHER_DATE.matcher(text).find() || MONTH_WORD.matcher(text).find()) {
+            leaks.add(new Leak(Kind.DATE, path, text));
+        }
+        if (RUBLE_TEXT.matcher(text).find()) {
+            leaks.add(new Leak(Kind.RUBLE, path, text));
+        }
     }
 
-    private void checkNumber(String path, BigDecimal value, List<Leak> leaks) {
+    /** {@code createdAt} — служебное время создания (сейчас); дата внутри архива — утечка периода. */
+    private void checkCreatedAt(String path, String text, List<Leak> leaks) {
+        if (text.length() >= 10 && DATE.matcher(text.substring(0, 10)).matches()) {
+            LocalDate date = LocalDate.parse(text.substring(0, 10));
+            if (!date.isBefore(firstDay.minusDays(1)) && !date.isAfter(lastDay.plusDays(1))) {
+                leaks.add(new Leak(Kind.DATE, path, text));
+            }
+        }
+    }
+
+    private void checkNumber(String path, String field, BigDecimal value, List<Leak> leaks) {
         BigDecimal normal = value.stripTrailingZeros();
+        boolean integer = normal.scale() <= 0;
+        if (integer && value.abs().compareTo(new BigDecimal("1000000000")) > 0) {
+            // epoch: секунды (10 цифр) или миллисекунды (13 цифр) момента внутри архива
+            long raw = value.longValue();
+            long seconds = raw > 100_000_000_000L ? raw / 1000 : raw;
+            if (epochs.contains(seconds / 86_400L)) {
+                leaks.add(new Leak(Kind.DATE, path, value.toPlainString()));
+            }
+        }
+        if (value.abs().compareTo(RUBLE_THRESHOLD) >= 0 && (field == null || !COUNT_FIELDS.contains(field))) {
+            leaks.add(new Leak(Kind.RUBLE, path, value.toPlainString()));
+        }
         if (prices.contains(normal)) {
             leaks.add(new Leak(Kind.PRICE, path, value.toPlainString()));
         }

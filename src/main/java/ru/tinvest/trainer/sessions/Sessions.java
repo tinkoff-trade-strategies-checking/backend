@@ -22,6 +22,8 @@ import ru.tinvest.trainer.marketdata.LaunchPlan;
 import ru.tinvest.trainer.marketdata.LaunchPlanner;
 import ru.tinvest.trainer.marketdata.PlannedPaper;
 import ru.tinvest.trainer.marketdata.Regime;
+import ru.tinvest.trainer.marketdata.Snapshot;
+import ru.tinvest.trainer.marketdata.Snapshots;
 import ru.tinvest.trainer.marketdata.StartMode;
 import ru.tinvest.trainer.marketdata.Timeframe;
 import ru.tinvest.trainer.worker.WorkerTypes.Costs;
@@ -45,14 +47,16 @@ public class Sessions {
 
     private final JdbcClient jdbc;
     private final CurrentUser currentUser;
+    private final Snapshots snapshots;
     private final RandomGenerator random;
 
     @Autowired
-    Sessions(JdbcClient jdbc, CurrentUser currentUser) {
-        this(jdbc, currentUser, new SecureRandom());
+    Sessions(JdbcClient jdbc, CurrentUser currentUser, Snapshots snapshots) {
+        this(jdbc, currentUser, snapshots, new SecureRandom());
     }
 
-    Sessions(JdbcClient jdbc, CurrentUser currentUser, RandomGenerator random) {
+    Sessions(JdbcClient jdbc, CurrentUser currentUser, Snapshots snapshots, RandomGenerator random) {
+        this.snapshots = snapshots;
         this.jdbc = jdbc;
         this.currentUser = currentUser;
         this.random = random;
@@ -189,6 +193,7 @@ public class Sessions {
                         Regime.fromCode(rs.getString("regime")).orElseThrow(),
                         StartMode.valueOf(rs.getString("start_mode").toUpperCase(Locale.ROOT)),
                         rs.getObject("snapshot_id", UUID.class),
+                        snapshotKey(rs.getObject("snapshot_id", UUID.class)),
                         rs.getObject("period_start", LocalDate.class),
                         rs.getObject("period_end", LocalDate.class),
                         rs.getInt("trading_days"),
@@ -209,6 +214,14 @@ public class Sessions {
                                 rs.getBigDecimal("liquidity_share")),
                         papers(sessionId)))
                 .optional();
+    }
+
+    /**
+     * Ключ снапшота в ClickHouse ({@code snapshot_id} воркера): сессия хранит первичный ключ снапшота PostgreSQL, а
+     * воркер читает данные по ключу. Нет строки снапшота — ключ равен идентификатору.
+     */
+    private String snapshotKey(UUID snapshotId) {
+        return snapshots.find(snapshotId).map(Snapshot::snapshotKey).orElse(snapshotId.toString());
     }
 
     private List<PaperRecord> papers(UUID sessionId) {

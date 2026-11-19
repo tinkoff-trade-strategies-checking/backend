@@ -50,6 +50,7 @@ import ru.tinvest.trainer.marketdata.Papers;
 import ru.tinvest.trainer.marketdata.PlannedPaper;
 import ru.tinvest.trainer.marketdata.Regime;
 import ru.tinvest.trainer.marketdata.Snapshot;
+import ru.tinvest.trainer.marketdata.Snapshots;
 import ru.tinvest.trainer.marketdata.StartMode;
 import ru.tinvest.trainer.marketdata.Timeframe;
 import tools.jackson.databind.JsonNode;
@@ -64,6 +65,9 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
     private static final LocalDate START = LocalDate.of(2022, 3, 14);
     private static final LocalDate END = LocalDate.of(2022, 4, 8);
     private static final List<String> SECIDS = List.of("SBER", "GAZP", "LKOH", "YNDX", "ROSN");
+
+    @Autowired
+    private Snapshots snapshots;
 
     @Autowired
     private MockMvc mockMvc;
@@ -559,7 +563,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
 
     @Test
     void paperIndexOrderIsRandomNotByTicker() {
-        Sessions sessions = new Sessions(jdbc, currentUser, new Random(7));
+        Sessions sessions = new Sessions(jdbc, currentUser, snapshots, new Random(7));
         List<String> byTicker = SECIDS.stream().sorted().toList();
         boolean different = false;
         for (int i = 0; i < 20; i++) {

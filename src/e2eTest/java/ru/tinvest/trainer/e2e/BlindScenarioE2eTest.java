@@ -43,7 +43,7 @@ class BlindScenarioE2eTest extends E2eBase {
 
         List<SseEvent> firstPart;
         long lastSeen;
-        try (ApiClient.Sse sse = api.subscribe(base + "/events", null)) {
+        try (ApiClient.Sse sse = api.subscribe(base + "/events", 0L)) {
             // заявка принята, отказ из-за нехватки денег — тоже 200, но с причиной
             JsonNode buy = Flows.place(api, id, Flows.order("\"paperIndex\":0", 0, "buy", "market", 1, null));
             assertThat(buy.get("accepted").asBoolean()).isTrue();
@@ -144,9 +144,9 @@ class BlindScenarioE2eTest extends E2eBase {
         Flows.place(api, id, Flows.order("\"paperId\":\"" + ids.get(0) + "\"", 0, "buy", "market", 1, null));
         Flows.step(api, id);
         Flows.snapshot(api, id);
-        Set<Kind> found = LeakScanner.kinds(scanner.scanAll(api.responses()));
+        Set<Kind> found = LeakScanner.kinds(scanner.scanAll(api.responses(), true));
         // сканер не слепой: в раскрытой сессии находит все виды утечек, иначе проверка слепой ничего не стоит
-        assertThat(found).containsAll(Set.of(Kind.TICKER, Kind.NAME, Kind.DATE, Kind.TIME, Kind.PRICE, Kind.FIELD));
+        assertThat(found).containsExactlyInAnyOrder(Kind.values());
     }
 
     /** Свойство маскировки (INV-7): для любой слепой сессии и любых команд ответы ничего не раскрывают. */
@@ -154,15 +154,19 @@ class BlindScenarioE2eTest extends E2eBase {
     void blindMaskNeverLetsPaperFieldsThrough() {
         Random random = new Random(7);
         ApiClient api = newUser();
+        Set<String> createdRegimes = new java.util.TreeSet<>();
+        int created = 0;
         for (String regime : List.of("calm", "medium", "stress")) {
             for (int papers = 1; papers <= 3; papers++) {
-                ApiClient.Response created = api.post("/api/v1/sessions", Flows.blindRequest(papers, regime));
-                if (created.status() != 201) {
+                ApiClient.Response response = api.post("/api/v1/sessions", Flows.blindRequest(papers, regime));
+                if (response.status() != 201) {
                     // категории может не быть в маленьком архиве: отказ тоже ответ и тоже не раскрывает
-                    assertThat(created.status()).isEqualTo(422);
+                    assertThat(response.status()).isEqualTo(422);
                     continue;
                 }
-                String id = created.json().get("sessionId").asString();
+                String id = response.json().get("sessionId").asString();
+                created++;
+                createdRegimes.add(regime);
                 for (int i = 0; i < 5; i++) {
                     int paper = random.nextInt(papers);
                     String side = random.nextBoolean() ? "buy" : "sell";
@@ -193,6 +197,9 @@ class BlindScenarioE2eTest extends E2eBase {
                 api.get("/api/v1/history");
             }
         }
+        // свойство не должно пройти вхолостую: сессий создано достаточно, и категории представлены все
+        assertThat(created).as("созданных слепых сессий").isGreaterThanOrEqualTo(6);
+        assertThat(createdRegimes).containsExactly("calm", "medium", "stress");
         assertThat(scanner.scanAll(api.responses())).isEmpty();
     }
 

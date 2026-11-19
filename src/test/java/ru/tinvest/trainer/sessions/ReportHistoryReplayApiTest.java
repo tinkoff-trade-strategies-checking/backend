@@ -44,6 +44,7 @@ import ru.tinvest.trainer.marketdata.Papers;
 import ru.tinvest.trainer.marketdata.PlannedPaper;
 import ru.tinvest.trainer.marketdata.Regime;
 import ru.tinvest.trainer.marketdata.Snapshot;
+import ru.tinvest.trainer.marketdata.Snapshots;
 import ru.tinvest.trainer.marketdata.StartMode;
 import ru.tinvest.trainer.marketdata.Timeframe;
 import tools.jackson.databind.JsonNode;
@@ -90,6 +91,9 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
     private Sessions sessions;
 
     @Autowired
+    private Snapshots snapshots;
+
+    @Autowired
     private FakeWorker worker;
 
     @Autowired
@@ -116,6 +120,22 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         worker.reset();
         userId = createUser("u" + UUID.randomUUID() + "@example.com");
         login(emailOf(userId));
+    }
+
+    // ---------- снапшот ----------
+
+    /**
+     * Воркер читает данные по ключу снапшота ClickHouse, а не по первичному ключу PostgreSQL: ключ здесь не UUID и не
+     * совпадает с {@code id} (сквозной тест backend#4 нашёл, что воркеру уходил PK).
+     */
+    @Test
+    void workerReceivesTheSnapshotKeyNotThePostgresId() throws Exception {
+        Snapshot registered = snapshots.register("clickhouse-key-" + UUID.randomUUID(), "ключ не в формате UUID");
+        UUID id = sessions.create(
+                userId, StartMode.CUSTOM, 20, plan(registered, false, Regime.CALM, SECIDS, LocalDate.of(2022, 3, 14)));
+        assertThat(body(httpGet("/api/v1/sessions/" + id)).get("step").asLong()).isZero();
+        assertThat(worker.lastMarket.snapshotId()).isEqualTo(registered.snapshotKey());
+        assertThat(worker.lastMarket.snapshotId()).isNotEqualTo(registered.id().toString());
     }
 
     // ---------- воспроизведение ----------
@@ -799,13 +819,18 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
     }
 
     private static LaunchPlan plan(boolean blind, Regime regime, List<String> secids, LocalDate start) {
+        Snapshot snapshot =
+                new Snapshot(UUID.randomUUID(), UUID.randomUUID().toString(), OffsetDateTime.now(ZoneOffset.UTC), "t");
+        return plan(snapshot, blind, regime, secids, start);
+    }
+
+    private static LaunchPlan plan(
+            Snapshot snapshot, boolean blind, Regime regime, List<String> secids, LocalDate start) {
         List<PlannedPaper> list = new ArrayList<>();
         for (int i = 0; i < secids.size(); i++) {
             list.add(new PlannedPaper(
                     Papers.id(secids.get(i)), secids.get(i), "Сектор" + i, 10 + i, new BigDecimal("0.01")));
         }
-        Snapshot snapshot =
-                new Snapshot(UUID.randomUUID(), UUID.randomUUID().toString(), OffsetDateTime.now(ZoneOffset.UTC), "t");
         return new LaunchPlan(
                 snapshot,
                 blind,
