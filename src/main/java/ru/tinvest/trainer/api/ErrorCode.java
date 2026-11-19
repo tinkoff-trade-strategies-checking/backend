@@ -15,6 +15,10 @@ public enum ErrorCode {
     SESSION_NOT_ACTIVE,
     /** 409: команда не подходит состоянию плеера. */
     PLAYER_STATE_CONFLICT,
+    /** 409: выгрузка отчёта недоступна, пока сессия не завершена. */
+    NOT_FINISHED,
+    /** 409: отчёт ещё строится, запрос повторяют позже. */
+    REPORT_BUILDING,
     /** 422: нет периода под параметры запуска (то же имя, что {@code LaunchRejectReason}). */
     NO_MATCHING_PERIOD,
     /** 422: слишком много свечей. */

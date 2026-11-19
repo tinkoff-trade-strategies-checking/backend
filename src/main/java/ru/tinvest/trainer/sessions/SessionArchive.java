@@ -66,6 +66,31 @@ public class SessionArchive {
         return resolve(session);
     }
 
+    /**
+     * Сессия пользователя без расчёта прогресса и без вызова воркера (выгрузка отчёта): пусто, если сессии нет или она
+     * чужая. Идущую сессию отличает {@link #isFinished}.
+     */
+    public Optional<SessionRecord> findOwned(UUID sessionId) {
+        try {
+            return Optional.of(sessions.requireOwned(sessionId));
+        } catch (NotFoundException e) {
+            return Optional.empty();
+        }
+    }
+
+    /** Сессия завершена: отчёт и раскрытие доступны (INV-1, INV-7). */
+    public static boolean isFinished(SessionRecord session) {
+        return !"running".equals(session.status());
+    }
+
+    /** Команды журнала завершённой сессии (подача, отмена, замена с исходом приёма) для выгрузки отчёта. */
+    public List<CommandLogEntry> commandLog(SessionRecord session) {
+        if (!isFinished(session)) {
+            throw new IllegalStateException("Журнал команд отдаётся только завершённой сессии");
+        }
+        return journals.log(session);
+    }
+
     /** Страница истории сессий текущего пользователя. */
     public HistoryPage history(HistoryFilter filter) {
         UUID userId = currentUser.requireId();

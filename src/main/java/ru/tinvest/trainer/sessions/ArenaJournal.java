@@ -1,6 +1,7 @@
 package ru.tinvest.trainer.sessions;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,6 +45,81 @@ class ArenaJournal {
                 .query((rs, n) -> new JournalRecord(
                         rs.getLong("seq"), rs.getLong("step"), decode(rs.getString("command"), session)))
                 .list();
+    }
+
+    /** Команды журнала с исходом приёма для выгрузки отчёта (только завершённая сессия); нога OCO — отдельной записью. */
+    List<CommandLogEntry> log(SessionRecord session) {
+        List<CommandLogEntry> out = new ArrayList<>();
+        jdbc.sql("SELECT seq, step, command_type, command, accepted, reject_reason "
+                        + "FROM sessions.command_journal WHERE session_id = :id ORDER BY seq")
+                .param("id", session.id())
+                .query((rs, n) -> {
+                    logEntries(
+                            out,
+                            rs.getLong("seq"),
+                            rs.getLong("step"),
+                            rs.getString("command_type"),
+                            json.readTree(rs.getString("command")),
+                            rs.getBoolean("accepted"),
+                            rs.getString("reject_reason"),
+                            session);
+                    return n;
+                })
+                .list();
+        return out;
+    }
+
+    private static void logEntries(
+            List<CommandLogEntry> out,
+            long seq,
+            long step,
+            String type,
+            JsonNode command,
+            boolean accepted,
+            @Nullable String reason,
+            SessionRecord session) {
+        // у замены параметры новой заявки — в replacement.order, у подачи — в order; у отмены их нет
+        JsonNode place = command.has("replacement") ? command.get("replacement") : command;
+        JsonNode order = place.get("order");
+        Long orderId = command.has("orderId") ? command.get("orderId").asLong() : null;
+        if (order == null || order.isNull()) {
+            out.add(new CommandLogEntry(
+                    seq, step, type, orderId, null, null, null, null, null, null, null, null, false, accepted, reason));
+            return;
+        }
+        out.add(logEntry(seq, step, type, orderId, order, false, accepted, reason, session));
+        JsonNode oco = place.get("ocoWith");
+        if (oco != null && !oco.isNull()) {
+            out.add(logEntry(seq, step, type, null, oco, true, accepted, reason, session));
+        }
+    }
+
+    private static CommandLogEntry logEntry(
+            long seq,
+            long step,
+            String type,
+            @Nullable Long orderId,
+            JsonNode order,
+            boolean ocoLeg,
+            boolean accepted,
+            @Nullable String reason,
+            SessionRecord session) {
+        return new CommandLogEntry(
+                seq,
+                step,
+                type,
+                orderId,
+                session.papers().get(order.get("paperIndex").asInt()).secid(),
+                order.get("side").asString(),
+                order.get("kind").asString(),
+                order.get("lots").asLong(),
+                decimal(order.get("limitPrice")),
+                decimal(order.get("stopPrice")),
+                decimal(order.get("trailingPercent")),
+                order.get("tif").asString(),
+                ocoLeg,
+                accepted,
+                reason);
     }
 
     /** {@code seen_step} по номеру команды. */
