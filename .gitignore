@@ -18,3 +18,7 @@ Thumbs.db
 
 # Секреты локального окружения
 deploy/.env
+
+# аварийные логи JVM
+hs_err_pid*.log
+replay_pid*.log

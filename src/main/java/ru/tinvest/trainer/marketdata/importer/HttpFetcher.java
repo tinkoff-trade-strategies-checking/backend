@@ -21,6 +21,12 @@ final class HttpFetcher {
 
     private static final Logger log = LoggerFactory.getLogger(HttpFetcher.class);
 
+    /** Общий явный User-Agent импортёра, без личных данных. */
+    static final String USER_AGENT = "trainer-importer/"
+            + (HttpFetcher.class.getPackage().getImplementationVersion() == null
+                    ? "dev"
+                    : HttpFetcher.class.getPackage().getImplementationVersion());
+
     private final HttpClient http;
     private final Duration pause;
     private final int maxRetries;
@@ -75,6 +81,7 @@ final class HttpFetcher {
     private String send(URI uri) throws IOException {
         HttpRequest request = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(60))
+                .header("User-Agent", USER_AGENT)
                 .GET()
                 .build();
         try {

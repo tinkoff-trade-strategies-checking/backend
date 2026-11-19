@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -57,7 +58,15 @@ public final class ArchiveImporter {
     /** Запас календаря и ставок до {@code from}: ядру нужен день перед первым днём шкалы. */
     private static final int LOOKBACK_DAYS = 14;
 
-    public record Params(LocalDate from, LocalDate to, List<String> tickers, String label) {
+    /**
+     * {@code allowGaps} не входит в идентификатор снапшота: разрешает пометить снапшот готовым, если у бумаги нет свечей
+     * в какие-то торговые дни (например, торги бумагой приостанавливали); пробелы всё равно попадут в лог.
+     */
+    public record Params(LocalDate from, LocalDate to, List<String> tickers, String label, boolean allowGaps) {
+
+        public Params(LocalDate from, LocalDate to, List<String> tickers, String label) {
+            this(from, to, tickers, label, false);
+        }
 
         public Params {
             if (from == null || to == null || to.isBefore(from)) {
@@ -84,8 +93,16 @@ public final class ArchiveImporter {
     private final ClickHouseArchive archive;
     private final Snapshots snapshots;
     private final Clock clock;
+    private final SnapshotLocks locks;
 
-    ArchiveImporter(IssClient iss, CbrRuonia cbr, ClickHouseArchive archive, Snapshots snapshots, Clock clock) {
+    ArchiveImporter(
+            IssClient iss,
+            CbrRuonia cbr,
+            ClickHouseArchive archive,
+            Snapshots snapshots,
+            Clock clock,
+            SnapshotLocks locks) {
+        this.locks = locks;
         this.iss = iss;
         this.cbr = cbr;
         this.archive = archive;
@@ -95,6 +112,12 @@ public final class ArchiveImporter {
 
     public Result run(Params p) {
         UUID id = p.snapshotId();
+        try (SnapshotLocks.Held lock = locks.acquire(id.toString())) {
+            return runLocked(p, id);
+        }
+    }
+
+    private Result runLocked(Params p, UUID id) {
         var existing = snapshots.findByKey(id.toString());
         if (existing.isPresent()) {
             log.info(
@@ -123,6 +146,50 @@ public final class ArchiveImporter {
         loadCalendar(p, id);
         loadActions(id, secids);
         loadRuonia(p, id);
+        verifyCoverage(p, id, secids);
+    }
+
+    /**
+     * Перед {@code snapshots_ready}: у каждой бумаги должны быть минутные свечи в каждый торговый день календаря между
+     * её первой и последней свечой (кусок загружается целиком или не загружается, но пустая страница ISS не должна
+     * превращаться в дыру). Пробелы — отчёт в лог и {@link ImportException}, если не {@code allowGaps}.
+     */
+    private void verifyCoverage(Params p, UUID id, List<String> secids) {
+        List<LocalDate> trading = archive.tradingDays(id).stream()
+                .filter(d -> !d.isBefore(p.from()) && !d.isAfter(p.to()))
+                .toList();
+        Map<String, List<LocalDate>> gaps = new TreeMap<>();
+        for (String secid : secids) {
+            Set<LocalDate> have = new HashSet<>(archive.candleDates(id, secid, MINUTE));
+            if (have.isEmpty()) {
+                gaps.put(secid, trading);
+                continue;
+            }
+            LocalDate first = Collections.min(have);
+            LocalDate last = Collections.max(have);
+            List<LocalDate> missing = trading.stream()
+                    .filter(d -> !d.isBefore(first) && !d.isAfter(last) && !have.contains(d))
+                    .toList();
+            if (!missing.isEmpty()) {
+                gaps.put(secid, missing);
+            }
+        }
+        if (gaps.isEmpty()) {
+            return;
+        }
+        StringBuilder report = new StringBuilder("Пробелы в минутных свечах (торговые дни без свечей):");
+        gaps.forEach((secid, days) -> report.append("\n  ")
+                .append(secid)
+                .append(": ")
+                .append(days.size())
+                .append(" дн., первые ")
+                .append(days.stream().limit(20).toList()));
+        if (!p.allowGaps()) {
+            log.error("{}", report);
+            throw new ImportException(
+                    report + "\nСнапшот не помечен готовым; --import.allow-gaps=true принимает пробелы");
+        }
+        log.warn("{}\nПробелы приняты (allow-gaps)", report);
     }
 
     private void loadBenchmark(Params p, UUID id) {
@@ -166,7 +233,14 @@ public final class ArchiveImporter {
             }
             List<tools.jackson.databind.JsonNode> r = info.rows().get(0);
             long lot = info.get(r, "LOTSIZE").asLong();
-            BigDecimal step = IssParsers.money(info.get(r, "MINSTEP"));
+            BigDecimal step;
+            try {
+                step = IssParsers.price(info.get(r, "MINSTEP"));
+            } catch (ImportException e) {
+                // шаг с больше чем шестью знаками меньше 1e-6 ₽ или не представим в Decimal(18, 6)
+                log.warn("{}: шаг цены не проходит условие импорта ({}), пропущена", secid, e.getMessage());
+                continue;
+            }
             if (step.compareTo(MIN_PRICE_STEP) < 0 || lot < 1) {
                 log.warn("{}: шаг цены {} или лот {} не проходят условие импорта, пропущена", secid, step, lot);
                 continue;

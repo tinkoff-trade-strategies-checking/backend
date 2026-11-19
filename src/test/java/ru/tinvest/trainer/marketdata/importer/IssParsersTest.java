@@ -62,7 +62,22 @@ class IssParsersTest {
         IssTable t = IssParsers.table(sample("security-sber.json"), "securities");
 
         assertThat(t.get(t.rows().get(0), "LOTSIZE").asLong()).isEqualTo(1);
-        assertThat(IssParsers.money(t.get(t.rows().get(0), "MINSTEP"))).isEqualByComparingTo("0.01");
+        assertThat(IssParsers.price(t.get(t.rows().get(0), "MINSTEP"))).isEqualByComparingTo("0.01");
+    }
+
+    @Test
+    void priceWithMoreThanSixDecimalsIsAnErrorNotRounding() {
+        var node = IssParsers.MAPPER.readTree("1.0000001");
+
+        assertThatThrownBy(() -> IssParsers.price(node)).isInstanceOf(ImportException.class);
+        assertThat(IssParsers.price(IssParsers.MAPPER.readTree("292.2"))).isEqualTo(new BigDecimal("292.200000"));
+    }
+
+    @Test
+    void turnoverFromIssDoubleIsRoundedHalfUp() {
+        var node = IssParsers.MAPPER.readTree("40851055.69999998");
+
+        assertThat(IssParsers.turnover(node)).isEqualTo(new BigDecimal("40851055.700000"));
     }
 
     @Test

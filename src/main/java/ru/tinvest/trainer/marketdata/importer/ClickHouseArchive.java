@@ -139,6 +139,15 @@ final class ClickHouseArchive {
         return dates;
     }
 
+    /** Торговые дни календаря снапшота. */
+    List<LocalDate> tradingDays(UUID snapshot) {
+        String out = ch.execute("SELECT date FROM trading_calendar WHERE snapshot_id = '" + snapshot
+                + "' AND is_trading = 1 ORDER BY date FORMAT TSV");
+        List<LocalDate> dates = new ArrayList<>();
+        out.lines().filter(l -> !l.isBlank()).forEach(l -> dates.add(LocalDate.parse(l.trim())));
+        return dates;
+    }
+
     void insertCalendar(UUID snapshot, Map<LocalDate, Boolean> days) {
         for (List<Map.Entry<LocalDate, Boolean>> part : partition(List.copyOf(days.entrySet()))) {
             String values = part.stream()

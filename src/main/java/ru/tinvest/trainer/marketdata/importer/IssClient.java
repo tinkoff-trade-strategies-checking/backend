@@ -41,28 +41,41 @@ final class IssClient {
 
     /**
      * Все страницы блока. Следующая страница нужна, пока набрано меньше {@code TOTAL} из курсора, а без курсора — пока
-     * последняя страница полная ({@code pageSize}). Пустая страница после повторов — конец данных.
+     * последняя страница полная ({@code pageSize}; {@code pageSize = 0} без курсора — ровно одна страница). Если
+     * {@code TOTAL} известен, пустая страница (после повторов в {@link #page}) при недоборе и итог не равный
+     * {@code TOTAL} — {@link ImportException}: усечённые данные не принимаются за конец.
      */
     IssTable all(String path, Map<String, String> query, String block, int pageSize) {
         List<List<tools.jackson.databind.JsonNode>> rows = new ArrayList<>();
         List<String> columns = List.of();
+        Long total = null;
         int start = 0;
         while (true) {
             Map<String, String> q = new LinkedHashMap<>(query);
             q.put("start", Integer.toString(start));
             IssTable p = page(path, q, block);
+            if (p.total() != null) {
+                total = p.total();
+            }
             if (p.isEmpty()) {
+                if (total != null && start < total) {
+                    throw new ImportException(
+                            "ISS отдал пустую страницу " + path + " при start=" + start + " из TOTAL=" + total);
+                }
                 break;
             }
             columns = p.columns();
             rows.addAll(p.rows());
             start += p.size();
-            boolean more = p.total() != null ? start < p.total() : pageSize > 0 && p.size() >= pageSize;
+            boolean more = total != null ? start < total : pageSize > 0 && p.size() >= pageSize;
             if (!more) {
                 break;
             }
         }
-        return new IssTable(columns, rows, null, null);
+        if (total != null && start != total) {
+            throw new ImportException("ISS: " + path + " получено " + start + " строк, TOTAL=" + total);
+        }
+        return new IssTable(columns, rows, total, null);
     }
 
     /** Минутные (или иные) свечи акции на основной доске TQBR за календарные даты {@code from}…{@code till}. */

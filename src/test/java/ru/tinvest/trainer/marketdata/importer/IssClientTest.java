@@ -127,6 +127,25 @@ class IssClientTest {
     }
 
     @Test
+    void emptyPageBeforeTotalIsAnErrorNotTheEnd() {
+        // страница start=2 пуста устойчиво, а TOTAL=4: усечённый состав принимать нельзя
+        server.empties.put("analytics/IMOEX.json?date=2024-03-12&start=2", new AtomicInteger(100));
+
+        assertThatThrownBy(() -> iss.composition("IMOEX", LocalDate.of(2024, 3, 12)))
+                .isInstanceOf(ImportException.class)
+                .hasMessageContaining("TOTAL=4");
+    }
+
+    @Test
+    void userAgentIsExplicitAndGeneric() {
+        iss.shareCandles("SBER", 1, LocalDate.of(2024, 3, 1), LocalDate.of(2024, 3, 1));
+
+        assertThat(server.userAgents)
+                .isNotEmpty()
+                .allSatisfy(ua -> assertThat(ua).startsWith("trainer-importer/"));
+    }
+
+    @Test
     void compositionIsReadByCursorTotal() {
         IssClient.IndexComposition c = iss.composition("IMOEX", LocalDate.of(2024, 3, 12));
 

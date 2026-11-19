@@ -3,6 +3,7 @@ package ru.tinvest.trainer.marketdata.importer;
 import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
+import javax.sql.DataSource;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -17,7 +18,7 @@ import ru.tinvest.trainer.marketdata.Snapshots;
 class ImportConfiguration {
 
     @Bean
-    ArchiveImporter archiveImporter(ImportProperties props, Snapshots snapshots) {
+    ArchiveImporter archiveImporter(ImportProperties props, Snapshots snapshots, DataSource dataSource) {
         HttpClient http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
                 .followRedirects(HttpClient.Redirect.NORMAL)
@@ -32,7 +33,8 @@ class ImportConfiguration {
                 new CbrRuonia(fetcher, props.cbr().url(), i.emptyRetries()),
                 new ClickHouseArchive(ch),
                 snapshots,
-                Clock.systemUTC());
+                Clock.systemUTC(),
+                SnapshotLocks.postgres(dataSource));
     }
 
     @Bean
@@ -41,7 +43,8 @@ class ImportConfiguration {
             if (props.from() == null || props.to() == null) {
                 throw new ImportException("Задайте --import.from и --import.to (yyyy-MM-dd)");
             }
-            importer.run(new ArchiveImporter.Params(props.from(), props.to(), props.tickers(), props.label()));
+            importer.run(new ArchiveImporter.Params(
+                    props.from(), props.to(), props.tickers(), props.label(), props.allowGaps()));
         };
     }
 }

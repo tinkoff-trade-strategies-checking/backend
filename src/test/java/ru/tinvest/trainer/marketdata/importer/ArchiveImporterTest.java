@@ -41,6 +41,9 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
     @Autowired
     private Snapshots snapshots;
 
+    @Autowired
+    private javax.sql.DataSource dataSource;
+
     private FakeIssServer server;
     private ClickHouse ch;
     private ArchiveImporter importer;
@@ -82,7 +85,8 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
                 new CbrRuonia(fetcher, server.cbrUrl(), 2),
                 new ClickHouseArchive(chClient),
                 snapshots,
-                Clock.systemUTC());
+                Clock.systemUTC(),
+                SnapshotLocks.postgres(dataSource));
     }
 
     private ArchiveImporter.Params params() {
@@ -247,6 +251,60 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         assertThat(r.alreadyLoaded()).isFalse();
         assertThat(snapshots.findByKey(id.toString())).isPresent();
         assertThat(server.requests).isEmpty();
+    }
+
+    @Test
+    void missingTradingDayBlocksReadyAndReportsGaps() {
+        ArchiveImporter.Params p = params();
+        UUID id = p.snapshotId();
+        server.skipDays.add("GAZP|2024-03-05");
+
+        assertThatThrownBy(() -> importer.run(p))
+                .isInstanceOf(ImportException.class)
+                .hasMessageContaining("GAZP")
+                .hasMessageContaining("2024-03-05");
+
+        assertThat(q("SELECT count() FROM snapshots_ready WHERE snapshot_id = '" + id + "'"))
+                .isEqualTo("0");
+        assertThat(snapshots.findByKey(id.toString())).isEmpty();
+    }
+
+    @Test
+    void gapsAreAcceptedOnlyWithAllowGaps() {
+        ArchiveImporter.Params p = params();
+        server.skipDays.add("GAZP|2024-03-05");
+        ArchiveImporter.Params lenient = new ArchiveImporter.Params(p.from(), p.to(), p.tickers(), p.label(), true);
+
+        ArchiveImporter.Result r = importer.run(lenient);
+
+        assertThat(r.alreadyLoaded()).isFalse();
+        assertThat(snapshots.findByKey(lenient.snapshotId().toString())).isPresent();
+    }
+
+    @Test
+    void secondImportOfSameSnapshotIsRejectedWhileFirstHoldsTheLock() {
+        ArchiveImporter.Params p = params();
+
+        try (SnapshotLocks.Held ignored =
+                SnapshotLocks.postgres(dataSource).acquire(p.snapshotId().toString())) {
+            assertThatThrownBy(() -> importer.run(p))
+                    .isInstanceOf(ImportException.class)
+                    .hasMessageContaining("уже запущен");
+        }
+
+        assertThat(importer.run(p).alreadyLoaded()).isFalse();
+    }
+
+    @Test
+    void ruoniaIsRequestedByRateDateWithLookbackAndStoredWithoutShift() {
+        ArchiveImporter.Params p = params();
+        importer.run(p);
+
+        // запрос: с запасом 14 дней до from и до to; даты ставок хранятся как отданы ЦБ (без available_at)
+        assertThat(server.requests)
+                .anyMatch(r -> r.contains("UniDbQuery.From=14.02.2024") && r.contains("UniDbQuery.To=12.03.2024"));
+        assertThat(q("SELECT min(date), max(date) FROM ruonia WHERE snapshot_id = '" + p.snapshotId() + "'"))
+                .isEqualTo("2024-02-26\t2024-03-12");
     }
 
     @Test

@@ -75,21 +75,42 @@ final class IssParsers {
             LocalDateTime begin = LocalDateTime.parse(t.get(r, "begin").asString(), TIMESTAMP);
             out.add(new Candle(
                     begin.toInstant(MSK),
-                    money(t.get(r, "open")),
-                    money(t.get(r, "high")),
-                    money(t.get(r, "low")),
-                    money(t.get(r, "close")),
+                    price(t.get(r, "open")),
+                    price(t.get(r, "high")),
+                    price(t.get(r, "low")),
+                    price(t.get(r, "close")),
                     t.get(r, "volume").decimalValue().longValueExact(),
-                    money(t.get(r, "value"))));
+                    turnover(t.get(r, "value"))));
         }
         return out;
     }
 
-    static BigDecimal money(JsonNode n) {
+    /**
+     * Цена или шаг цены: масштаб 6 без округления (INV-6, {@code decisions.md}, «Деньги и округление», п. 12). Больше
+     * шести знаков — ошибка: значение не молча искажается, а импорт останавливается.
+     */
+    static BigDecimal price(JsonNode n) {
+        BigDecimal v = number(n);
+        try {
+            return v.setScale(SCALE);
+        } catch (ArithmeticException e) {
+            throw new ImportException("Цена " + v.toPlainString() + " имеет больше " + SCALE + " знаков", e);
+        }
+    }
+
+    /**
+     * Оборот свечи: ISS отдаёт его как double с артефактами ({@code 40851055.69999998}), значит, округление
+     * неизбежно — HALF_UP до масштаба 6. На цены не распространяется.
+     */
+    static BigDecimal turnover(JsonNode n) {
+        return number(n).setScale(SCALE, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal number(JsonNode n) {
         if (n == null || !n.isNumber()) {
             throw new ImportException("Ожидалось число, пришло " + n);
         }
-        return n.decimalValue().setScale(SCALE, RoundingMode.HALF_UP);
+        return n.decimalValue();
     }
 
     /** Дата МСК, которой принадлежит свеча. */

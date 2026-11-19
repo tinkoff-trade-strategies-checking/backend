@@ -36,6 +36,10 @@ final class FakeIssServer implements AutoCloseable {
     final Map<String, AtomicInteger> empties = new LinkedHashMap<>();
     /** Пути, на которые отвечать HTTP 500 всегда, пока ключ в наборе. */
     final java.util.Set<String> broken = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** Дни без свечей в ответе, ключ {@code SECID|yyyy-MM-dd}. */
+    final java.util.Set<String> skipDays = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    final List<String> userAgents = new CopyOnWriteArrayList<>();
 
     FakeIssServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -69,8 +73,9 @@ final class FakeIssServer implements AutoCloseable {
         String path = ex.getRequestURI().getPath();
         String raw = ex.getRequestURI().getRawQuery();
         requests.add(path + (raw == null ? "" : "?" + raw));
+        userAgents.add(String.valueOf(ex.getRequestHeaders().getFirst("User-Agent")));
         Map<String, String> q = query(raw);
-        String key = path;
+        String key = path + (raw == null ? "" : "?" + raw);
         if (broken.stream().anyMatch(key::contains)) {
             respond(ex, 500, "ошибка");
             return;
@@ -127,7 +132,7 @@ final class FakeIssServer implements AutoCloseable {
         List<LocalDate> days = tradingDays();
         for (int i = 0; i < days.size(); i++) {
             LocalDate d = days.get(i);
-            if (d.isBefore(from) || d.isAfter(till)) {
+            if (d.isBefore(from) || d.isAfter(till) || skipDays.contains(secid + "|" + d)) {
                 continue;
             }
             if (daily) {

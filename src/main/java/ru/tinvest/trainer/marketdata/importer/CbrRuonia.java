@@ -1,7 +1,6 @@
 package ru.tinvest.trainer.marketdata.importer;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.net.URI;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -13,6 +12,13 @@ import java.util.regex.Pattern;
 /**
  * Дневной ряд RUONIA с сайта Банка России ({@code cbr.ru/hd_base/ruonia/dynamics}, HTML-таблица). В ISS ставки RUONIA
  * нет (проверено 19.11.2026: поиск ISS находит только фьючерсы на RUONIA).
+ *
+ * <p>Фильтр периода — по «Дате ставки» (первый столбец); {@code UniDbQuery.Posted=True} — только признак отправки
+ * формы, без него ЦБ отдаёт период по умолчанию (проверено 19.11.2026). Ставка за дату D публикуется в D+1, поэтому за
+ * последние 1–2 рабочих дня перед запуском её может ещё не быть. В таблицу идёт ставка по её дате, без
+ * {@code available_at}: {@code core} в день d берёт {@code RUONIA_{d-1}} и сам переносит последнюю известную ставку на
+ * выходные и праздники ({@code matchRuoniaRates}), заглядывания вперёд нет. На праздничные даты ЦБ ставку не
+ * публикует (например, 30–31.12.2024 и 1–8.01.2025 в ответе нет).
  */
 final class CbrRuonia {
 
@@ -43,7 +49,7 @@ final class CbrRuonia {
         while (m.find()) {
             rates.put(
                     LocalDate.parse(m.group(1), DMY),
-                    new BigDecimal(m.group(2).replace(',', '.')).setScale(IssParsers.SCALE, RoundingMode.HALF_UP));
+                    new BigDecimal(m.group(2).replace(',', '.')).setScale(IssParsers.SCALE));
         }
         if (rates.isEmpty() && !html.contains("class=\"data\"")) {
             throw new ImportException("Страница ЦБ РФ без таблицы ставок");
