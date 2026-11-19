@@ -17,10 +17,13 @@ import ru.tinvest.trainer.worker.WorkerTypes.BlindPositionData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindViewData;
 import ru.tinvest.trainer.worker.WorkerTypes.Command;
 import ru.tinvest.trainer.worker.WorkerTypes.CommandOutcome;
+import ru.tinvest.trainer.worker.WorkerTypes.CostTotalsData;
+import ru.tinvest.trainer.worker.WorkerTypes.EquityPointData;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.FillState;
 import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
+import ru.tinvest.trainer.worker.WorkerTypes.MetricsData;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderKind;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderParams;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderPhase;
@@ -30,6 +33,8 @@ import ru.tinvest.trainer.worker.WorkerTypes.PortfolioState;
 import ru.tinvest.trainer.worker.WorkerTypes.PositionState;
 import ru.tinvest.trainer.worker.WorkerTypes.RejectCode;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
+import ru.tinvest.trainer.worker.WorkerTypes.ReportData;
+import ru.tinvest.trainer.worker.WorkerTypes.RoundTripData;
 import ru.tinvest.trainer.worker.WorkerTypes.RunState;
 import ru.tinvest.trainer.worker.WorkerTypes.StepBars;
 import ru.tinvest.trainer.worker.WorkerTypes.Tif;
@@ -201,7 +206,65 @@ final class WorkerMapper {
                 fills,
                 results,
                 r.getWarmupSteps(),
-                r.hasBlindView() ? blindView(r.getBlindView()) : null);
+                r.hasBlindView() ? blindView(r.getBlindView()) : null,
+                r.hasReport() ? report(r.getReport()) : null);
+    }
+
+    private static ReportData report(pac.simulation.v1.Report r) {
+        pac.simulation.v1.Metrics m = r.getMetrics();
+        MetricsData metrics = new MetricsData(
+                m.getTotalReturn(),
+                m.getGrossReturn(),
+                m.hasCagr() ? m.getCagr() : null,
+                m.getMaxDrawdown(),
+                m.getMaxDrawdownSteps(),
+                m.hasVolatility() ? m.getVolatility() : null,
+                m.hasSharpe() ? m.getSharpe() : null,
+                m.hasSortino() ? m.getSortino() : null,
+                m.getTurnover(),
+                m.getFills(),
+                m.getRoundTrips(),
+                m.hasWinRate() ? m.getWinRate() : null,
+                m.getRejections(),
+                m.getPartialFills(),
+                m.getHhiAvg(),
+                m.getMaxPositionShare(),
+                m.hasBenchmarkReturn() ? m.getBenchmarkReturn() : null,
+                m.getTradingDays(),
+                m.getStopTakeSameBar());
+        pac.simulation.v1.CostTotals c = r.getCosts();
+        List<RoundTripData> trips = new ArrayList<>(r.getRoundTripsCount());
+        for (pac.simulation.v1.RoundTrip t : r.getRoundTripsList()) {
+            trips.add(new RoundTripData(
+                    t.getInstrumentKey(),
+                    t.getEntryStep(),
+                    t.getExitStep(),
+                    t.getLots(),
+                    decimal(t.getEntryPrice()),
+                    decimal(t.getExitPrice()),
+                    decimal(t.getGrossPnl()),
+                    decimal(t.getCosts()),
+                    decimal(t.getNetPnl())));
+        }
+        return new ReportData(
+                metrics,
+                new CostTotalsData(
+                        decimal(c.getCommission()),
+                        decimal(c.getExchangeFee()),
+                        decimal(c.getSpread()),
+                        decimal(c.getSlippage())),
+                equity(r.getEquityList()),
+                decimal(r.getFinalEquity()),
+                equity(r.getBenchmarkEquityList()),
+                trips);
+    }
+
+    private static List<EquityPointData> equity(List<pac.simulation.v1.EquityPoint> points) {
+        List<EquityPointData> out = new ArrayList<>(points.size());
+        for (pac.simulation.v1.EquityPoint p : points) {
+            out.add(new EquityPointData(p.getStep(), decimal(p.getEquity())));
+        }
+        return out;
     }
 
     /** Свечи событий шагов после {@code fromStep}: рублёвые и (если запрошен слепой вид) слепые. */

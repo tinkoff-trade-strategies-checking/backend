@@ -236,7 +236,61 @@ public final class WorkerTypes {
             List<FillState> fills,
             List<CommandOutcome> commandResults,
             long warmupSteps,
-            @Nullable BlindViewData blindView) {}
+            @Nullable BlindViewData blindView,
+            @Nullable ReportData report) {}
+
+    /**
+     * Метрики отчёта ({@code Metrics}). Доли — как у ядра (0,12 = 12 %), {@code null} — необязательное значение ядра
+     * отсутствует (мало данных).
+     */
+    public record MetricsData(
+            double totalReturn,
+            double grossReturn,
+            @Nullable Double cagr,
+            double maxDrawdown,
+            long maxDrawdownSteps,
+            @Nullable Double volatility,
+            @Nullable Double sharpe,
+            @Nullable Double sortino,
+            double turnover,
+            long fills,
+            long roundTrips,
+            @Nullable Double winRate,
+            long rejections,
+            long partialFills,
+            double hhiAvg,
+            double maxPositionShare,
+            @Nullable Double benchmarkReturn,
+            int tradingDays,
+            long stopTakeSameBar) {}
+
+    /** Издержки по видам ({@code CostTotals}). */
+    public record CostTotalsData(
+            BigDecimal commission, BigDecimal exchangeFee, BigDecimal spread, BigDecimal slippage) {}
+
+    /** Точка кривой капитала или бенчмарка ({@code EquityPoint}). */
+    public record EquityPointData(long step, BigDecimal equity) {}
+
+    /** Закрытая сделка — пара покупка → продажа по FIFO ({@code RoundTrip}). */
+    public record RoundTripData(
+            String paperKey,
+            long entryStep,
+            long exitStep,
+            long lots,
+            BigDecimal entryPrice,
+            BigDecimal exitPrice,
+            BigDecimal grossPnl,
+            BigDecimal costs,
+            BigDecimal netPnl) {}
+
+    /** Отчёт ядра ({@code Report}) в рублях: только раскрытая (завершённая) сессия. */
+    public record ReportData(
+            MetricsData metrics,
+            CostTotalsData costs,
+            List<EquityPointData> equity,
+            BigDecimal finalEquity,
+            List<EquityPointData> benchmarkEquity,
+            List<RoundTripData> roundTrips) {}
 
     /** Оценка заявки ({@code EstimateOrderResponse}); {@code resolvedOrder} — рублёвая заявка для журнала. */
     public record EstimateResult(

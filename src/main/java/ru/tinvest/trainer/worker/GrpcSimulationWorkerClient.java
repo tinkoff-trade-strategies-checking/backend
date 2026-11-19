@@ -107,6 +107,33 @@ class GrpcSimulationWorkerClient implements SimulationWorkerClient {
     }
 
     @Override
+    public ReplayResult replayWithReport(Market market, List<JournalRecord> journal, long upToStep) {
+        ReplaySessionRequest request = ReplaySessionRequest.newBuilder()
+                .setMarket(WorkerMapper.market(market))
+                .addAllJournal(WorkerMapper.journal(journal))
+                .setUpToStep(upToStep)
+                .setEventsFromStep(-1)
+                .setIncludeHistory(true)
+                .setIncludeReport(true)
+                .setBlind(false)
+                .build();
+        return WorkerMapper.replay(call(() -> stub().replaySession(request)));
+    }
+
+    @Override
+    public int tradingDaysAt(Market market, long upToStep) {
+        ReplaySessionRequest request = ReplaySessionRequest.newBuilder()
+                .setMarket(WorkerMapper.market(market))
+                .setUpToStep(upToStep)
+                .setEventsFromStep(-1)
+                .setIncludeHistory(false)
+                .setIncludeReport(true)
+                .setBlind(false)
+                .build();
+        return call(() -> stub().replaySession(request)).getReport().getMetrics().getTradingDays();
+    }
+
+    @Override
     public EstimateResult estimateOrder(Market market, List<JournalRecord> journal, long upToStep, OrderParams order) {
         EstimateOrderRequest request = EstimateOrderRequest.newBuilder()
                 .setMarket(WorkerMapper.market(market))

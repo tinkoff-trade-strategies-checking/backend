@@ -161,6 +161,14 @@ public class Sessions {
                 .update();
     }
 
+    /**
+     * Сессия по идентификатору без проверки владельца: только для фоновых задач по событию (отчёт после завершения),
+     * идентификатор приходит из системы, не от клиента.
+     */
+    Optional<SessionRecord> findAny(UUID sessionId) {
+        return find(sessionId, false);
+    }
+
     private SessionRecord requireOwned(UUID sessionId, boolean lock) {
         UUID userId = currentUser.requireId();
         return find(sessionId, lock)

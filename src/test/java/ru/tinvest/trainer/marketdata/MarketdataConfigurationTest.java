@@ -38,6 +38,19 @@ class MarketdataConfigurationTest {
                 }
 
                 @Override
+                public ru.tinvest.trainer.worker.WorkerTypes.ReplayResult replayWithReport(
+                        ru.tinvest.trainer.worker.WorkerTypes.Market market,
+                        java.util.List<ru.tinvest.trainer.worker.WorkerTypes.JournalRecord> journal,
+                        long upToStep) {
+                    throw new UnsupportedOperationException();
+                }
+
+                @Override
+                public int tradingDaysAt(ru.tinvest.trainer.worker.WorkerTypes.Market market, long upToStep) {
+                    throw new UnsupportedOperationException();
+                }
+
+                @Override
                 public ru.tinvest.trainer.worker.WorkerTypes.EstimateResult estimateOrder(
                         ru.tinvest.trainer.worker.WorkerTypes.Market market,
                         java.util.List<ru.tinvest.trainer.worker.WorkerTypes.JournalRecord> journal,
