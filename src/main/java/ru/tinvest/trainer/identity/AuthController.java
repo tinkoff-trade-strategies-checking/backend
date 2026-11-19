@@ -124,7 +124,7 @@ class AuthController {
     }
 
     /** Секунды вверх, не меньше 1: нулевое или усечённое значение даёт повторный 429. */
-    private static long retryAfterSeconds(Duration blocked) {
+    static long retryAfterSeconds(Duration blocked) {
         long seconds = blocked.toSeconds() + (blocked.toNanosPart() > 0 ? 1 : 0);
         return Math.max(1, seconds);
     }
