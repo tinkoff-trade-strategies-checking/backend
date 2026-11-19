@@ -19,10 +19,12 @@ import ru.tinvest.trainer.api.NotFoundException;
 import ru.tinvest.trainer.config.Uuid7;
 import ru.tinvest.trainer.identity.CurrentUser;
 import ru.tinvest.trainer.marketdata.LaunchPlan;
+import ru.tinvest.trainer.marketdata.LaunchPlanner;
 import ru.tinvest.trainer.marketdata.PlannedPaper;
 import ru.tinvest.trainer.marketdata.Regime;
 import ru.tinvest.trainer.marketdata.StartMode;
 import ru.tinvest.trainer.marketdata.Timeframe;
+import ru.tinvest.trainer.worker.WorkerTypes.Costs;
 
 /**
  * Хранилище сессий (схема {@code sessions}) и единственная точка доступа к ним по владельцу: чужая сессия
@@ -32,6 +34,14 @@ import ru.tinvest.trainer.marketdata.Timeframe;
 public class Sessions {
 
     private static final String STATUS_RUNNING = "running";
+
+    /** Издержки исполнения по умолчанию ({@code decisions.md}, «Модель исполнения»); фиксируются в сессии при запуске. */
+    static final Costs DEFAULT_COSTS = new Costs(
+            new BigDecimal("0.003"),
+            new BigDecimal("0.0001"),
+            new BigDecimal("0.001"),
+            new BigDecimal("0.1"),
+            new BigDecimal("0.1"));
 
     private final JdbcClient jdbc;
     private final CurrentUser currentUser;
@@ -57,9 +67,11 @@ public class Sessions {
         UUID id = Uuid7.next();
         jdbc.sql("INSERT INTO sessions.session (id, user_id, blind, status, trader_kind, duration_days, timeframe, "
                         + "regime, start_mode, snapshot_id, period_start, period_end, trading_days, bars_count, "
-                        + "sigma, mdd, p33, p80, initial_capital) VALUES (:id, :user, :blind, :status, 'human', "
+                        + "sigma, mdd, p33, p80, initial_capital, warmup_bars, commission_rate, exchange_fee_rate, spread, "
+                        + "slippage_kappa, liquidity_share) VALUES (:id, :user, :blind, :status, 'human', "
                         + ":duration, :timeframe, :regime, :startMode, :snapshot, :start, :end, :days, :bars, "
-                        + ":sigma, :mdd, :p33, :p80, :capital)")
+                        + ":sigma, :mdd, :p33, :p80, :capital, :warmup, :commission, :exchangeFee, :spread, "
+                        + ":kappa, :liquidity)")
                 .param("id", id)
                 .param("user", userId)
                 .param("blind", plan.blind())
@@ -78,6 +90,12 @@ public class Sessions {
                 .param("p33", plan.p33())
                 .param("p80", plan.p80())
                 .param("capital", plan.capital())
+                .param("warmup", LaunchPlanner.WARMUP_BARS)
+                .param("commission", DEFAULT_COSTS.commissionRate())
+                .param("exchangeFee", DEFAULT_COSTS.exchangeFeeRate())
+                .param("spread", DEFAULT_COSTS.spread())
+                .param("kappa", DEFAULT_COSTS.slippageKappa())
+                .param("liquidity", DEFAULT_COSTS.liquidityShare())
                 .update();
         List<PlannedPaper> shuffled = new ArrayList<>(plan.papers());
         Collections.shuffle(shuffled, random);
@@ -103,14 +121,26 @@ public class Sessions {
      * @throws NotFoundException сессии нет или она чужая (не различаются)
      */
     public SessionRecord requireOwned(UUID sessionId) {
+        return requireOwned(sessionId, false);
+    }
+
+    /**
+     * Сессия текущего пользователя с блокировкой строки до конца транзакции: команды одной сессии (запись в журнал)
+     * выполняются по очереди. Вызывать внутри транзакции.
+     */
+    SessionRecord requireOwnedForUpdate(UUID sessionId) {
+        return requireOwned(sessionId, true);
+    }
+
+    private SessionRecord requireOwned(UUID sessionId, boolean lock) {
         UUID userId = currentUser.requireId();
-        return find(sessionId)
+        return find(sessionId, lock)
                 .filter(s -> s.userId().equals(userId))
                 .orElseThrow(() -> new NotFoundException("Session not found"));
     }
 
-    private Optional<SessionRecord> find(UUID sessionId) {
-        return jdbc.sql("SELECT * FROM sessions.session WHERE id = :id")
+    private Optional<SessionRecord> find(UUID sessionId, boolean lock) {
+        return jdbc.sql("SELECT * FROM sessions.session WHERE id = :id" + (lock ? " FOR UPDATE" : ""))
                 .param("id", sessionId)
                 .query((rs, n) -> new SessionRecord(
                         rs.getObject("id", UUID.class),
@@ -132,6 +162,14 @@ public class Sessions {
                         rs.getDouble("p80"),
                         rs.getObject("initial_capital", BigDecimal.class),
                         rs.getObject("created_at", OffsetDateTime.class),
+                        rs.getLong("current_step"),
+                        rs.getInt("warmup_bars"),
+                        new Costs(
+                                rs.getBigDecimal("commission_rate"),
+                                rs.getBigDecimal("exchange_fee_rate"),
+                                rs.getBigDecimal("spread"),
+                                rs.getBigDecimal("slippage_kappa"),
+                                rs.getBigDecimal("liquidity_share")),
                         papers(sessionId)))
                 .optional();
     }

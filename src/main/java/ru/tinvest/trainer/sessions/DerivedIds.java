@@ -1,0 +1,39 @@
+package ru.tinvest.trainer.sessions;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.UUID;
+
+/**
+ * Детерминированные идентификаторы UUID v5 (RFC 9562) для сущностей, которые пересчитываются из журнала: исполнения,
+ * сделки. Идентификатор — от (сессия, вид, номер в ядре), поэтому одинаков в снимке, SSE и отчёте (INV-8).
+ */
+final class DerivedIds {
+
+    private DerivedIds() {}
+
+    /** Исполнение: номер в ядре — ({@code order_id}, {@code step}) из {@code Fill}. */
+    static UUID fill(UUID sessionId, long coreOrderId, long step) {
+        return v5(sessionId, "fill:" + coreOrderId + ":" + step);
+    }
+
+    static UUID v5(UUID namespace, String name) {
+        try {
+            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+            sha1.update(ByteBuffer.allocate(16)
+                    .putLong(namespace.getMostSignificantBits())
+                    .putLong(namespace.getLeastSignificantBits())
+                    .array());
+            sha1.update(name.getBytes(StandardCharsets.UTF_8));
+            byte[] hash = sha1.digest();
+            hash[6] = (byte) ((hash[6] & 0x0F) | 0x50);
+            hash[8] = (byte) ((hash[8] & 0x3F) | 0x80);
+            ByteBuffer buffer = ByteBuffer.wrap(hash, 0, 16);
+            return new UUID(buffer.getLong(), buffer.getLong());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-1 недоступен", e);
+        }
+    }
+}

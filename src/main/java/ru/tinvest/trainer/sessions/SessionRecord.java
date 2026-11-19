@@ -8,6 +8,7 @@ import java.util.UUID;
 import ru.tinvest.trainer.marketdata.Regime;
 import ru.tinvest.trainer.marketdata.StartMode;
 import ru.tinvest.trainer.marketdata.Timeframe;
+import ru.tinvest.trainer.worker.WorkerTypes.Costs;
 
 /**
  * Сессия: параметры запуска и неизменный план (снапшот, период, категория, бумаги, капитал). Даты периода, σ, MDD,
@@ -34,6 +35,9 @@ public record SessionRecord(
         double p80,
         BigDecimal initialCapital,
         OffsetDateTime createdAt,
+        long currentStep,
+        int warmupBars,
+        Costs costs,
         List<PaperRecord> papers) {
 
     public SessionRecord {
