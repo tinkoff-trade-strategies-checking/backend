@@ -1,0 +1,17 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/trainer
+    username: trainer
+    password: trainer
+
+server:
+  port: 8080
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    ru.tinvest.trainer: DEBUG

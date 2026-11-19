@@ -1,0 +1,18 @@
+package ru.tinvest.trainer.api;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+/** Техническая проверка доступности HTTP API. */
+@RestController
+@RequestMapping("/api")
+class HealthController {
+
+    @GetMapping("/health")
+    HealthResponse health() {
+        return new HealthResponse("UP");
+    }
+
+    record HealthResponse(String status) {}
+}
