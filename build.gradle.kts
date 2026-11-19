@@ -121,3 +121,14 @@ tasks.register<Test>("e2eTest") {
     }
     shouldRunAfter(tasks.test)
 }
+
+// Локальный стенд (deploy/dev-up.sh): SQL той же фикстуры, что у e2e. ./gradlew -q devFixtureSql -PfixtureOut=файл [-PfixtureDays=260]
+tasks.register<JavaExec>("devFixtureSql") {
+    description = "Пишет SQL фикстуры рынка для локального стенда"
+    group = "verification"
+    classpath = sourceSets["e2eTest"].runtimeClasspath
+    mainClass = "ru.tinvest.trainer.e2e.MarketFixture"
+    val out = providers.gradleProperty("fixtureOut").orElse(layout.buildDirectory.file("dev-fixture.sql").map { it.asFile.path })
+    val days = providers.gradleProperty("fixtureDays")
+    argumentProviders.add(CommandLineArgumentProvider { listOf(out.get()) + days.map { listOf(it) }.getOrElse(listOf()) })
+}

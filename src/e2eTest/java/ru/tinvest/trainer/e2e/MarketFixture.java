@@ -18,7 +18,7 @@ import java.util.function.Consumer;
  * дней, календарь и RUONIA. Данные детерминированы (фиксированное зерно) и лежат в памяти, чтобы тест пересчитывал
  * деньги независимо от воркера. Без сети: ISS не нужен.
  */
-final class MarketFixture {
+public final class MarketFixture {
 
     /** Идентификатор снапшота в ClickHouse ({@code snapshot_id}) и ключ в PostgreSQL ({@code snapshot_key}). */
     static final String SNAPSHOT = "5a1c0de0-0000-4000-8000-0000000000e2";
@@ -46,8 +46,16 @@ final class MarketFixture {
     private final Map<String, Map<LocalDate, Bar>> bars = new LinkedHashMap<>();
 
     MarketFixture() {
+        this(DAYS);
+    }
+
+    /** Фикстура на {@code dayCount} торговых дней (не меньше {@link #DAYS}: от этого зависит разметка индекса). */
+    MarketFixture(int dayCount) {
+        if (dayCount < DAYS) {
+            throw new IllegalArgumentException("дней должно быть не меньше " + DAYS);
+        }
         LocalDate day = FIRST_DAY;
-        while (days.size() < DAYS) {
+        while (days.size() < dayCount) {
             if (day.getDayOfWeek() != DayOfWeek.SATURDAY && day.getDayOfWeek() != DayOfWeek.SUNDAY) {
                 days.add(day);
             }
@@ -210,5 +218,17 @@ final class MarketFixture {
         sink.accept("INSERT INTO trading_calendar (snapshot_id, date, is_trading) VALUES " + calendar);
         sink.accept("INSERT INTO ruonia (snapshot_id, date, rate) VALUES " + ruonia);
         sink.accept("INSERT INTO snapshots_ready (snapshot_id) VALUES (" + s + ")");
+    }
+
+    /**
+     * Локальный стенд ({@code deploy/dev-up.sh}): пишет SQL фикстуры, по одному оператору на строку, в файл
+     * {@code args[0]}; {@code args[1]} — число торговых дней (необязательно).
+     */
+    public static void main(String[] args) throws java.io.IOException {
+        MarketFixture fixture = args.length > 1 ? new MarketFixture(Integer.parseInt(args[1])) : new MarketFixture();
+        List<String> lines = new ArrayList<>();
+        fixture.statements(lines::add);
+        java.nio.file.Files.write(java.nio.file.Path.of(args[0]), lines, java.nio.charset.StandardCharsets.UTF_8);
+        System.out.println(SNAPSHOT);
     }
 }

@@ -22,3 +22,7 @@ deploy/.env
 # аварийные логи JVM
 hs_err_pid*.log
 replay_pid*.log
+
+# Локальный стенд (deploy/dev-up.sh)
+deploy/.env.dev
+deploy/.dev/

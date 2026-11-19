@@ -184,6 +184,18 @@ docker stop trainer-pg
 
 CI (`.github/workflows/ci.yml`): джоба `format` (`./gradlew spotlessCheck --no-daemon`), джоба `build-test` (`./gradlew build -x spotlessCheck --no-daemon`), джоба `e2e` (образ воркера из `core/main` и `./gradlew e2eTest --no-daemon`), джоба `proto-sync` (сверка `proto/` с `core/main`), джоба `pr-size` (наблюдение размера PR).
 
+## Локальный стенд
+Для проверки UI без полного `deploy/`: `deploy/dev-up.sh [--days N] [--port P]` поднимает PostgreSQL 17, ClickHouse 25.8 и воркер (образ `simulation-worker`, нет — собирается из `../core`), грузит в ClickHouse ту же фикстуру, что e2e (`MarketFixture`: SBER, GAZP, LKOH и IMOEX, 160 торговых дней с 2025-03-03, дневные свечи, календарь, RUONIA; `--days` не меньше 160, например 260), регистрирует снапшот, заводит пользователя профилем `create-user` и запускает backend в фоне (pid и логи в `deploy/.dev/`). Нужны Docker, `curl` и Java 25 (системная или скачанная Gradle). Порты: backend 8080 (`--port`, если занят), PostgreSQL 15432, ClickHouse 18123, воркер 15051 (только 127.0.0.1). Почта пользователя `trader@example.com`, пароль и пароли БД генерируются в `deploy/.env.dev` (в `.gitignore`, в вывод скриптов не попадают). `deploy/dev-down.sh` останавливает всё и удаляет `deploy/.dev` и `deploy/.env.dev`.
+
+```bash
+bash deploy/dev-up.sh                       # или --port 18080
+. deploy/.env.dev                           # DEV_USER_EMAIL, DEV_USER_PASSWORD
+curl -i http://localhost:8080/api/v1/me     # 401 и cookie XSRF-TOKEN; вход — POST /api/v1/auth/login с X-XSRF-TOKEN
+bash deploy/dev-down.sh
+```
+
+Фронтенд: в `frontend` пока нет `proxy.conf` и общей настройки базового URL API (frontend#8). Чтобы открыть UI на стенде, нужен прокси `ng serve` на backend: файл `proxy.conf.json` `{"/api": {"target": "http://localhost:8080", "secure": false}}` и `npx ng serve --proxy-config proxy.conf.json`; страницы идут с `http://localhost:4200`, запросы `/api/v1/...` — на тот же origin, поэтому CORS не нужен. Cookie сессии на стенде без `Secure` (`SERVER_SERVLET_SESSION_COOKIE_SECURE=false`). Профиль `create-user` после работы не завершает JVM, скрипт ждёт строку об успехе и останавливает процесс сам.
+
 ## Окружение
 Локальный стек в `deploy/`: `caddy` (HTTPS, единственный с опубликованными портами 80/443, INV-10) → `backend`; внутри сети `postgres` (17), `clickhouse` (25.8) и `worker` (образ `simulation-worker`, собирается из `../core` по его `Dockerfile`).
 Соседние репозитории лежат рядом с `backend` (`../core`, `../frontend`); нет локально — `home/scripts/clone-repos.sh`.
