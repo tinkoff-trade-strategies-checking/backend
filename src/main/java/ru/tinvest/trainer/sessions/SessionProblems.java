@@ -26,7 +26,7 @@ final class SessionProblems {
     static ProblemDetail idempotency(IdempotencyException e) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(e.status(), e.getMessage());
         problem.setTitle(e.status() == HttpStatus.CONFLICT ? "Conflict" : "Unprocessable Content");
-        problem.setProperty("code", e.code());
+        e.code().applyTo(problem);
         return problem;
     }
 }

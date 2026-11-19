@@ -418,7 +418,7 @@ paths:
       description: |
         Без серверного состояния: курсор воспроизведения хранит клиент и передаёт явный `step`.
         Без `fromStep` ответ — полный снимок `snapshot` на шаге `step`; с `fromStep` — приращение
-        `increment` (`OpenStepResult` за `(fromStep; step]` без истории свечей). `step` больше `totalSteps`
+        `increment` (`kind`: `SNAPSHOT` или `INCREMENT`) (`OpenStepResult` за `(fromStep; step]` без истории свечей). `step` больше `totalSteps`
         ограничивается последним шагом (ответ содержит фактический шаг); `fromStep` больше `step` — 400, равный — пустое приращение.
         Всегда 200 с `status` (`READY`, `NOT_FINISHED`, `NOT_FOUND`).
       parameters:
@@ -598,7 +598,19 @@ components:
         status: { type: integer }
         detail: { type: [string, 'null'] }
         instance: { type: [string, 'null'] }
-        code: { type: [string, 'null'], description: Машинный код причины }
+        code: { oneOf: [{ $ref: '#/components/schemas/ProblemCode' }, { type: 'null' }], description: Машинный код причины }
+    ProblemCode:
+      type: string
+      description: Все машинные коды `Problem.code`, которые отдаёт API (enum `ErrorCode` в backend)
+      enum:
+        - IDEMPOTENCY_KEY_REUSED
+        - IDEMPOTENCY_KEY_IN_PROGRESS
+        - SESSION_NOT_ACTIVE
+        - PLAYER_STATE_CONFLICT
+        - NO_MATCHING_PERIOD
+        - TOO_MANY_BARS
+        - INVALID_PARAMS
+        - CORPORATE_ACTION_ON_PERIOD
     LaunchProblem:
       allOf:
         - $ref: '#/components/schemas/Problem'
@@ -1437,6 +1449,7 @@ components:
         mapping: { BLIND: '#/components/schemas/BlindOrderUpdatedEvent', OPEN: '#/components/schemas/OpenOrderUpdatedEvent' }
     PausedEvent:
       type: object
+      description: 'Причина паузы. Пауза всегда публикуется парой: сначала `player` (`playing: false`), затем `paused` с причиной'
       unevaluatedProperties: false
       required: [type, eventId, reason]
       properties:
@@ -1488,17 +1501,37 @@ components:
         totalSteps: { type: integer }
         lastStep: { type: integer, description: 'Итоговый шаг: у досрочно завершённой и обанкротившейся сессии меньше `totalSteps`, дальше него воспроизведение не идёт' }
         totalDays: { type: integer }
-    ReplayReady:
+    ReplayReadyBase:
       type: object
-      description: 'Заполнен ровно один из `snapshot` (запрос без `fromStep`) и `increment` (с `fromStep`)'
-      required: [status, session, snapshot, increment]
+      required: [status, session]
       properties:
         status: { type: string, const: READY }
         session: { $ref: '#/components/schemas/ReplayMeta' }
-        snapshot:
-          oneOf: [{ $ref: '#/components/schemas/OpenSnapshot' }, { type: 'null' }]
-        increment:
-          oneOf: [{ $ref: '#/components/schemas/OpenStepResult' }, { type: 'null' }]
+    ReplaySnapshotReady:
+      description: Ответ на запрос без `fromStep` — полный снимок на шаге `step`
+      allOf:
+        - $ref: '#/components/schemas/ReplayReadyBase'
+        - type: object
+          required: [kind, snapshot]
+          properties:
+            kind: { type: string, const: SNAPSHOT }
+            snapshot: { $ref: '#/components/schemas/OpenSnapshot' }
+    ReplayIncrementReady:
+      description: Ответ на запрос с `fromStep` — приращение за `(fromStep; step]`
+      allOf:
+        - $ref: '#/components/schemas/ReplayReadyBase'
+        - type: object
+          required: [kind, increment]
+          properties:
+            kind: { type: string, const: INCREMENT }
+            increment: { $ref: '#/components/schemas/OpenStepResult' }
+    ReplayReady:
+      oneOf:
+        - $ref: '#/components/schemas/ReplaySnapshotReady'
+        - $ref: '#/components/schemas/ReplayIncrementReady'
+      discriminator:
+        propertyName: kind
+        mapping: { SNAPSHOT: '#/components/schemas/ReplaySnapshotReady', INCREMENT: '#/components/schemas/ReplayIncrementReady' }
     NotFinished:
       type: object
       description: Незавершённая сессия — без бумаг, периода и итога (INV-1, INV-7)
