@@ -48,6 +48,9 @@ public interface LaunchPlanner {
      */
     LaunchResult plan(LaunchRequest request, @Nullable UUID snapshotId, long seed);
 
+    /** Читает в кэш каталога данные последнего готового снапшота (вызывается в фоне при старте). */
+    default void warmUp() {}
+
     /** Бумаги пула в снапшоте (для экрана выбора бумаг при своей дате); {@code null} — последний готовый. */
     List<PlannedPaper> papers(@Nullable UUID snapshotId);
 

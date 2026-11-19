@@ -115,9 +115,8 @@ final class ClickHouseArchiveCatalog implements ArchiveCatalog {
             int sourceIntervalSec,
             int stepSec,
             Collection<String> secids,
-            LocalDate from,
-            LocalDate to) {
-        if (secids.isEmpty()) {
+            List<LocalDate> windowDays) {
+        if (secids.isEmpty() || windowDays.isEmpty()) {
             return 0;
         }
         // Торговый день — дата МСК: границы по ts_open (первичный ключ), все сессии дня внутри.
@@ -125,10 +124,14 @@ final class ClickHouseArchiveCatalog implements ArchiveCatalog {
                 ? "toDate(ts_open, " + MSK + ")"
                 : "toStartOfInterval(ts_open, INTERVAL " + stepSec + " SECOND)";
         String list = secids.stream().map(ClickHouseArchiveCatalog::quote).collect(Collectors.joining(", "));
+        LocalDate from = windowDays.getFirst();
+        LocalDate to = windowDays.getLast();
+        String dates = windowDays.stream().map(d -> "'" + d + "'").collect(Collectors.joining(", "));
         List<String[]> r = rows("SELECT uniqExact(" + bucket + ") FROM candles WHERE snapshot_id = '"
                 + uuid(snapshotKey) + "' AND secid IN (" + list + ") AND interval_sec = " + sourceIntervalSec
                 + " AND ts_open >= toDateTime64('" + utc(from.atStartOfDay(ZONE)) + "', 3, 'UTC')"
-                + " AND ts_open < toDateTime64('" + utc(to.plusDays(1).atStartOfDay(ZONE)) + "', 3, 'UTC')");
+                + " AND ts_open < toDateTime64('" + utc(to.plusDays(1).atStartOfDay(ZONE)) + "', 3, 'UTC')"
+                + " AND toDate(ts_open, " + MSK + ") IN (" + dates + ")");
         return Integer.parseInt(r.getFirst()[0]);
     }
 

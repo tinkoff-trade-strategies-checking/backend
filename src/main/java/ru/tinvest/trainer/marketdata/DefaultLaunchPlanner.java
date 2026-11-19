@@ -35,6 +35,9 @@ import ru.tinvest.trainer.worker.SimulationWorkerClient;
  */
 class DefaultLaunchPlanner implements LaunchPlanner {
 
+    /** Сколько окон, превысивших лимит шагов, проверяем до отказа: каждая проверка — запрос к ClickHouse. */
+    private static final int MAX_LIMIT_CHECKS = 50;
+
     /** Свечи с этим интервалом core агрегирует в любой шаг (core/AGENTS.md, {@code ClickHouseBarSource}). */
     private static final int BASE_INTERVAL_SEC = 60;
 
@@ -97,6 +100,18 @@ class DefaultLaunchPlanner implements LaunchPlanner {
         List<ArchivePaper> papers = poolPapers(key);
         Context ctx = new Context(request, snapshot, source, length, days);
         return request.startMode() == StartMode.CUSTOM ? planCustom(ctx, papers) : planRandom(ctx, papers, seed);
+    }
+
+    @Override
+    public void warmUp() {
+        Snapshot snapshot = resolveSnapshot(null);
+        String key = snapshot.snapshotKey();
+        archive.tradingDays(key);
+        archive.securities(key);
+        archive.corporateActions(key);
+        for (int interval : archive.intervals(key)) {
+            archive.candleDays(key, interval);
+        }
     }
 
     @Override
@@ -174,17 +189,40 @@ class DefaultLaunchPlanner implements LaunchPlanner {
                 .toList();
         Map<String, List<LocalDate>> actions = archive.corporateActions(key);
         Map<String, Set<LocalDate>> candleDays = archive.candleDays(key, ctx.sourceInterval());
+        int overLimit = 0;
         for (PeriodWindow window : windows) {
             List<LocalDate> windowDays = windowDays(ctx, window);
             List<ArchivePaper> eligible = withSector.stream()
                     .filter(p -> !hasAction(actions, p.secid(), window) && covers(candleDays, p.secid(), windowDays))
                     .collect(Collectors.toCollection(ArrayList::new));
-            if (eligible.size() >= count) {
-                Collections.shuffle(eligible, random);
-                return finish(ctx, window, classification, eligible.subList(0, count), true);
+            if (eligible.size() < count) {
+                continue;
+            }
+            Collections.shuffle(eligible, random);
+            List<ArchivePaper> chosen = eligible.subList(0, count);
+            int steps = steps(ctx, windowDays, chosen);
+            if (steps <= maxBars) {
+                return plan(ctx, window, classification, chosen, true, steps);
+            }
+            // окно, где шагов больше лимита, не подходит: пропускаем, а не отказываем (иначе результат зависит от seed)
+            if (++overLimit >= MAX_LIMIT_CHECKS) {
+                break;
             }
         }
+        if (overLimit > 0) {
+            // подходящих окон не осталось из-за лимита; свойства скрытых окон (число шагов) клиенту не раскрываем
+            return new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", null, maxBars);
+        }
         return LaunchRejection.of(LaunchRejectReason.NO_MATCHING_PERIOD, "regime");
+    }
+
+    private int steps(Context ctx, List<LocalDate> windowDays, List<ArchivePaper> chosen) {
+        return archive.sessionSteps(
+                ctx.snapshot().snapshotKey(),
+                ctx.sourceInterval(),
+                ctx.request().timeframe().seconds(),
+                chosen.stream().map(ArchivePaper::secid).toList(),
+                windowDays);
     }
 
     /** Торговые дни окна по календарю (граничные даты окна — торговые дни календаря). */
@@ -215,13 +253,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
             PeriodClassification classification,
             List<ArchivePaper> chosen,
             boolean blind) {
-        int steps = archive.sessionSteps(
-                ctx.snapshot().snapshotKey(),
-                ctx.sourceInterval(),
-                ctx.request().timeframe().seconds(),
-                chosen.stream().map(ArchivePaper::secid).toList(),
-                window.startDate(),
-                window.endDate());
+        int steps = steps(ctx, windowDays(ctx, window), chosen);
         if (steps > maxBars) {
             return new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", steps, maxBars);
         }

@@ -157,12 +157,44 @@ class LaunchPlannerTest {
         assertThat(archive.lastStepSec).isEqualTo(600);
         assertThat(archive.lastStepPapers).hasSize(2);
 
+        // слепой режим: окон с подходящим числом шагов нет — отказ без числа шагов скрытого окна
         archive.steps = 5001;
+        archive.stepCalls = 0;
         LaunchRejection rej = rejection(planner.plan(m10, null, 1L));
         assertThat(rej.reason()).isEqualTo(LaunchRejectReason.TOO_MANY_BARS);
-        assertThat(rej.barsCount()).isEqualTo(5001);
+        assertThat(rej.barsCount()).isNull();
         assertThat(rej.maxBars()).isEqualTo(5000);
         assertThat(rej.field()).isEqualTo("durationDays");
+        // проверок не больше предела, а не по запросу на каждое из сотен окон
+        assertThat(archive.stepCalls).isEqualTo(50);
+    }
+
+    @Test
+    void blindWindowOverTheLimitIsSkippedNotRejected() {
+        var m10 = new LaunchRequest(20, Timeframe.M10, Regime.MEDIUM, StartMode.RANDOM, null, 2, null, CAPITAL);
+        // окна с чётным началом превышают лимит, с нечётным — нет
+        archive.stepsFor = days -> calendar.indexOf(days.getFirst()) % 2 == 0 ? 5001 : 4000;
+        for (long seed = 0; seed < 30; seed++) {
+            LaunchPlan p = plan(planner.plan(m10, null, seed));
+            assertThat(calendar.indexOf(p.startDate()) % 2).isEqualTo(1);
+            assertThat(p.barsCount()).isEqualTo(4000);
+        }
+    }
+
+    @Test
+    void sessionStepsAreCountedOverTheCalendarDaysOfTheWindow() {
+        int i = 30;
+        var request = new LaunchRequest(
+                20,
+                Timeframe.H1,
+                regimeAt(i),
+                StartMode.CUSTOM,
+                calendar.get(i),
+                null,
+                List.of(Papers.id("A")),
+                CAPITAL);
+        plan(planner.plan(request));
+        assertThat(archive.lastStepDays).isEqualTo(calendar.subList(i, i + 20));
     }
 
     @Test
@@ -181,8 +213,7 @@ class LaunchPlannerTest {
         assertThat(rejection(planner.plan(request)).barsCount()).isEqualTo(5001);
         archive.steps = 280;
         assertThat(plan(planner.plan(request)).barsCount()).isEqualTo(280);
-        assertThat(archive.lastStepFrom).isEqualTo(calendar.get(i));
-        assertThat(archive.lastStepTo).isEqualTo(calendar.get(i + 19));
+        assertThat(archive.lastStepDays).isEqualTo(calendar.subList(i, i + 20));
     }
 
     @Test
@@ -311,6 +342,15 @@ class LaunchPlannerTest {
         archive.intervals = Set.of(60);
         planner.plan(m5, null, 1L);
         assertThat(archive.lastCandleInterval).isEqualTo(60);
+    }
+
+    @Test
+    void warmUpReadsLatestSnapshotIntoTheCatalog() {
+        archive.intervals = Set.of(60, 86400);
+        planner.warmUp();
+        assertThat(archive.candleIntervalsRead).containsExactlyInAnyOrder(60, 86400);
+        archive.ready = false;
+        assertThatThrownBy(planner::warmUp).isInstanceOf(DependencyUnavailableException.class);
     }
 
     @Test
@@ -447,8 +487,10 @@ class LaunchPlannerTest {
         int steps = 100;
         int lastStepSec;
         List<String> lastStepPapers;
-        LocalDate lastStepFrom;
-        LocalDate lastStepTo;
+        List<LocalDate> lastStepDays;
+        int stepCalls;
+        java.util.function.Function<List<LocalDate>, Integer> stepsFor;
+        final Set<Integer> candleIntervalsRead = new HashSet<>();
 
         private final Map<String, ArchivePaper> papers = new HashMap<>();
         private final Map<String, Integer> firstDay = new HashMap<>();
@@ -494,6 +536,7 @@ class LaunchPlannerTest {
         @Override
         public Map<String, Set<LocalDate>> candleDays(String snapshotKey, int intervalSec) {
             lastCandleInterval = intervalSec;
+            candleIntervalsRead.add(intervalSec);
             Map<String, Set<LocalDate>> result = new HashMap<>();
             for (var e : firstDay.entrySet()) {
                 Set<LocalDate> dates = new HashSet<>();
@@ -521,13 +564,12 @@ class LaunchPlannerTest {
                 int sourceIntervalSec,
                 int stepSec,
                 Collection<String> secids,
-                LocalDate from,
-                LocalDate to) {
+                List<LocalDate> windowDays) {
             lastStepSec = stepSec;
             lastStepPapers = new ArrayList<>(secids);
-            lastStepFrom = from;
-            lastStepTo = to;
-            return steps;
+            lastStepDays = windowDays;
+            stepCalls++;
+            return stepsFor != null ? stepsFor.apply(windowDays) : steps;
         }
     }
 }

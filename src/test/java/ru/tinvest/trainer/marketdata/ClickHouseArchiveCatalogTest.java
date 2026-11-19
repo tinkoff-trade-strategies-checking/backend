@@ -85,6 +85,9 @@ class ClickHouseArchiveCatalogTest {
                 + ","
                 + row("GAZP", 60, "2024-03-04 07:00:00")
                 + ","
+                // 06.03 в календаре нерабочий день (is_trading = 0): торги в выходной вне шкалы сессии
+                + row("GAZP", 60, "2024-03-06 07:00:00")
+                + ","
                 + row("IMOEX", 86400, "2024-03-03 21:00:00")
                 + ","
                 + row("SBER", 60, "2024-03-10 07:00:00"));
@@ -132,7 +135,7 @@ class ClickHouseArchiveCatalogTest {
                 .containsOnlyKeys("SBER", "GAZP")
                 .containsEntry(
                         "SBER", Set.of(LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 5), LocalDate.of(2024, 3, 10)))
-                .containsEntry("GAZP", Set.of(LocalDate.of(2024, 3, 4)));
+                .containsEntry("GAZP", Set.of(LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 6)));
         assertThat(c.candleDays(SNAP, 300)).isEmpty();
     }
 
@@ -143,31 +146,42 @@ class ClickHouseArchiveCatalogTest {
                 .containsEntry("GAZP", List.of(LocalDate.of(2024, 4, 1)));
     }
 
+    private static List<LocalDate> days(String... iso) {
+        return java.util.Arrays.stream(iso).map(LocalDate::parse).toList();
+    }
+
     @Test
-    void sessionStepsAreExactUnionOfStepStartsInWindow() {
+    void sessionStepsAreExactUnionOfStepStartsOverCalendarDays() {
         var c = catalog(url());
         var both = List.of("SBER", "GAZP");
-        // часовые шаги, окно 04–05.03: SBER 07:00, 20:00 (20:49) и 21:00 UTC, GAZP 07:00 совпадает с SBER
-        assertThat(c.sessionSteps(SNAP, 60, 3600, both, LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 5)))
+        // часовые шаги, дни 04-05.03: SBER 07:00, 20:00 (20:49) и 21:00 UTC, GAZP 07:00 совпадает с SBER
+        assertThat(c.sessionSteps(SNAP, 60, 3600, both, days("2024-03-04", "2024-03-05")))
                 .isEqualTo(3);
         // граница дня по МСК: свеча 00:00 МСК 05.03 не входит в 04.03 и входит в 05.03
-        assertThat(c.sessionSteps(SNAP, 60, 3600, both, LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 4)))
-                .isEqualTo(2);
-        assertThat(c.sessionSteps(SNAP, 60, 3600, both, LocalDate.of(2024, 3, 5), LocalDate.of(2024, 3, 5)))
-                .isEqualTo(1);
-        // шаг 1 день — даты МСК
-        assertThat(c.sessionSteps(SNAP, 60, 86400, both, LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 5)))
+        assertThat(c.sessionSteps(SNAP, 60, 3600, both, days("2024-03-04"))).isEqualTo(2);
+        assertThat(c.sessionSteps(SNAP, 60, 3600, both, days("2024-03-05"))).isEqualTo(1);
+        // шаг 1 день - даты МСК
+        assertThat(c.sessionSteps(SNAP, 60, 86400, both, days("2024-03-04", "2024-03-05")))
                 .isEqualTo(2);
         // минутные свечи: 07:00 общая у обеих бумаг
-        assertThat(c.sessionSteps(SNAP, 60, 60, both, LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 4)))
-                .isEqualTo(2);
-        assertThat(c.sessionSteps(SNAP, 60, 60, List.of("GAZP"), LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 4)))
+        assertThat(c.sessionSteps(SNAP, 60, 60, both, days("2024-03-04"))).isEqualTo(2);
+        assertThat(c.sessionSteps(SNAP, 60, 60, List.of("GAZP"), days("2024-03-04")))
                 .isEqualTo(1);
-        assertThat(c.sessionSteps(SNAP, 60, 60, List.of(), LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 4)))
-                .isZero();
+        assertThat(c.sessionSteps(SNAP, 60, 60, List.of(), days("2024-03-04"))).isZero();
+        assertThat(c.sessionSteps(SNAP, 60, 60, both, List.of())).isZero();
         // кавычка в тикере не ломает запрос
-        assertThat(c.sessionSteps(SNAP, 60, 60, List.of("O'NEIL"), LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 4)))
+        assertThat(c.sessionSteps(SNAP, 60, 60, List.of("O\'NEIL"), days("2024-03-04")))
                 .isZero();
+    }
+
+    @Test
+    void candlesOutsideCalendarDaysDoNotEnterTheSessionScale() {
+        var c = catalog(url());
+        // окно 04-08.03 по календарю: 06.03 (торги GAZP в выходной) внутри диапазона времени, но не в шкале
+        assertThat(c.sessionSteps(SNAP, 60, 60, List.of("GAZP"), days("2024-03-04", "2024-03-08")))
+                .isEqualTo(1);
+        assertThat(c.sessionSteps(SNAP, 60, 60, List.of("GAZP"), days("2024-03-04", "2024-03-06", "2024-03-08")))
+                .isEqualTo(2);
     }
 
     @Test

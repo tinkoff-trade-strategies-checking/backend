@@ -34,14 +34,15 @@ interface ArchiveCatalog {
     Map<String, List<LocalDate>> corporateActions(String snapshotKey);
 
     /**
-     * Точное число шагов шкалы сессии в окне [from, to] (включительно, торговые дни): разных начал свечей шага
-     * {@code stepSec}, собранных из свечей {@code sourceIntervalSec}, по объединению выбранных бумаг.
+     * Точное число шагов общей шкалы сессии в окне: разных начал свечей шага {@code stepSec}, собранных из свечей
+     * {@code sourceIntervalSec}, по объединению выбранных бумаг (шкала сессии общая для всех бумаг, это и есть «на
+     * бумагу» из лимита). Считаются только свечи торговых дней окна по календарю IMOEX: свечи бумаг в выходные и
+     * праздники вне календаря в шкалу не входят.
      */
     int sessionSteps(
             String snapshotKey,
             int sourceIntervalSec,
             int stepSec,
             Collection<String> secids,
-            LocalDate from,
-            LocalDate to);
+            List<LocalDate> windowDays);
 }
