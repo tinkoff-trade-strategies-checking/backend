@@ -74,3 +74,29 @@ jobs:
           node-version: 22
       - name: Линтер OpenAPI
         run: npx -y @redocly/cli@latest lint api/openapi.yaml
+
+  # Ссылки invariants.md на тесты backend, core и frontend (home#29, documentation#62).
+  invariants:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: backend
+      - uses: actions/checkout@v4
+        with:
+          repository: tinkoff-trade-strategies-checking/documentation
+          path: documentation
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: tinkoff-trade-strategies-checking/core
+          path: core
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: tinkoff-trade-strategies-checking/frontend
+          path: frontend
+          fetch-depth: 1
+      - name: Проверка ссылок invariants.md
+        run: python3 documentation/scripts/check-invariants.py --core core --frontend frontend --backend backend
