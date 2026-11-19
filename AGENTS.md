@@ -46,7 +46,7 @@
 - `marketdata` — каталог бумаг и доступной истории; подбор отрезка выбранной категории периода (схема `marketdata`). Импортёр архива ISS — пакет `marketdata.importer` (профиль `import`, раздел «Импорт архива ISS»).
   Подбор запуска (backend#23) — `LaunchPlanner.plan(LaunchRequest[, snapshotId, seed])` → `LaunchPlan` или `LaunchRejection` (причины как `LaunchRejectReason` контракта); раздел «Подбор запуска».
 - `workshop` — черновики стратегий, публикация неизменяемых версий, форки и скрытие из каталога (схема `workshop`).
-- `sessions` — ручная торговля: журнал команд, виртуальное время, плеер, слепой режим, завершение и воспроизведение (схема `sessions`).
+- `sessions` — ручная торговля: журнал команд, виртуальное время, плеер, слепой режим, завершение и воспроизведение (схема `sessions`). Сделано: запуск сессии (`POST /sessions`, раздел «Запуск сессии»), хранилище `Sessions`, `BlindMasking`.
 - `simulation` — очередь вычислительных заданий, прогоны алгоритмов и повтор прогона (схема `simulation`).
 - `analysis` — отчёты, история, каталог алгоритмов, сравнение результатов, разбор расхождений и выгрузка CSV/XLSX (схема `analysis`).
 
@@ -80,7 +80,7 @@ USER_PASSWORD='...' ./gradlew bootRun --args='--spring.profiles.active=create-us
 - Тесты `marketdata/importer`: поддельный ISS на JDK `HttpServer` с образцами из `src/test/resources/iss`, настоящие ClickHouse (Testcontainers) и PostgreSQL, сети нет.
 
 ## Подбор запуска
-`marketdata.LaunchPlanner` подбирает период и бумаги для ручной сессии, ничего не пишет. Бин обязателен: нужен `marketdata.clickhouse.url` (`MARKETDATA_CLICKHOUSE_URL`, а также `_DATABASE`, `_USER`, `_PASSWORD`, `_TIMEOUT`; в `deploy/` заданы), без него (пустая строка — тоже) приложение не стартует; профиль `import` подбор не создаёт. В `@SpringBootTest` ClickHouse — заглушка `marketdata.clickhouse.url=http://localhost:1`. Остальное — `marketdata.pool` (тикеры IMOEX; пусто — все бумаги снапшота), `marketdata.max-bars` (5000).
+`marketdata.LaunchPlanner` подбирает период и бумаги для ручной сессии, ничего не пишет. Бин обязателен: нужен `marketdata.clickhouse.url` (`MARKETDATA_CLICKHOUSE_URL`, а также `_DATABASE`, `_USER`, `_PASSWORD`, `_TIMEOUT`; в `deploy/` заданы), без него (пустая строка — тоже) приложение не стартует; профиль `import` подбор не создаёт. Каждый `@SpringBootTest` (в том числе с собственными `properties`) задаёт заглушку `marketdata.clickhouse.url=http://localhost:1`. Остальное — `marketdata.pool` (тикеры IMOEX; пусто — все бумаги снапшота), `marketdata.max-bars` (5000).
 
 - Снапшот — последний готовый (есть в `snapshots_ready`) или заданный; заданный и не готовый — `NotFoundException`; нет готового — `DependencyUnavailableException` (503, в контракте нет подходящей причины отказа).
 - Календарь, интервалы, бумаги, даты свечей и сплиты читаются из ClickHouse один раз на снапшот (`CachingArchiveCatalog`, снапшот неизменяем); на запрос — только `sessionSteps` по границам `ts_open`.
@@ -92,6 +92,13 @@ USER_PASSWORD='...' ./gradlew bootRun --args='--spring.profiles.active=create-us
 - Слепая сессия (`RANDOM`): окна категории перемешиваются по `seed`, берётся первое, где набралось N бумаг с сектором, с покрытием и без сплитов; бумаги — случайные N из них. Лимит проверяется на выбранном окне, при превышении — отказ. Своя дата (`CUSTOM`): категория окна из `ClassifyPeriods(start_date)` должна совпасть с выбранной, бумаги — выбор пользователя.
 - Идентификатор бумаги в API — `Papers.id(secid)`: UUID по имени от тикера, одинаков во всех снапшотах.
 - INV-1/INV-7: даты окна, σ, MDD, пороги и тикеры — только для backend; `toString` у `LaunchPlan`, `PlannedPaper`, `PeriodWindow` их не печатает, клиенту до конца сессии отдаются категория, секторы, число свечей и капитал.
+
+## Запуск сессии
+`POST /api/v1/sessions` (`sessions.SessionsController`) → `LaunchService` → `LaunchPlanner.plan` → `Sessions.create`; `GET /launch/options` и `GET /papers` отдаёт `marketdata.LaunchCatalogController`. Отказ подбора — `422` `LaunchProblem` (`code`, `field`, `barsCount`, `maxBars`), неверная форма запроса (неизвестное значение перечисления, нет поля, капитал не число) — `400`, недоступный воркер или архив — `503`; сессия при отказе не создаётся.
+- Схема `sessions` (миграция `V6`): `session` (владелец `user_id`, параметры запуска, план: `snapshot_id`, период, категория, σ, MDD, пороги, число свечей, капитал, `blind`, `status`), `session_paper` (бумага с `paper_index` — индекс в сессии, порядок случайный, не по тикеру), `command_journal` (INV-8; только дописывается, заполняют задачи про заявки). Триггеры БД: план и параметры сессии, бумаги не меняются (допустим только переход `status`), журнал без `UPDATE`/`DELETE`. Внешних ключей в чужие схемы нет, снапшот и пользователя проверяет код.
+- Доступ по владельцу — только через `Sessions.requireOwned(id)`: чужая сессия неотличима от несуществующей (`404`). Последующие операции сессии берут сессию так же.
+- Маскирование (INV-1, INV-7) — только `sessions.BlindMasking`: ответ запуска (`CreatedSession` — один `sessionId`, одинаково для слепой и неслепой) и тело `422` (константный `detail`, без дат, тикеров и метрик). Новые виды ответов сессии (снимок, события, заявки) строятся там же. `SessionRecord`, `PaperRecord`, `LaunchPlan` не печатают данные в `toString`. Тест `SessionLaunchApiTest` проверяет, что ответ слепого запуска не содержит тикеров, секторов, дат и рублей.
+- Параметры экрана запуска, не заданные решениями: `defaultRegime` = `medium`, `defaultPaperCount` = 3, `name` бумаги в `/papers` = тикер (названий в архиве нет) — вопросы к владельцу продукта.
 
 ## gRPC-контракт (proto)
 `proto/simulation.proto` и `proto/common.proto` — копии `core/proto/` с ветки `main` репозитория `core` (источник правды), без изменений. Java-код (protobuf и gRPC-стабы, пакет `pac.simulation.v1`) генерируется при сборке плагином `com.google.protobuf` в `build/generated` и не коммитится; ErrorProne и Spotless его не проверяют. Джоба CI `proto-sync` падает, если копия отличается от `core/main`. Контракт изменился в `core` — PR в `backend` с новой копией сразу после слияния PR в `core` (порядок контракта — `home/AGENTS.md`).

@@ -15,7 +15,9 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import ru.tinvest.trainer.PostgresIntegrationTest;
 
 /** Флаги настоящих cookie Tomcat: MockMvc их не формирует. */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "marketdata.clickhouse.url=http://localhost:1")
 class SessionCookieTest extends PostgresIntegrationTest {
 
     @LocalServerPort

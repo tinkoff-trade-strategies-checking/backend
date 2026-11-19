@@ -47,7 +47,8 @@ class LaunchPlannerTest {
             return snapshot.id().equals(id) ? Optional.of(snapshot) : Optional.empty();
         }
     };
-    private final LaunchPlanner planner = new LaunchPlanner(snapshots, archive, worker, Set.of(), 5000, () -> 1L);
+    private final LaunchPlanner planner =
+            new DefaultLaunchPlanner(snapshots, archive, worker, Set.of(), 5000, () -> 1L);
 
     private static List<LocalDate> weekdays(int n) {
         List<LocalDate> days = new ArrayList<>();
@@ -313,6 +314,26 @@ class LaunchPlannerTest {
     }
 
     @Test
+    void availableTimeframesFollowArchiveIntervals() {
+        archive.intervals = Set.of(60);
+        assertThat(planner.availableTimeframes(null)).containsExactly(Timeframe.values());
+        archive.intervals = Set.of(86400, 3600);
+        assertThat(planner.availableTimeframes(null)).containsExactly(Timeframe.H1, Timeframe.D1);
+        archive.intervals = Set.of(300);
+        assertThat(planner.availableTimeframes(null)).containsExactly(Timeframe.M5);
+    }
+
+    @Test
+    void contractCodesOfEnums() {
+        assertThat(Timeframe.fromCode("15m")).contains(Timeframe.M15);
+        assertThat(Timeframe.fromCode("1d")).contains(Timeframe.D1);
+        assertThat(Timeframe.fromCode("2d")).isEmpty();
+        assertThat(Regime.fromCode("stress")).contains(Regime.STRESS);
+        assertThat(Regime.fromCode("STRESS")).isEmpty();
+        assertThat(Regime.MEDIUM.code()).isEqualTo("medium");
+    }
+
+    @Test
     void noMatchingPeriodWhenArchiveHasNoSuchWindowOrEnoughPapers() {
         worker.onlyCategories = Set.of(PeriodCategory.CALM);
         LaunchRejection rej = rejection(planner.plan(random(Regime.STRESS, 2), null, 1L));
@@ -321,7 +342,7 @@ class LaunchPlannerTest {
         // слепых бумаг (с сектором и без сплита) в пуле меньше, чем просят
         worker.onlyCategories = null;
         LaunchPlanner small =
-                new LaunchPlanner(snapshots, archive, worker, Set.of("A", "B", "NOSECTOR"), 5000, () -> 1L);
+                new DefaultLaunchPlanner(snapshots, archive, worker, Set.of("A", "B", "NOSECTOR"), 5000, () -> 1L);
         assertThat(rejection(small.plan(random(Regime.CALM, 3), null, 1L)).reason())
                 .isEqualTo(LaunchRejectReason.NO_MATCHING_PERIOD);
         assertThat(small.plan(random(Regime.CALM, 2), null, 1L)).isInstanceOf(LaunchPlan.class);
@@ -329,7 +350,7 @@ class LaunchPlannerTest {
 
     @Test
     void poolIsConfiguredAndOwnPapersMustBelongToIt() {
-        LaunchPlanner small = new LaunchPlanner(snapshots, archive, worker, Set.of("A", "B"), 5000, () -> 1L);
+        LaunchPlanner small = new DefaultLaunchPlanner(snapshots, archive, worker, Set.of("A", "B"), 5000, () -> 1L);
         assertThat(small.papers(null)).extracting(PlannedPaper::secid).containsExactly("A", "B");
         int i = 30;
         assertThat(rejection(small.plan(custom(regimeAt(i), calendar.get(i), "C")))

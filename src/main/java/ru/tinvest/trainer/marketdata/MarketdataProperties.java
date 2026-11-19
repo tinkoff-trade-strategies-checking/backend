@@ -16,6 +16,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 public record MarketdataProperties(
         @DefaultValue List<String> pool,
         @DefaultValue("5000") int maxBars,
+        @DefaultValue Execution execution,
         ClickHouseProperties clickhouse) {
 
     /** Настройки ClickHouse; нет {@code url} (или он пуст) — {@link IllegalStateException}: подбор запуска обязателен. */
@@ -26,6 +27,17 @@ public record MarketdataProperties(
         }
         return clickhouse;
     }
+
+    /**
+     * Значения модели исполнения для экрана запуска ({@code ExecutionRulesSummary}, decisions.md, «Модель исполнения:
+     * значения по умолчанию»). Источник правды для расчёта — конфигурация core; здесь только то, что показывается.
+     */
+    public record Execution(
+            @DefaultValue("0.3") String commissionPct,
+            @DefaultValue("0.01") String exchangeFeePct,
+            @DefaultValue("0.1") String spreadPct,
+            @DefaultValue("0.1") String slippageKappa,
+            @DefaultValue("10") String liquidityLimitPct) {}
 
     public record ClickHouseProperties(
             String url,
