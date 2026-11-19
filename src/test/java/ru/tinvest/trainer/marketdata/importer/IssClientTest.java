@@ -151,5 +151,15 @@ class IssClientTest {
 
         assertThat(c.secids()).containsExactly("SBER", "GAZP", "TINY", "GONE");
         assertThat(c.date()).isEqualTo(LocalDate.of(2024, 3, 12));
+        assertThat(c.weights()).containsEntry("SBER", new java.math.BigDecimal("1.0"));
+    }
+
+    @Test
+    void compositionKeepsWeights() {
+        IssClient.IndexComposition c = iss.composition("MOEXOG", LocalDate.of(2024, 3, 12));
+
+        assertThat(c.weights())
+                .containsEntry("SBER", new java.math.BigDecimal("30.25"))
+                .containsEntry("GAZP", new java.math.BigDecimal("20.0"));
     }
 }

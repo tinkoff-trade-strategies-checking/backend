@@ -154,7 +154,8 @@ public final class ArchiveImporter {
             archive.markReady(id);
         }
         List<String> loaded = archive.secids(id);
-        Snapshot s = snapshots.register(id.toString(), description(p, id, loaded));
+        String hash = archive.dataHash(id, SCHEMA_VERSION);
+        Snapshot s = snapshots.register(id.toString(), description(p, id, loaded, hash), hash);
         log.info("Снапшот {} зарегистрирован, бумаг: {}", id, loaded.size());
         return new Result(id, false, s);
     }
@@ -271,11 +272,13 @@ public final class ArchiveImporter {
             log.info("Пул {} на {}: {} бумаг", POOL_INDEX, imoex.date(), tickers.size());
         }
         LocalDate asOf = imoex != null ? imoex.date() : p.to();
-        Map<String, List<String>> sectors = new TreeMap<>();
-        for (Map.Entry<String, String> e : new TreeMap<>(SECTOR_INDEXES).entrySet()) {
-            for (String secid : iss.composition(e.getKey(), asOf).secids()) {
-                sectors.computeIfAbsent(secid, k -> new ArrayList<>()).add(e.getValue());
-            }
+        // бумага → отраслевой индекс → вес; сектор выбирает sectorIndex
+        Map<String, Map<String, BigDecimal>> sectors = new TreeMap<>();
+        for (String index : new TreeMap<>(SECTOR_INDEXES).keySet()) {
+            iss.composition(index, asOf)
+                    .weights()
+                    .forEach((secid, weight) ->
+                            sectors.computeIfAbsent(secid, k -> new TreeMap<>()).put(index, weight));
         }
         List<ClickHouseArchive.SecurityRow> rows = new ArrayList<>();
         for (String secid : tickers) {
@@ -298,21 +301,36 @@ public final class ArchiveImporter {
                 log.warn("{}: шаг цены {} или лот {} не проходят условие импорта, пропущена", secid, step, lot);
                 continue;
             }
-            List<String> own = sectors.getOrDefault(secid, List.of());
+            Map<String, BigDecimal> own = sectors.getOrDefault(secid, Map.of());
+            Optional<String> index = sectorIndex(own);
             if (own.size() != 1) {
                 log.warn(
-                        "{}: секторов по отраслевым индексам {} ({}), сектор — {}",
+                        "{}: отраслевых индексов {} ({}), сектор — {}",
                         secid,
                         own.size(),
                         own,
-                        own.isEmpty() ? "пустая строка" : own.get(0));
+                        index.map(SECTOR_INDEXES::get).orElse("пустая строка"));
             }
-            rows.add(new ClickHouseArchive.SecurityRow(secid, own.isEmpty() ? "" : own.get(0), lot, step));
+            rows.add(new ClickHouseArchive.SecurityRow(
+                    secid, index.map(SECTOR_INDEXES::get).orElse(""), lot, step));
         }
         if (rows.isEmpty()) {
             throw new ImportException("Ни одна бумага не прошла проверку, снапшот пуст");
         }
         archive.insertSecurities(id, rows);
+    }
+
+    /**
+     * Отраслевой индекс, где вес бумаги наибольший ({@code decisions.md}, «Слепой режим»). Равные веса — индекс с
+     * меньшим кодом по алфавиту (детерминированно, не зависит от порядка ответа ISS). Нет индексов — пусто: бумага без
+     * сектора в слепой пул не попадает.
+     */
+    static Optional<String> sectorIndex(Map<String, BigDecimal> weightsByIndex) {
+        return weightsByIndex.entrySet().stream()
+                .max(Map.Entry.<String, BigDecimal>comparingByValue()
+                        .thenComparing(
+                                Map.Entry.<String, BigDecimal>comparingByKey().reversed()))
+                .map(Map.Entry::getKey);
     }
 
     private void loadCandles(Params p, UUID id, String secid, Set<LocalDate> trading) {
@@ -483,10 +501,10 @@ public final class ArchiveImporter {
         return missing;
     }
 
-    private String description(Params p, UUID id, List<String> secids) {
+    private String description(Params p, UUID id, List<String> secids, String hash) {
         String base = "источник: MOEX ISS (свечи interval=1, IMOEX interval=24), ЦБ РФ (RUONIA); тикеры: "
                 + String.join(",", secids) + "; интервал: 1 мин; период: " + p.from() + "…" + p.to()
-                + "; получен: " + Instant.now(clock) + "; версия схемы: " + SCHEMA_VERSION
+                + "; получен: " + Instant.now(clock) + "; хэш: sha256:" + hash + "; версия схемы: " + SCHEMA_VERSION
                 + (p.label().isEmpty() ? "" : "; метка: " + p.label());
         TreeSet<LocalDate> trading = new TreeSet<>(archive.candleDates(id, BENCHMARK, DAY));
         // календарь, как и пробелы, — по данным ClickHouse: кусок, принятый прошлым запуском, тоже попадёт в описание

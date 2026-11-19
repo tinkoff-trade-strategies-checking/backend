@@ -1,5 +1,6 @@
 package ru.tinvest.trainer.marketdata.importer;
 
+import java.math.BigDecimal;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -140,10 +141,15 @@ final class IssClient {
             if (!first.isEmpty()) {
                 IssTable full = all(path, q, "analytics", 0);
                 List<String> secids = new ArrayList<>();
+                Map<String, BigDecimal> weights = new LinkedHashMap<>();
                 for (List<tools.jackson.databind.JsonNode> r : full.rows()) {
-                    secids.add(full.get(r, "secids").asString());
+                    String secid = full.get(r, "secids").asString();
+                    secids.add(secid);
+                    tools.jackson.databind.JsonNode w = full.get(r, "weight");
+                    BigDecimal weight = w == null || w.isNull() ? BigDecimal.ZERO : new BigDecimal(w.asString());
+                    weights.merge(secid, weight, BigDecimal::max);
                 }
-                return new IndexComposition(d, secids);
+                return new IndexComposition(d, secids, weights);
             }
             if (first.prevDate() == null) {
                 break;
@@ -151,7 +157,7 @@ final class IssClient {
             d = LocalDate.parse(first.prevDate());
         }
         log.warn("Состав индекса {} на {} не найден", indexId, date);
-        return new IndexComposition(date, List.of());
+        return new IndexComposition(date, List.of(), Map.of());
     }
 
     /** Сплиты и консолидации: {@code tradedate}, {@code secid}, {@code before}, {@code after}. */
@@ -172,5 +178,6 @@ final class IssClient {
         return URI.create(sb.toString());
     }
 
-    record IndexComposition(LocalDate date, List<String> secids) {}
+    /** {@code weights} — вес бумаги в индексе, %; бумага без веса в ответе — 0. */
+    record IndexComposition(LocalDate date, List<String> secids, Map<String, BigDecimal> weights) {}
 }

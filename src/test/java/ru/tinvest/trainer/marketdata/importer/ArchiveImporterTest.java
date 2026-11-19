@@ -133,11 +133,12 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
                         + "' AND secid = 'IMOEX' AND interval_sec = 86400 AND ts_open >= '2024-02-27 00:00:00' "
                         + "ORDER BY ts_open LIMIT 1"))
                 .isEqualTo("2024-02-27 21:00:00.000\t2024-02-28 21:00:00.000");
-        // бумаги: лот, шаг цены, сектор; SBER в двух отраслевых индексах — берётся первый по коду индекса (MOEXFN);
+        // бумаги: лот, шаг цены, сектор; SBER в двух отраслевых индексах — берётся индекс с наибольшим весом (MOEXOG:
+        // 30,25 против 10,5);
         // TINY (шаг < 1e-6) и GONE (нет на TQBR) не попали
         assertThat(q("SELECT secid, sector, lot_size, toString(price_step) FROM securities WHERE snapshot_id = '" + id
                         + "' ORDER BY secid"))
-                .isEqualTo("GAZP\tНефть и газ\t10\t0.01\nSBER\tФинансы\t1\t0.01");
+                .isEqualTo("GAZP\tНефть и газ\t10\t0.01\nSBER\tНефть и газ\t1\t0.01");
     }
 
     @Test
@@ -517,5 +518,72 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         assertThat(q("SELECT groupArray(secid) FROM (SELECT secid FROM securities WHERE snapshot_id = '"
                         + p.snapshotId() + "' ORDER BY secid)"))
                 .isEqualTo("['GAZP','SBER']");
+    }
+
+    @Test
+    void sectorIsTheIndexWithTheLargestWeight() {
+        assertThat(ArchiveImporter.sectorIndex(java.util.Map.of(
+                        "MOEXFN", new java.math.BigDecimal("10.5"), "MOEXOG", new java.math.BigDecimal("30.25"))))
+                .contains("MOEXOG");
+        // 9,5 < 10 как числа, а не как строки
+        assertThat(ArchiveImporter.sectorIndex(java.util.Map.of(
+                        "MOEXFN", new java.math.BigDecimal("9.5"), "MOEXOG", new java.math.BigDecimal("10"))))
+                .contains("MOEXOG");
+    }
+
+    @Test
+    void sectorTieGoesToTheSmallerIndexCode() {
+        java.math.BigDecimal w = new java.math.BigDecimal("5.0");
+        assertThat(ArchiveImporter.sectorIndex(java.util.Map.of("MOEXOG", w, "MOEXFN", w, "MOEXIT", w)))
+                .contains("MOEXFN");
+        assertThat(ArchiveImporter.sectorIndex(java.util.Map.of("MOEXOG", w, "MOEXFN", new java.math.BigDecimal("5"))))
+                .contains("MOEXFN");
+    }
+
+    @Test
+    void paperOutsideSectorIndexesHasNoSector() {
+        assertThat(ArchiveImporter.sectorIndex(java.util.Map.of())).isEmpty();
+    }
+
+    @Test
+    void snapshotHashIsStoredAndDoesNotDependOnLabel() {
+        ArchiveImporter.Params a = params();
+        ArchiveImporter.Params b = params();
+
+        ArchiveImporter.Result ra = importer.run(a);
+        ArchiveImporter.Result rb = importer.run(b);
+
+        assertThat(ra.snapshot().dataHash()).matches("[0-9a-f]{64}");
+        assertThat(snapshots.findByKey(a.snapshotId().toString()).orElseThrow().dataHash())
+                .isEqualTo(ra.snapshot().dataHash());
+        assertThat(ra.snapshot().description())
+                .contains("хэш: sha256:" + ra.snapshot().dataHash());
+        // другой снапшот (метка), те же данные — тот же хэш
+        assertThat(rb.snapshotId()).isNotEqualTo(ra.snapshotId());
+        assertThat(rb.snapshot().dataHash()).isEqualTo(ra.snapshot().dataHash());
+    }
+
+    @Test
+    void snapshotHashChangesWhenDataChanges() {
+        ArchiveImporter.Params p = params();
+        String before = importer.run(p).snapshot().dataHash();
+        UUID id = p.snapshotId();
+
+        String same = new ClickHouseArchive(ch).dataHash(id, ArchiveImporter.SCHEMA_VERSION);
+        assertThat(same).isEqualTo(before);
+
+        // на самом деле снапшот неизменяем; меняем ClickHouse напрямую только чтобы проверить чувствительность хэша
+        ch.execute("INSERT INTO ruonia (snapshot_id, date, rate) VALUES ('" + id + "', '2030-01-01', 1)");
+        assertThat(new ClickHouseArchive(ch).dataHash(id, ArchiveImporter.SCHEMA_VERSION))
+                .isNotEqualTo(before);
+    }
+
+    @Test
+    void snapshotHashDiffersForDifferentPeriod() {
+        String a = importer.run(params()).snapshot().dataHash();
+        ArchiveImporter.Params shorter = new ArchiveImporter.Params(
+                FROM, TO.minusDays(3), java.util.List.of("SBER", "GAZP"), "test-" + UUID.randomUUID());
+
+        assertThat(importer.run(shorter).snapshot().dataHash()).isNotEqualTo(a);
     }
 }

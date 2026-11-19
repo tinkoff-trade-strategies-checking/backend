@@ -176,6 +176,46 @@ final class ClickHouseArchive {
         ch.execute("INSERT INTO corporate_actions (snapshot_id, secid, date, kind, before, after) VALUES " + values);
     }
 
+    /** Столбцы таблиц данных, входящие в хэш снапшота (без {@code snapshot_id}). */
+    private static final Map<String, String> HASHED = new java.util.LinkedHashMap<>();
+
+    static {
+        HASHED.put("securities", "secid, sector, lot_size, price_step");
+        HASHED.put("candles", "secid, interval_sec, ts_open, available_at, open, high, low, close, volume, value");
+        HASHED.put("trading_calendar", "date, is_trading");
+        HASHED.put("ruonia", "date, rate");
+        HASHED.put("corporate_actions", "secid, date, kind, before, after");
+    }
+
+    /**
+     * Хэш данных снапшота: SHA-256 над строками {@code таблица|число строк|сумма sipHash64 по строкам} всех таблиц
+     * данных (порядок таблиц фиксирован). Сумма по строкам не зависит от порядка вставки и частей MergeTree, поэтому
+     * хэш не зависит от докачки, метки ({@code label}) и идентификатора снапшота — только от самих данных. Вызывать
+     * после {@code snapshots_ready}: до этого набор строк ещё меняется.
+     */
+    String dataHash(UUID snapshot, String schemaVersion) {
+        StringBuilder canon = new StringBuilder("iss-v").append(schemaVersion).append('\n');
+        HASHED.forEach((table, cols) -> {
+            String[] r = ch.execute("SELECT count(), sum(sipHash64(" + cols + ")) FROM " + table
+                            + " WHERE snapshot_id = '" + snapshot + "' FORMAT TSV")
+                    .trim()
+                    .split("\t", -1);
+            canon.append(table)
+                    .append('|')
+                    .append(r[0])
+                    .append('|')
+                    .append(r[1])
+                    .append('\n');
+        });
+        try {
+            byte[] d = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(canon.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(d);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     /** Объём таблиц на диске: имя → {строк, байт сжато, байт без сжатия}. */
     Map<String, long[]> diskUsage() {
         String out = ch.execute("SELECT table, sum(rows), sum(data_compressed_bytes), sum(data_uncompressed_bytes) "
