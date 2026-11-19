@@ -8,9 +8,24 @@ info:
     Команды — REST, события — SSE. Деньги — десятичные строки (INV-6).
     В слепом режиме ответы не содержат тикеров, названий, рублёвых сумм, реальных дат и
     внутренних метрик подбора периода (`sigma`, `mdd`, `p33`, `p80`) (INV-1, INV-7).
-    Идентификаторы сущностей — UUID v7 (`format: uuid`); в слепом режиме идентификатор бумаги
-    (`paperId`) локален для сессии и не совпадает с каталожным id (INV-7).
+    Идентификаторы: хранимые сущности (сессии, прогоны, стратегии, пользователи, заявки) — UUID v7 (`Uuid`);
+    сущности, пересчитываемые из журнала (исполнения, сделки, расхождения), — детерминированный UUID v5
+    от (сессия, вид, номер в ядре) (`DerivedUuid`), поэтому id стабилен между снимком и SSE (INV-8).
+    В слепом режиме бумага адресуется только `paperIndex` (индекс бумаги в сессии, как `instrument_index` ядра),
+    никаких `paperId`, ключа или тикера (INV-7); в раскрытом режиме — `paperId` из каталога (`LaunchPaper.id`).
     Необязательные поля отчёта и истории — `null`, а не пропуск.
+    Производные величины (проценты портфеля и позиций, `changePct`, длительность просадки в днях, разбор
+    расхождений, обратная проверка, сравнение) считает core (core#54), backend только передаёт результат;
+    пока core их не отдаёт, поле `null`.
+
+    CSRF (Spring Security, cookie-токен). Токен — cookie `XSRF-TOKEN` (без HttpOnly, его читает Angular),
+    клиент без токена получает его из ответа `GET /me`, в том числе из `401`. Заголовок `X-XSRF-TOKEN`
+    обязателен на всех изменяющих запросах, включая `POST /auth/login` и `POST /auth/logout`; без него или
+    при неверном токене — `403`. После входа токен и cookie `SESSION` меняются: клиент берёт новый `XSRF-TOKEN`
+    из ответа входа. Ошибки: `400` — битое тело, нарушенный формат или не-UUID в пути; `403` — CSRF;
+    чужая сессия даёт тот же `404`, что и несуществующая (перебор id невозможен); `503` — воркер ядра недоступен.
+    В слепой сессии `detail` и `instance` ошибок не содержат дат, тикеров и названий (INV-7): параметры
+    передаются полями (`field`, `barsCount`, `maxBars`).
 servers:
   - url: /api/v1
     description: API v1 (относительно домена приложения за Caddy)
@@ -32,9 +47,13 @@ paths:
       operationId: login
       summary: Вход по почте и паролю
       description: |
-        Создаёт cookie-сессию (`SESSION`, HttpOnly; Secure; SameSite=Lax) и устанавливает
-        CSRF-cookie `XSRF-TOKEN` для Angular `HttpClientXsrfModule`.
-      security: []
+        Создаёт cookie-сессию (`SESSION`, HttpOnly; Secure; SameSite=Lax) и устанавливает новую
+        CSRF-cookie `XSRF-TOKEN` (без HttpOnly) для Angular `HttpClientXsrfModule`.
+        Вход защищён от CSRF: заголовок `X-XSRF-TOKEN` обязателен, токен клиент получает из `GET /me`
+        (в том числе из ответа 401). После входа токен и идентификатор сессии меняются.
+        Неизвестная почта и неверный пароль дают одинаковый ответ 401.
+      security:
+        - xsrfToken: []
       requestBody:
         required: true
         content:
@@ -47,31 +66,50 @@ paths:
             Set-Cookie:
               description: Cookies `SESSION` и `XSRF-TOKEN`
               schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /auth/logout:
     post:
       tags: [identity]
       operationId: logout
       summary: Выход
+      description: Закрывает сессию; требует `X-XSRF-TOKEN`. Новый токен клиент получает следующим `GET /me`.
       security:
         - sessionCookie: []
           xsrfToken: []
       responses:
         '204': { description: Сессия закрыта }
         '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /me:
     get:
       tags: [identity]
       operationId: getCurrentUser
       summary: Текущий авторизованный пользователь
-      description: Возвращает профиль пользователя и при необходимости обновляет cookie `XSRF-TOKEN`.
+      description: |
+        Возвращает профиль пользователя. Всегда (и при 200, и при 401) выставляет cookie `XSRF-TOKEN`,
+        так анонимный клиент получает токен для входа.
       responses:
         '200':
           description: Профиль пользователя
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CurrentUser' }
-        '401': { $ref: '#/components/responses/Problem' }
+          headers:
+            Set-Cookie:
+              description: Cookie `XSRF-TOKEN`
+              schema: { type: string }
+        '401':
+          description: Не авторизован; ответ всё равно выставляет cookie `XSRF-TOKEN`
+          headers:
+            Set-Cookie:
+              description: Cookie `XSRF-TOKEN`
+              schema: { type: string }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
   /launch/options:
     get:
       tags: [marketdata]
@@ -108,6 +146,8 @@ paths:
         Поля `sigma`, `mdd`, `p33`, `p80`, а в слепом режиме также даты окна клиенту не передаются (INV-1, INV-7).
         Отказ — 422 с `LaunchProblem`, у которого `code` из `LaunchRejectReason`.
         Для `TOO_MANY_BARS` заполнены `barsCount` и `maxBars`.
+        `startMode: random` создаёт слепую сессию, `custom` (своя дата) — неслепую.
+        Подбор идёт через воркер: при его недоступности — 503.
       security:
         - sessionCookie: []
           xsrfToken: []
@@ -122,12 +162,15 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CreatedSession' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422':
           description: Параметры запуска отклонены
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/LaunchProblem' }
+        '503': { $ref: '#/components/responses/WorkerUnavailable' }
   /sessions/{sessionId}:
     get:
       tags: [sessions]
@@ -143,8 +186,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Snapshot' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/WorkerUnavailable' }
   /sessions/{sessionId}/player:
     post:
       tags: [sessions]
@@ -153,6 +198,8 @@ paths:
       description: |
         Единая операция управления временем сессии на сервере: `play`, `pause`, `step` (один шаг) и `speed` (`1`, `5`, `10`, `100`).
         При `action: step` дополнительно возвращает `stepResult` (и публикует событие `step` в SSE).
+        `speed` обязателен при `action: speed`; при остальных действиях его нет (иначе 400).
+        Изменение состояния плеера публикуется событием `player`.
       security:
         - sessionCookie: []
           xsrfToken: []
@@ -168,7 +215,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PlayerState' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Problem' }
         '409':
           description: Сессия не активна (`SESSION_NOT_ACTIVE`)
@@ -176,7 +225,7 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '422': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/WorkerUnavailable' }
   /sessions/{sessionId}/events:
     get:
       tags: [sessions]
@@ -187,6 +236,9 @@ paths:
         клиент восстанавливает состояние снимком `GET /sessions/{sessionId}` (INV-8).
         Без подписчиков дольше `lab.session.disconnect-pause-after` (5 с) ручная сессия встаёт на паузу.
         Данные каждого события — JSON соответствующей схемы; имя события (`event:`) равно значению `type`.
+        Строка `id:` равна `eventId` и монотонно возрастает в рамках сессии: по ней клиент сопоставляет
+        снимок (`step`) с догоняющими событиями и убирает дубли. Смена состояния плеера (play, пауза,
+        скорость) публикуется событием `player`, так вторая вкладка узнаёт о ней без снимка.
       parameters:
         - $ref: '#/components/parameters/SessionId'
         - name: Last-Event-ID
@@ -199,6 +251,7 @@ paths:
           content:
             text/event-stream:
               schema: { $ref: '#/components/schemas/SessionEvent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
   /sessions/{sessionId}/orders:
@@ -211,6 +264,9 @@ paths:
         Клиент всегда передаёт цены экрана; в слепом режиме backend переводит заявку в рубли через `EstimateOrder` ядра
         и записывает в журнал `resolved_order`. При отказе возвращается 200 с `accepted: false` и причиной;
         запись отказа в журнал — внутренняя деталь backend.
+        Бумага: в слепой сессии `paperIndex`, в раскрытой `paperId` из каталога.
+        OCO (`type: oco`) допустим только в запросе: backend создаёт две ноги (`stop` и `take_profit`),
+        связанные `ocoSiblingId`; нужны `stopPrice` и `takeProfitPrice`. В `order` — нога `stop`, обе — в `orderIds`.
       security:
         - sessionCookie: []
           xsrfToken: []
@@ -222,14 +278,17 @@ paths:
             schema: { $ref: '#/components/schemas/PlaceOrderRequest' }
       responses:
         '200': { $ref: '#/components/responses/OrderCommand' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/WorkerUnavailable' }
   /sessions/{sessionId}/orders/{orderId}:
     delete:
       tags: [sessions]
       operationId: cancelOrder
       summary: Отменить заявку
-      description: Для OCO отмена действует на всю пару «стоп + тейк-профит».
+      description: Для OCO `orderId` — id любой из двух ног, отмена действует на всю пару «стоп + тейк-профит».
       security:
         - sessionCookie: []
           xsrfToken: []
@@ -242,15 +301,18 @@ paths:
           schema: { type: integer, minimum: 0 }
       responses:
         '200': { $ref: '#/components/responses/OrderCommand' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/WorkerUnavailable' }
     put:
       tags: [sessions]
       operationId: replaceOrder
       summary: Заменить параметры заявки
       description: |
         Атомарная замена: в журнал пишутся отмена и новая заявка с одним номером шага.
-        Для OCO заменяется вся пара «стоп + тейк-профит».
+        Для OCO `orderId` — id любой ноги, заменяется вся пара «стоп + тейк-профит».
       security:
         - sessionCookie: []
           xsrfToken: []
@@ -264,8 +326,11 @@ paths:
             schema: { $ref: '#/components/schemas/ReplaceOrderRequest' }
       responses:
         '200': { $ref: '#/components/responses/OrderCommand' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/WorkerUnavailable' }
   /sessions/{sessionId}/order-estimate:
     post:
       tags: [sessions]
@@ -289,8 +354,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OrderEstimate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/WorkerUnavailable' }
   /sessions/{sessionId}/finish:
     post:
       tags: [sessions]
@@ -309,9 +377,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FinishResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/WorkerUnavailable' }
   /sessions/{sessionId}/replay:
     get:
       tags: [sessions]
@@ -319,6 +389,9 @@ paths:
       summary: Воспроизведение завершённой сессии на заданном шаге (INV-8)
       description: |
         Без серверного состояния: курсор воспроизведения хранит клиент и передаёт явный `step`.
+        Без `fromStep` ответ — полный снимок `snapshot` на шаге `step`; с `fromStep` — приращение
+        `increment` (`OpenStepResult` за `(fromStep; step]` без истории свечей). `step` больше `totalSteps`
+        ограничивается последним шагом (ответ содержит фактический шаг); `fromStep` не меньше `step` — 400.
         Всегда 200 с `status` (`READY`, `NOT_FINISHED`, `NOT_FOUND`).
       parameters:
         - $ref: '#/components/parameters/SessionId'
@@ -327,13 +400,20 @@ paths:
           required: false
           description: Шаг воспроизведения; по умолчанию 0
           schema: { type: integer, minimum: 0, default: 0 }
+        - name: fromStep
+          in: query
+          required: false
+          description: Предыдущий шаг клиента; если передан, возвращается приращение вместо снимка
+          schema: { type: integer, minimum: 0 }
       responses:
         '200':
           description: Результат воспроизведения, различается по `status`
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ReplayResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/WorkerUnavailable' }
   /sessions/{sessionId}/report:
     get:
       tags: [analysis]
@@ -349,6 +429,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ReportResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
   /history:
     get:
@@ -369,6 +450,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/HistoryPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
 components:
   securitySchemes:
@@ -399,6 +481,26 @@ components:
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
+    BadRequest:
+      description: Некорректный запрос — битый JSON, нарушенный формат (`Money`, `Price`), неизвестное значение enum, не-UUID в пути
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Отсутствует или неверен CSRF-токен (`X-XSRF-TOKEN`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    WorkerUnavailable:
+      description: Воркер ядра недоступен; состояние сессии не изменилось
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TooManyRequests:
+      description: Слишком много попыток входа
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
     OrderCommand:
       description: |
         Результат команды заявки. Отказ — 200 с `accepted: false` и причиной;
@@ -411,12 +513,24 @@ components:
     Uuid:
       type: string
       format: uuid
-      description: Идентификатор UUID v7
+      description: Идентификатор UUID v7 — хранимые сущности (сессии, прогоны, стратегии, пользователи, заявки)
+    DerivedUuid:
+      type: string
+      format: uuid
+      description: |
+        Детерминированный UUID v5 из (сессия, вид сущности, номер в ядре). Для сущностей, которые
+        пересчитываются из журнала (исполнения, сделки, расхождения): id одинаков в снимке, SSE и отчёте (INV-8).
+    DerivedUuidOrNull:
+      oneOf: [{ $ref: '#/components/schemas/DerivedUuid' }, { type: 'null' }]
+    PaperIndex:
+      type: integer
+      minimum: 0
+      description: Индекс бумаги в сессии (как `instrument_index` ядра); в слепом режиме единственный идентификатор бумаги (INV-7)
     UuidOrNull:
       oneOf: [{ $ref: '#/components/schemas/Uuid' }, { type: 'null' }]
     Problem:
       type: object
-      description: RFC 9457
+      description: RFC 9457. Для слепой сессии `detail` и `instance` не содержат дат, тикеров и названий (INV-7)
       required: [type, title, status]
       properties:
         type: { type: string, format: uri-reference }
@@ -442,16 +556,16 @@ components:
       examples: ['1000000.00']
     Pct:
       type: string
-      description: Процент десятичной строкой
+      description: Процент десятичной строкой, без экспоненты
       pattern: '^-?\d+(\.\d{1,6})?$'
       examples: ['12.34']
     Price:
       type: string
-      description: Цена десятичной строкой (в слепом режиме — условная, от 100, 2 знака HALF_UP)
-      pattern: '^\d+(\.\d{1,8})?$'
+      description: Цена десятичной строкой, до 9 знаков по точности `core::Decimal` (в слепом режиме — условная, от 100, 2 знака HALF_UP)
+      pattern: '^\d+(\.\d{1,9})?$'
     Ratio:
       type: string
-      description: Безразмерная величина десятичной строкой (Sharpe, HHI и т. п.)
+      description: Безразмерная величина десятичной строкой без экспоненты (Sharpe, HHI и т. п.)
       pattern: '^-?\d+(\.\d+)?$'
     PriceOrNull:
       oneOf: [{ $ref: '#/components/schemas/Price' }, { type: 'null' }]
@@ -473,8 +587,12 @@ components:
       enum: [buy, sell]
     OrderType:
       type: string
-      description: 'Типы заявок; `oco` — пара «стоп + тейк-профит» на одну бумагу (в ядре — две связанные заявки с `ocoSiblingId`)'
+      description: 'Тип в запросе; `oco` — пара «стоп + тейк-профит» на одну бумагу, допустим только в запросах (в ядре — две связанные заявки)'
       enum: [market, limit, stop, stop_limit, take_profit, trailing, oco]
+    OrderLegType:
+      type: string
+      description: 'Тип заявки в ответах (`Order`, исполнения): одна нога, `oco` не встречается — нога OCO имеет тип `stop` или `take_profit`'
+      enum: [market, limit, stop, stop_limit, take_profit, trailing]
     TimeInForce:
       type: string
       enum: [day, gtc]
@@ -518,7 +636,7 @@ components:
       required: [email, password]
       properties:
         email: { type: string, format: email }
-        password: { type: string, format: password }
+        password: { type: string, format: password, maxLength: 72, description: 'Не длиннее 72 символов (предел bcrypt)' }
     CurrentUser:
       type: object
       required: [id, email, role]
@@ -539,11 +657,11 @@ components:
         maxBars: { type: integer }
     LaunchOptions:
       type: object
-      required: [durations, defaultDuration, timeframes, defaultTimeframe, regimes, defaultRegime, capitalPresets, defaultCapital, backgroundAlgorithmName, minPapers, maxPapers, defaultPaperCount, executionRules]
+      required: [durations, defaultDuration, availableTimeframes, defaultTimeframe, regimes, defaultRegime, capitalPresets, defaultCapital, backgroundAlgorithmName, minPapers, maxPapers, defaultPaperCount, executionRules]
       properties:
         durations: { type: array, items: { type: integer, enum: [20, 60, 120, 250] } }
         defaultDuration: { type: integer, enum: [20, 60, 120, 250] }
-        timeframes: { type: array, items: { $ref: '#/components/schemas/Timeframe' } }
+        availableTimeframes: { type: array, items: { $ref: '#/components/schemas/Timeframe' } }
         defaultTimeframe: { $ref: '#/components/schemas/Timeframe' }
         regimes: { type: array, items: { $ref: '#/components/schemas/Regime' } }
         defaultRegime: { $ref: '#/components/schemas/Regime' }
@@ -586,6 +704,7 @@ components:
     # ---------- свечи, заявки, портфель ----------
     BlindCandle:
       type: object
+      unevaluatedProperties: false
       description: Свеча слепого режима (`BlindBar`), без реальных дат; цена от 100, шаг прогрева < 0 (INV-1, INV-7)
       required: [step, day, candleInDay, open, high, low, close, volume, afterHalt]
       properties:
@@ -613,15 +732,17 @@ components:
         close: { $ref: '#/components/schemas/Price' }
         volume: { type: integer, minimum: 0, description: Объём бара в лотах }
         afterHalt: { type: boolean, description: Первый бар после разрыва торгов }
-    Order:
+    OrderBase:
       type: object
-      description: Заявка (`Order` / склейка с `BlindOrder`); цены в шкале текущего режима
-      required: [id, paperId, side, type, lots, filledLots, tif, status, step, seenStep, closedStep, ocoSiblingId, limitPrice, stopPrice, takeProfitPrice, trailingPct, trailingStopLevel, reason, rejectField]
+      description: |
+        Одна заявка (нога). Заявка OCO в ответах — две ноги с `type: stop` и `type: take_profit`, связанные
+        `ocoSiblingId`; уровень тейка лежит в `takeProfitPrice` ноги `take_profit`, уровень стопа — в `stopPrice` ноги `stop`.
+        Цены в шкале текущего режима.
+      required: [id, side, type, lots, filledLots, tif, status, step, seenStep, closedStep, ocoSiblingId, limitPrice, stopPrice, takeProfitPrice, trailingPct, trailingStopLevel, reason, rejectField]
       properties:
         id: { $ref: '#/components/schemas/Uuid' }
-        paperId: { type: string, description: 'Локальный идентификатор бумаги в сессии (в слепом режиме не совпадает с каталожным id, INV-7)' }
         side: { $ref: '#/components/schemas/OrderSide' }
-        type: { $ref: '#/components/schemas/OrderType' }
+        type: { $ref: '#/components/schemas/OrderLegType' }
         lots: { type: integer, minimum: 1 }
         filledLots: { type: integer, minimum: 0 }
         tif: { $ref: '#/components/schemas/TimeInForce' }
@@ -638,19 +759,48 @@ components:
         reason:
           oneOf: [{ $ref: '#/components/schemas/OrderReason' }, { type: 'null' }]
         rejectField: { type: [string, 'null'] }
+    BlindOrder:
+      description: Заявка слепой сессии; бумага — `paperIndex`, без ключа и каталожного id (INV-7)
+      allOf:
+        - $ref: '#/components/schemas/OrderBase'
+        - type: object
+          required: [mode, paperIndex]
+          properties:
+            mode: { type: string, const: BLIND }
+            paperIndex: { $ref: '#/components/schemas/PaperIndex' }
+      unevaluatedProperties: false
+    OpenOrder:
+      description: Заявка раскрытой сессии; бумага — `paperId` из каталога
+      allOf:
+        - $ref: '#/components/schemas/OrderBase'
+        - type: object
+          required: [mode, paperId]
+          properties:
+            mode: { type: string, const: OPEN }
+            paperId: { $ref: '#/components/schemas/Uuid' }
+    Order:
+      oneOf:
+        - $ref: '#/components/schemas/BlindOrder'
+        - $ref: '#/components/schemas/OpenOrder'
+      discriminator:
+        propertyName: mode
+        mapping: { BLIND: '#/components/schemas/BlindOrder', OPEN: '#/components/schemas/OpenOrder' }
     BlindFill:
       type: object
-      description: Исполнение в слепом режиме (`BlindFill`), суммы в процентах от начального капитала, без рублей и дат (INV-7)
-      required: [id, orderId, paperId, step, day, candleInDay, side, type, lots, price, amountPct, costPct, stopAndTakeSameBar, note]
+      description: |
+        Исполнение в слепом режиме (`BlindFill`), суммы в процентах от начального капитала, без рублей и дат (INV-7).
+        `id` — детерминированный UUID v5 (сессия, вид, номер в ядре).
+      unevaluatedProperties: false
+      required: [id, orderId, paperIndex, step, day, candleInDay, side, type, lots, price, amountPct, costPct, stopAndTakeSameBar, note]
       properties:
-        id: { $ref: '#/components/schemas/Uuid' }
+        id: { $ref: '#/components/schemas/DerivedUuid' }
         orderId: { $ref: '#/components/schemas/Uuid' }
-        paperId: { type: string }
+        paperIndex: { $ref: '#/components/schemas/PaperIndex' }
         step: { type: integer }
         day: { type: integer }
         candleInDay: { type: integer }
         side: { $ref: '#/components/schemas/OrderSide' }
-        type: { $ref: '#/components/schemas/OrderType' }
+        type: { $ref: '#/components/schemas/OrderLegType' }
         lots: { type: integer, minimum: 1 }
         price: { $ref: '#/components/schemas/Price' }
         amountPct: { $ref: '#/components/schemas/Pct' }
@@ -659,22 +809,24 @@ components:
         note: { type: [string, 'null'] }
     OpenFill:
       type: object
-      description: Исполнение в раскрытом режиме (`Fill`), с реальным временем и суммами в рублях
+      description: |
+        Исполнение в раскрытом режиме (`Fill`), с реальным временем и суммами в рублях.
+        `id` — детерминированный UUID v5 (сессия, вид, номер в ядре).
       required: [id, orderId, paperId, step, day, candleInDay, executedAt, side, type, lots, price, amountPct, costPct, amount, cost, stopAndTakeSameBar, note]
       properties:
-        id: { $ref: '#/components/schemas/Uuid' }
+        id: { $ref: '#/components/schemas/DerivedUuid' }
         orderId: { $ref: '#/components/schemas/Uuid' }
-        paperId: { type: string }
+        paperId: { $ref: '#/components/schemas/Uuid' }
         step: { type: integer }
         day: { type: integer }
         candleInDay: { type: integer }
         executedAt: { type: string, format: date-time }
         side: { $ref: '#/components/schemas/OrderSide' }
-        type: { $ref: '#/components/schemas/OrderType' }
+        type: { $ref: '#/components/schemas/OrderLegType' }
         lots: { type: integer, minimum: 1 }
         price: { $ref: '#/components/schemas/Price' }
-        amountPct: { $ref: '#/components/schemas/Pct' }
-        costPct: { $ref: '#/components/schemas/Pct' }
+        amountPct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
+        costPct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
         amount: { $ref: '#/components/schemas/Money' }
         cost: { $ref: '#/components/schemas/Money' }
         stopAndTakeSameBar: { type: boolean, description: Стоп и тейк задеты одной свечой — исполнен стоп (INV-3) }
@@ -682,50 +834,53 @@ components:
     BlindPosition:
       type: object
       description: Позиция в слепом режиме (`BlindPosition`), без рублёвых сумм (INV-7)
-      required: [paperId, lots, avgPrice, pnlPct, valuePct]
+      unevaluatedProperties: false
+      required: [paperIndex, lots, avgPrice, pnlPct, valuePct]
       properties:
-        paperId: { type: string }
+        paperIndex: { $ref: '#/components/schemas/PaperIndex' }
         lots: { type: integer }
         avgPrice: { $ref: '#/components/schemas/PriceOrNull' }
-        pnlPct: { $ref: '#/components/schemas/Pct' }
+        pnlPct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
         valuePct: { $ref: '#/components/schemas/Pct' }
     OpenPosition:
       type: object
       description: Позиция в раскрытом режиме (`Position`), с рублёвой оценкой
       required: [paperId, lots, avgPrice, pnlPct, valuePct, marketValue]
       properties:
-        paperId: { type: string }
+        paperId: { $ref: '#/components/schemas/Uuid' }
         lots: { type: integer }
         avgPrice: { $ref: '#/components/schemas/PriceOrNull' }
-        pnlPct: { $ref: '#/components/schemas/Pct' }
-        valuePct: { $ref: '#/components/schemas/Pct' }
+        pnlPct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
+        valuePct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
         marketValue: { $ref: '#/components/schemas/Money' }
     BlindPortfolio:
       type: object
+      unevaluatedProperties: false
       required: [mode, equityPct, cashPct, investedPct, pnlPct, costsPct, positions]
       properties:
         mode: { type: string, const: BLIND }
         equityPct: { $ref: '#/components/schemas/Pct' }
         cashPct: { $ref: '#/components/schemas/Pct' }
-        investedPct: { $ref: '#/components/schemas/Pct' }
+        investedPct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
         pnlPct: { $ref: '#/components/schemas/Pct' }
-        costsPct: { $ref: '#/components/schemas/Pct' }
+        costsPct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
         positions: { type: array, items: { $ref: '#/components/schemas/BlindPosition' } }
     OpenPortfolio:
       type: object
+      description: Раскрытый портфель; проценты и `invested`/`pnl`/`costs` считает core, `null`, пока core не отдаёт
       required: [mode, equityPct, cashPct, investedPct, pnlPct, costsPct, equity, cash, invested, pnl, costs, positions]
       properties:
         mode: { type: string, const: OPEN }
-        equityPct: { $ref: '#/components/schemas/Pct' }
-        cashPct: { $ref: '#/components/schemas/Pct' }
-        investedPct: { $ref: '#/components/schemas/Pct' }
-        pnlPct: { $ref: '#/components/schemas/Pct' }
-        costsPct: { $ref: '#/components/schemas/Pct' }
+        equityPct: { $ref: '#/components/schemas/PctOrNull' }
+        cashPct: { $ref: '#/components/schemas/PctOrNull' }
+        investedPct: { $ref: '#/components/schemas/PctOrNull' }
+        pnlPct: { $ref: '#/components/schemas/PctOrNull' }
+        costsPct: { $ref: '#/components/schemas/PctOrNull' }
         equity: { $ref: '#/components/schemas/Money' }
         cash: { $ref: '#/components/schemas/Money' }
-        invested: { $ref: '#/components/schemas/Money' }
-        pnl: { $ref: '#/components/schemas/Money' }
-        costs: { $ref: '#/components/schemas/Money' }
+        invested: { $ref: '#/components/schemas/MoneyOrNull' }
+        pnl: { $ref: '#/components/schemas/MoneyOrNull' }
+        costs: { $ref: '#/components/schemas/MoneyOrNull' }
         positions: { type: array, items: { $ref: '#/components/schemas/OpenPosition' } }
     Portfolio:
       oneOf:
@@ -738,15 +893,15 @@ components:
       type: object
       required: [changePct, lastPrice]
       properties:
-        changePct: { $ref: '#/components/schemas/Pct' }
+        changePct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
         lastPrice: { $ref: '#/components/schemas/Price' }
     BlindPaper:
       type: object
-      description: Бумага в слепом режиме (`BlindInstrument`), без тикера, названия и размера лота (INV-7)
-      required: [id, instrumentIndex, label, sector, lotValueAtStart, candles, stat]
+      description: Бумага в слепом режиме (`BlindInstrument`), без тикера, названия, размера лота и ключа (INV-7); адресуется `paperIndex`
+      unevaluatedProperties: false
+      required: [paperIndex, label, sector, lotValueAtStart, candles, stat]
       properties:
-        id: { type: string, description: 'Сессионный ключ бумаги (не каталожный id)' }
-        instrumentIndex: { type: integer, minimum: 0, description: Индекс бумаги в сессии (`BlindInstrument.instrument_index`) }
+        paperIndex: { $ref: '#/components/schemas/PaperIndex' }
         label: { type: string, description: 'Бумага A/B/C' }
         sector: { type: string }
         lotValueAtStart: { $ref: '#/components/schemas/PctOrNull', description: 'Стоимость 1 лота в % от начального капитала по первой показанной свече; null до её появления' }
@@ -754,9 +909,10 @@ components:
         stat: { $ref: '#/components/schemas/PaperStat' }
     OpenPaper:
       type: object
+      description: Бумага в раскрытом режиме; `id` — из каталога (`LaunchPaper.id`)
       required: [id, instrumentIndex, label, sector, ticker, name, lotSize, candles, stat]
       properties:
-        id: { type: string }
+        id: { $ref: '#/components/schemas/Uuid' }
         instrumentIndex: { type: integer, minimum: 0 }
         label: { type: string }
         sector: { type: string }
@@ -767,7 +923,7 @@ components:
         stat: { $ref: '#/components/schemas/PaperStat' }
     SnapshotBase:
       type: object
-      required: [sessionId, regime, step, totalSteps, warmupSteps, day, totalDays, finished, playing, speed, orders]
+      required: [sessionId, regime, step, totalSteps, warmupSteps, day, totalDays, finished, playing, speed]
       properties:
         sessionId: { $ref: '#/components/schemas/Uuid' }
         regime: { $ref: '#/components/schemas/Regime' }
@@ -777,29 +933,33 @@ components:
         day: { type: integer }
         totalDays: { type: integer }
         finished: { type: boolean }
-        playing: { type: boolean }
-        speed: { $ref: '#/components/schemas/PlayerSpeed' }
-        orders: { type: array, items: { $ref: '#/components/schemas/Order' } }
+        playing: { type: [boolean, 'null'], description: 'null в снимке воспроизведения' }
+        speed:
+          oneOf: [{ $ref: '#/components/schemas/PlayerSpeed' }, { type: 'null' }]
+          description: 'null в снимке воспроизведения'
     BlindSnapshot:
       allOf:
         - $ref: '#/components/schemas/SnapshotBase'
         - type: object
-          required: [mode, papers, portfolio, fills]
+          required: [mode, papers, portfolio, fills, orders]
           properties:
             mode: { type: string, const: BLIND }
             papers: { type: array, items: { $ref: '#/components/schemas/BlindPaper' } }
             portfolio: { $ref: '#/components/schemas/BlindPortfolio' }
             fills: { type: array, items: { $ref: '#/components/schemas/BlindFill' } }
+            orders: { type: array, items: { $ref: '#/components/schemas/BlindOrder' } }
+      unevaluatedProperties: false
     OpenSnapshot:
       allOf:
         - $ref: '#/components/schemas/SnapshotBase'
         - type: object
-          required: [mode, papers, portfolio, fills]
+          required: [mode, papers, portfolio, fills, orders]
           properties:
             mode: { type: string, const: OPEN }
             papers: { type: array, items: { $ref: '#/components/schemas/OpenPaper' } }
             portfolio: { $ref: '#/components/schemas/OpenPortfolio' }
             fills: { type: array, items: { $ref: '#/components/schemas/OpenFill' } }
+            orders: { type: array, items: { $ref: '#/components/schemas/OpenOrder' } }
     Snapshot:
       oneOf:
         - $ref: '#/components/schemas/BlindSnapshot'
@@ -809,33 +969,50 @@ components:
         mapping: { BLIND: '#/components/schemas/BlindSnapshot', OPEN: '#/components/schemas/OpenSnapshot' }
     StepResultBase:
       type: object
-      required: [step, day, finished, paperStats, orders]
+      required: [step, day, finished]
       properties:
         step: { type: integer }
         day: { type: integer }
         finished: { type: boolean }
-        paperStats: { type: object, additionalProperties: { $ref: '#/components/schemas/PaperStat' } }
-        orders: { type: array, items: { $ref: '#/components/schemas/Order' } }
     BlindStepResult:
+      description: 'Результат шага слепой сессии; словари `bars` и `paperStats` — по `paperIndex` (строка из цифр)'
       allOf:
         - $ref: '#/components/schemas/StepResultBase'
         - type: object
-          required: [mode, bars, portfolio, fills]
+          required: [mode, bars, paperStats, portfolio, fills, orders]
           properties:
             mode: { type: string, const: BLIND }
-            bars: { type: object, additionalProperties: { $ref: '#/components/schemas/BlindCandle' } }
+            bars:
+              type: object
+              propertyNames: { pattern: '^\d+$' }
+              additionalProperties: { $ref: '#/components/schemas/BlindCandle' }
+            paperStats:
+              type: object
+              propertyNames: { pattern: '^\d+$' }
+              additionalProperties: { $ref: '#/components/schemas/PaperStat' }
             portfolio: { $ref: '#/components/schemas/BlindPortfolio' }
             fills: { type: array, items: { $ref: '#/components/schemas/BlindFill' } }
+            orders: { type: array, items: { $ref: '#/components/schemas/BlindOrder' } }
+      unevaluatedProperties: false
     OpenStepResult:
+      description: 'Результат шага раскрытой сессии; словари `bars` и `paperStats` — по `paperId` из каталога'
       allOf:
         - $ref: '#/components/schemas/StepResultBase'
         - type: object
-          required: [mode, bars, portfolio, fills]
+          required: [mode, bars, paperStats, portfolio, fills, orders]
           properties:
             mode: { type: string, const: OPEN }
-            bars: { type: object, additionalProperties: { $ref: '#/components/schemas/OpenCandle' } }
+            bars:
+              type: object
+              propertyNames: { format: uuid }
+              additionalProperties: { $ref: '#/components/schemas/OpenCandle' }
+            paperStats:
+              type: object
+              propertyNames: { format: uuid }
+              additionalProperties: { $ref: '#/components/schemas/PaperStat' }
             portfolio: { $ref: '#/components/schemas/OpenPortfolio' }
             fills: { type: array, items: { $ref: '#/components/schemas/OpenFill' } }
+            orders: { type: array, items: { $ref: '#/components/schemas/OpenOrder' } }
     StepResult:
       oneOf:
         - $ref: '#/components/schemas/BlindStepResult'
@@ -846,7 +1023,7 @@ components:
     # ---------- плеер ----------
     PlayerCommand:
       type: object
-      description: 'Команда плеера; для `action: speed` поле `speed` обязательно'
+      description: 'Команда плеера; `speed` обязателен при `action: speed`'
       required: [action]
       properties:
         action: { $ref: '#/components/schemas/PlayerAction' }
@@ -868,24 +1045,47 @@ components:
     # ---------- команды заявок ----------
     OrderParams:
       type: object
-      description: Цены передаются в шкале экрана; в слепом режиме перевод в рубли выполняет backend через `EstimateOrder`
+      description: |
+        Цены передаются в шкале экрана; в слепом режиме перевод в рубли выполняет backend через `EstimateOrder`.
+        Обязательные цены по `type`: `limit` — `limitPrice`; `stop` — `stopPrice`; `stop_limit` — `stopPrice` и `limitPrice`;
+        `take_profit` — `takeProfitPrice`; `trailing` — `trailingPct`; `oco` — `stopPrice` и `takeProfitPrice`; `market` — без цен.
+        Нарушение — отказ `INVALID_PARAMS` с полем `field`.
       properties:
         limitPrice: { $ref: '#/components/schemas/PriceOrNull' }
         stopPrice: { $ref: '#/components/schemas/PriceOrNull' }
         takeProfitPrice: { $ref: '#/components/schemas/PriceOrNull' }
         trailingPct: { $ref: '#/components/schemas/PctOrNull' }
-    PlaceOrderRequest:
+    PlaceBlindOrderRequest:
+      description: Заявка в слепой сессии — бумага по `paperIndex`
+      allOf:
+        - $ref: '#/components/schemas/OrderParams'
+        - type: object
+          required: [seenStep, paperIndex, side, type, lots, tif]
+          properties:
+            seenStep: { type: integer, minimum: 0 }
+            paperIndex: { $ref: '#/components/schemas/PaperIndex' }
+            side: { $ref: '#/components/schemas/OrderSide' }
+            type: { $ref: '#/components/schemas/OrderType' }
+            lots: { type: integer, minimum: 1 }
+            tif: { $ref: '#/components/schemas/TimeInForce' }
+    PlaceOpenOrderRequest:
+      description: Заявка в раскрытой сессии — бумага по `paperId` из каталога
       allOf:
         - $ref: '#/components/schemas/OrderParams'
         - type: object
           required: [seenStep, paperId, side, type, lots, tif]
           properties:
             seenStep: { type: integer, minimum: 0 }
-            paperId: { type: string }
+            paperId: { $ref: '#/components/schemas/Uuid' }
             side: { $ref: '#/components/schemas/OrderSide' }
             type: { $ref: '#/components/schemas/OrderType' }
             lots: { type: integer, minimum: 1 }
             tif: { $ref: '#/components/schemas/TimeInForce' }
+    PlaceOrderRequest:
+      description: 'Вид определяет режим сессии: `paperIndex` — слепая, `paperId` — раскрытая'
+      oneOf:
+        - $ref: '#/components/schemas/PlaceBlindOrderRequest'
+        - $ref: '#/components/schemas/PlaceOpenOrderRequest'
     ReplaceOrderRequest:
       allOf:
         - $ref: '#/components/schemas/OrderParams'
@@ -895,17 +1095,34 @@ components:
             seenStep: { type: integer, minimum: 0 }
             lots: { type: integer, minimum: 1 }
             tif: { $ref: '#/components/schemas/TimeInForce' }
-    EstimateOrderRequest:
+    EstimateBlindOrderRequest:
+      description: Оценка заявки в слепой сессии — бумага по `paperIndex`
+      allOf:
+        - $ref: '#/components/schemas/OrderParams'
+        - type: object
+          required: [paperIndex, side, type, lots, tif]
+          properties:
+            paperIndex: { $ref: '#/components/schemas/PaperIndex' }
+            side: { $ref: '#/components/schemas/OrderSide' }
+            type: { $ref: '#/components/schemas/OrderType' }
+            lots: { type: integer, minimum: 1 }
+            tif: { $ref: '#/components/schemas/TimeInForce' }
+    EstimateOpenOrderRequest:
+      description: Оценка заявки в раскрытой сессии — бумага по `paperId` из каталога
       allOf:
         - $ref: '#/components/schemas/OrderParams'
         - type: object
           required: [paperId, side, type, lots, tif]
           properties:
-            paperId: { type: string }
+            paperId: { $ref: '#/components/schemas/Uuid' }
             side: { $ref: '#/components/schemas/OrderSide' }
             type: { $ref: '#/components/schemas/OrderType' }
             lots: { type: integer, minimum: 1 }
             tif: { $ref: '#/components/schemas/TimeInForce' }
+    EstimateOrderRequest:
+      oneOf:
+        - $ref: '#/components/schemas/EstimateBlindOrderRequest'
+        - $ref: '#/components/schemas/EstimateOpenOrderRequest'
     OrderEstimateBase:
       type: object
       required: [canPlace, reason, field, amountPct, commissionPct, exchangeFeePct, requiredCashPct]
@@ -920,6 +1137,7 @@ components:
         requiredCashPct: { $ref: '#/components/schemas/Pct' }
     BlindOrderEstimate:
       description: Оценка заявки в слепом режиме — только проценты от начального капитала, без рублей и рублёвых цен (INV-7)
+      unevaluatedProperties: false
       allOf:
         - $ref: '#/components/schemas/OrderEstimateBase'
         - type: object
@@ -948,6 +1166,7 @@ components:
         mapping: { BLIND: '#/components/schemas/BlindOrderEstimate', OPEN: '#/components/schemas/OpenOrderEstimate' }
     OrderCommandResult:
       type: object
+      description: 'Для OCO `order` — нога `stop`, обе ноги — в `orderIds`'
       required: [accepted, reason, field, order, orderIds, orders, portfolio]
       properties:
         accepted: { type: boolean }
@@ -964,9 +1183,13 @@ components:
         portfolio: { $ref: '#/components/schemas/Portfolio' }
     FinishResult:
       type: object
-      required: [sessionId, finishedAtStep, finishedAtDay, portfolio, orders]
+      required: [sessionId, endReason, finishedAtStep, finishedAtDay, portfolio, orders]
       properties:
         sessionId: { $ref: '#/components/schemas/Uuid' }
+        endReason:
+          type: string
+          description: 'Причина завершения: конец периода, досрочно по команде, банкротство (`SessionStatus.BANKRUPT`)'
+          enum: [period_end, early, bankrupt]
         finishedAtStep: { type: integer }
         finishedAtDay: { type: integer }
         portfolio: { $ref: '#/components/schemas/Portfolio' }
@@ -977,6 +1200,7 @@ components:
         - $ref: '#/components/schemas/StepEvent'
         - $ref: '#/components/schemas/OrderUpdatedEvent'
         - $ref: '#/components/schemas/PausedEvent'
+        - $ref: '#/components/schemas/PlayerEvent'
         - $ref: '#/components/schemas/FinishedEvent'
         - $ref: '#/components/schemas/ReportReadyEvent'
       discriminator:
@@ -985,6 +1209,7 @@ components:
           step: '#/components/schemas/StepEvent'
           order_updated: '#/components/schemas/OrderUpdatedEvent'
           paused: '#/components/schemas/PausedEvent'
+          player: '#/components/schemas/PlayerEvent'
           finished: '#/components/schemas/FinishedEvent'
           report_ready: '#/components/schemas/ReportReadyEvent'
     StepEvent:
@@ -992,14 +1217,14 @@ components:
       required: [type, eventId, result]
       properties:
         type: { type: string, const: step }
-        eventId: { type: string }
+        eventId: { type: string, description: 'Равен строке `id:` SSE; монотонен в рамках сессии' }
         result: { $ref: '#/components/schemas/StepResult' }
     OrderUpdatedEvent:
       type: object
       required: [type, eventId, order, portfolio]
       properties:
         type: { type: string, const: order_updated }
-        eventId: { type: string }
+        eventId: { type: string, description: 'Равен строке `id:` SSE; монотонен в рамках сессии' }
         order: { $ref: '#/components/schemas/Order' }
         portfolio: { $ref: '#/components/schemas/Portfolio' }
     PausedEvent:
@@ -1007,21 +1232,30 @@ components:
       required: [type, eventId, reason]
       properties:
         type: { type: string, const: paused }
-        eventId: { type: string }
+        eventId: { type: string, description: 'Равен строке `id:` SSE; монотонен в рамках сессии' }
         reason: { type: string, enum: [user, disconnect, worker_failure] }
+    PlayerEvent:
+      type: object
+      description: Смена состояния плеера (play, пауза, скорость) — для других вкладок
+      required: [type, eventId, playing, speed]
+      properties:
+        type: { type: string, const: player }
+        eventId: { type: string, description: 'Равен строке `id:` SSE; монотонен в рамках сессии' }
+        playing: { type: boolean }
+        speed: { $ref: '#/components/schemas/PlayerSpeed' }
     FinishedEvent:
       type: object
       required: [type, eventId, result]
       properties:
         type: { type: string, const: finished }
-        eventId: { type: string }
+        eventId: { type: string, description: 'Равен строке `id:` SSE; монотонен в рамках сессии' }
         result: { $ref: '#/components/schemas/FinishResult' }
     ReportReadyEvent:
       type: object
       required: [type, eventId, sessionId]
       properties:
         type: { type: string, const: report_ready }
-        eventId: { type: string }
+        eventId: { type: string, description: 'Равен строке `id:` SSE; монотонен в рамках сессии' }
         sessionId: { $ref: '#/components/schemas/Uuid' }
     # ---------- воспроизведение ----------
     Period:
@@ -1043,14 +1277,19 @@ components:
         totalDays: { type: integer }
     ReplayReady:
       type: object
-      required: [status, session, snapshot]
+      description: 'Заполнен ровно один из `snapshot` (запрос без `fromStep`) и `increment` (с `fromStep`)'
+      required: [status, session, snapshot, increment]
       properties:
         status: { type: string, const: READY }
         session: { $ref: '#/components/schemas/ReplayMeta' }
-        snapshot: { $ref: '#/components/schemas/OpenSnapshot' }
+        snapshot:
+          oneOf: [{ $ref: '#/components/schemas/OpenSnapshot' }, { type: 'null' }]
+        increment:
+          oneOf: [{ $ref: '#/components/schemas/OpenStepResult' }, { type: 'null' }]
     NotFinished:
       type: object
       description: Незавершённая сессия — без бумаг, периода и итога (INV-1, INV-7)
+      unevaluatedProperties: false
       required: [status, sessionId, blind, title, createdAt, playedDays, totalDays, regime]
       properties:
         status: { type: string, const: NOT_FINISHED }
@@ -1083,12 +1322,12 @@ components:
       type: object
       required: [id, blindLabel, ticker, name, sector, startPrice, lotSize]
       properties:
-        id: { type: string }
+        id: { $ref: '#/components/schemas/Uuid' }
         blindLabel: { type: string }
         ticker: { type: string }
         name: { type: string }
         sector: { type: string }
-        startPrice: { $ref: '#/components/schemas/Money' }
+        startPrice: { $ref: '#/components/schemas/Price' }
         lotSize: { type: integer }
     CostsBreakdown:
       type: object
@@ -1106,18 +1345,18 @@ components:
       properties:
         initialCapital: { $ref: '#/components/schemas/Money' }
         finalCapital: { $ref: '#/components/schemas/Money' }
-        totalReturnPct: { $ref: '#/components/schemas/Pct' }
+        totalReturnPct: { $ref: '#/components/schemas/Pct', description: 'Поле `total_return` ядра (отличие от `netReturnPct` задаёт ядро)' }
         cagrPct: { $ref: '#/components/schemas/PctOrNull' }
         grossReturnPct: { $ref: '#/components/schemas/Pct' }
         netReturnPct: { $ref: '#/components/schemas/Pct' }
         maxDrawdownPct: { $ref: '#/components/schemas/Pct' }
-        maxDrawdownDurationDays: { type: integer }
+        maxDrawdownDurationDays: { type: [integer, 'null'], description: 'Считает core; null, пока core не отдаёт' }
         maxDrawdownDurationSteps: { type: integer }
         volatilityPct: { $ref: '#/components/schemas/PctOrNull' }
         sharpe: { $ref: '#/components/schemas/RatioOrNull' }
         sortino: { $ref: '#/components/schemas/RatioOrNull' }
         turnover: { $ref: '#/components/schemas/Ratio' }
-        tradesCount: { type: integer }
+        tradesCount: { type: integer, description: 'Число закрытых сделок (`round_trips` ядра)' }
         winRatePct: { $ref: '#/components/schemas/PctOrNull' }
         rejectedOrdersCount: { type: integer }
         partialFillsCount: { type: integer }
@@ -1148,7 +1387,7 @@ components:
         diffPctPoints: { $ref: '#/components/schemas/Pct' }
     Comparison:
       type: object
-      description: Подписи вида «+1 200 ₽» формирует клиент из `diff`
+      description: Сравнение считается в core. Подписи вида «+1 200 ₽» формирует клиент из `diff`
       required: [finalCapital, netReturn, maxDrawdown]
       properties:
         finalCapital: { $ref: '#/components/schemas/CapitalComparison' }
@@ -1187,9 +1426,10 @@ components:
           oneOf: [{ $ref: '#/components/schemas/OrderType' }, { type: 'null' }]
     Divergence:
       type: object
-      required: [id, step, day, date, paperTicker, sector, type, deltaBars, horizonStep, horizonDay, humanAction, algoAction, errorCost, errorCostPct, reasonCode]
+      description: Разбор расхождений считает core; `id` — детерминированный UUID v5 (сессия, вид, номер в ядре)
+      required: [id, step, day, date, paperTicker, sector, type, deltaBars, horizonStep, horizonDay, humanAction, algoAction, errorCost, errorCostPct, because]
       properties:
-        id: { $ref: '#/components/schemas/Uuid' }
+        id: { $ref: '#/components/schemas/DerivedUuid' }
         step: { type: integer }
         day: { type: integer }
         date: { type: string, format: date-time }
@@ -1203,23 +1443,24 @@ components:
         algoAction: { $ref: '#/components/schemas/TradeAction' }
         errorCost: { $ref: '#/components/schemas/Money' }
         errorCostPct: { $ref: '#/components/schemas/Pct' }
-        reasonCode: { type: string, description: 'Код причины расхождения; текст собирает клиент' }
+        because: { type: [string, 'null'], description: 'Текст `because` правила алгоритма (`decisions.md`, «Разбор расхождений»); null для «лишнего действия» — фразу подставляет клиент' }
     DivergenceSummary:
       type: object
       required: [totalErrorCost, totalErrorCostPct, worstDivergenceId, worstType, worstDay, worstErrorCost]
       properties:
         totalErrorCost: { $ref: '#/components/schemas/Money' }
         totalErrorCostPct: { $ref: '#/components/schemas/Pct' }
-        worstDivergenceId: { $ref: '#/components/schemas/UuidOrNull' }
+        worstDivergenceId: { $ref: '#/components/schemas/DerivedUuidOrNull' }
         worstType:
           oneOf: [{ $ref: '#/components/schemas/DivergenceType' }, { type: 'null' }]
         worstDay: { type: [integer, 'null'] }
         worstErrorCost: { $ref: '#/components/schemas/MoneyOrNull' }
     ReverseCheckTrade:
       type: object
+      description: Обратная проверка считается в core; `id` и `entryDivergenceId` — детерминированные UUID v5
       required: [id, paperTicker, entryStep, entryDay, entryDate, exitStep, exitDay, exitDate, lots, entryPrice, exitPrice, netProfit, entryDivergenceId]
       properties:
-        id: { $ref: '#/components/schemas/Uuid' }
+        id: { $ref: '#/components/schemas/DerivedUuid' }
         paperTicker: { type: string }
         entryStep: { type: integer }
         entryDay: { type: integer }
@@ -1228,10 +1469,10 @@ components:
         exitDay: { type: integer }
         exitDate: { type: string, format: date-time }
         lots: { type: integer }
-        entryPrice: { $ref: '#/components/schemas/Money' }
-        exitPrice: { $ref: '#/components/schemas/Money' }
+        entryPrice: { $ref: '#/components/schemas/Price' }
+        exitPrice: { $ref: '#/components/schemas/Price' }
         netProfit: { $ref: '#/components/schemas/Money' }
-        entryDivergenceId: { $ref: '#/components/schemas/Uuid' }
+        entryDivergenceId: { $ref: '#/components/schemas/DerivedUuid' }
     RoundTrip:
       type: object
       description: Закрытая сделка — пара покупка → продажа по FIFO (`Report.round_trips` ядра, не пересчитывается в Java)
@@ -1243,23 +1484,24 @@ components:
         entryDate: { type: string, format: date-time }
         exitDate: { type: string, format: date-time }
         lots: { type: integer }
-        entryPrice: { $ref: '#/components/schemas/Money' }
-        exitPrice: { $ref: '#/components/schemas/Money' }
+        entryPrice: { $ref: '#/components/schemas/Price' }
+        exitPrice: { $ref: '#/components/schemas/Price' }
         grossPnl: { $ref: '#/components/schemas/Money' }
         costs: { $ref: '#/components/schemas/Money' }
         netPnl: { $ref: '#/components/schemas/Money' }
     ReportFill:
       type: object
+      description: '`id` — детерминированный UUID v5 (сессия, вид, номер в ядре)'
       required: [id, day, date, paperTicker, side, orderType, lots, price, cost, partial, note]
       properties:
-        id: { $ref: '#/components/schemas/Uuid' }
+        id: { $ref: '#/components/schemas/DerivedUuid' }
         day: { type: integer }
         date: { type: string, format: date-time }
         paperTicker: { type: string }
         side: { $ref: '#/components/schemas/OrderSide' }
-        orderType: { $ref: '#/components/schemas/OrderType' }
+        orderType: { $ref: '#/components/schemas/OrderLegType' }
         lots: { type: integer }
-        price: { $ref: '#/components/schemas/Money' }
+        price: { $ref: '#/components/schemas/Price' }
         cost: { $ref: '#/components/schemas/Money' }
         partial: { type: boolean }
         note: { type: [string, 'null'] }
@@ -1322,7 +1564,7 @@ components:
       properties:
         id: { $ref: '#/components/schemas/Uuid' }
         kind: { type: string, enum: [session, algo_run] }
-        owner: { type: string, enum: [USER, PLATFORM] }
+        owner: { type: string, enum: [USER], description: 'В историю попадают только прогоны пользователя (`decisions.md`, «Отчёт и история»)' }
         createdAt: { type: string, format: date-time }
         regime: { $ref: '#/components/schemas/Regime' }
         playedDays: { type: integer }
@@ -1335,16 +1577,20 @@ components:
       allOf:
         - $ref: '#/components/schemas/HistoryEntryBase'
         - type: object
+          required: [view, blind, status]
           properties:
-            blind: { const: true }
-            status: { const: running }
+            view: { type: string, const: BLIND_UNFINISHED }
+            blind: { type: boolean, const: true }
+            status: { type: string, const: running }
+      unevaluatedProperties: false
     HistoryEntryRevealed:
       description: Раскрытая запись (завершённая либо неслепая); у незавершённой неслепой `netReturnPct` равен null (INV-1)
       allOf:
         - $ref: '#/components/schemas/HistoryEntryBase'
         - type: object
-          required: [title, papers, period, netReturnPct]
+          required: [view, title, papers, period, netReturnPct]
           properties:
+            view: { type: string, const: REVEALED }
             title: { type: string }
             papers: { type: array, items: { type: string } }
             period: { $ref: '#/components/schemas/Period' }
@@ -1354,6 +1600,9 @@ components:
       oneOf:
         - $ref: '#/components/schemas/HistoryEntryBlindUnfinished'
         - $ref: '#/components/schemas/HistoryEntryRevealed'
+      discriminator:
+        propertyName: view
+        mapping: { BLIND_UNFINISHED: '#/components/schemas/HistoryEntryBlindUnfinished', REVEALED: '#/components/schemas/HistoryEntryRevealed' }
     HistoryPage:
       type: object
       required: [items, total, page, pageSize, totalPages]
