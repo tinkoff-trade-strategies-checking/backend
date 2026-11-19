@@ -21,6 +21,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.CostTotalsData;
 import ru.tinvest.trainer.worker.WorkerTypes.EquityPointData;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.FillState;
+import ru.tinvest.trainer.worker.WorkerTypes.InstrumentChangeData;
 import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
 import ru.tinvest.trainer.worker.WorkerTypes.MetricsData;
@@ -39,6 +40,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.RunState;
 import ru.tinvest.trainer.worker.WorkerTypes.StepBars;
 import ru.tinvest.trainer.worker.WorkerTypes.Tif;
 import ru.tinvest.trainer.worker.WorkerTypes.TradeSide;
+import ru.tinvest.trainer.worker.WorkerTypes.UnderwaterPointData;
 
 /** Перевод между protobuf-сообщениями воркера и {@link WorkerTypes}. Деньги — {@link BigDecimal} (INV-6). */
 final class WorkerMapper {
@@ -189,12 +191,23 @@ final class WorkerMapper {
                     decimal(f.getExchangeFee()),
                     decimal(f.getSpreadCost()),
                     decimal(f.getSlippageCost()),
-                    f.getStopAndTakeSameBar()));
+                    f.getStopAndTakeSameBar(),
+                    f.getSeq(),
+                    decimal(f.getCost()),
+                    decimal(f.getCostPct()),
+                    decimal(f.getAmountPct())));
         }
         List<CommandOutcome> results = new ArrayList<>(r.getCommandResultsCount());
         for (pac.simulation.v1.CommandResult c : r.getCommandResultsList()) {
             results.add(new CommandOutcome(
                     c.getSeq(), c.getAccepted(), reason(c.getReason()), c.getInvalidField(), c.getOrderIdsList()));
+        }
+        List<InstrumentChangeData> changes = new ArrayList<>(r.getInstrumentChangesCount());
+        for (pac.simulation.v1.InstrumentChange c : r.getInstrumentChangesList()) {
+            changes.add(new InstrumentChangeData(
+                    c.getInstrumentKey(),
+                    c.hasStepPct() ? decimal(c.getStepPct()) : null,
+                    c.hasPeriodPct() ? decimal(c.getPeriodPct()) : null));
         }
         return new ReplayResult(
                 r.getTotalSteps(),
@@ -207,7 +220,9 @@ final class WorkerMapper {
                 results,
                 r.getWarmupSteps(),
                 r.hasBlindView() ? blindView(r.getBlindView()) : null,
-                r.hasReport() ? report(r.getReport()) : null);
+                r.hasReport() ? report(r.getReport()) : null,
+                r.getCurrentDay(),
+                changes);
     }
 
     private static ReportData report(pac.simulation.v1.Report r) {
@@ -231,7 +246,8 @@ final class WorkerMapper {
                 m.getMaxPositionShare(),
                 m.hasBenchmarkReturn() ? m.getBenchmarkReturn() : null,
                 m.getTradingDays(),
-                m.getStopTakeSameBar());
+                m.getStopTakeSameBar(),
+                m.getMaxDrawdownDays());
         pac.simulation.v1.CostTotals c = r.getCosts();
         List<RoundTripData> trips = new ArrayList<>(r.getRoundTripsCount());
         for (pac.simulation.v1.RoundTrip t : r.getRoundTripsList()) {
@@ -244,7 +260,12 @@ final class WorkerMapper {
                     decimal(t.getExitPrice()),
                     decimal(t.getGrossPnl()),
                     decimal(t.getCosts()),
-                    decimal(t.getNetPnl())));
+                    decimal(t.getNetPnl()),
+                    t.getSeq()));
+        }
+        List<UnderwaterPointData> underwater = new ArrayList<>(r.getUnderwaterCount());
+        for (pac.simulation.v1.UnderwaterPoint u : r.getUnderwaterList()) {
+            underwater.add(new UnderwaterPointData(u.getStep(), decimal(u.getDrawdownPct())));
         }
         return new ReportData(
                 metrics,
@@ -252,11 +273,13 @@ final class WorkerMapper {
                         decimal(c.getCommission()),
                         decimal(c.getExchangeFee()),
                         decimal(c.getSpread()),
-                        decimal(c.getSlippage())),
+                        decimal(c.getSlippage()),
+                        decimal(c.getTotal())),
                 equity(r.getEquityList()),
                 decimal(r.getFinalEquity()),
                 equity(r.getBenchmarkEquityList()),
-                trips);
+                trips,
+                underwater);
     }
 
     private static List<EquityPointData> equity(List<pac.simulation.v1.EquityPoint> points) {
@@ -321,9 +344,25 @@ final class WorkerMapper {
         List<PositionState> positions = new ArrayList<>(p.getPositionsCount());
         for (pac.simulation.v1.Position pos : p.getPositionsList()) {
             positions.add(new PositionState(
-                    pos.getInstrumentKey(), pos.getLots(), decimal(pos.getAvgPrice()), decimal(pos.getMarketValue())));
+                    pos.getInstrumentKey(),
+                    pos.getLots(),
+                    decimal(pos.getAvgPrice()),
+                    decimal(pos.getMarketValue()),
+                    decimal(pos.getValuePct()),
+                    decimal(pos.getPnlPct())));
         }
-        return new PortfolioState(decimal(p.getCash()), decimal(p.getEquity()), positions);
+        return new PortfolioState(
+                decimal(p.getCash()),
+                decimal(p.getEquity()),
+                positions,
+                decimal(p.getInvestedPct()),
+                decimal(p.getCostsPct()),
+                decimal(p.getPnlPct()),
+                decimal(p.getEquityPct()),
+                decimal(p.getCashPct()),
+                decimal(p.getInvested()),
+                decimal(p.getPnl()),
+                decimal(p.getCosts()));
     }
 
     private static OrderState order(pac.simulation.v1.Order o) {
@@ -374,7 +413,10 @@ final class WorkerMapper {
         List<BlindPaperData> papers = new ArrayList<>(v.getInstrumentsCount());
         for (pac.simulation.v1.BlindInstrument i : v.getInstrumentsList()) {
             papers.add(new BlindPaperData(
-                    i.getInstrumentIndex(), i.hasLotValueAtStart() ? decimal(i.getLotValueAtStart()) : null));
+                    i.getInstrumentIndex(),
+                    i.hasLotValueAtStart() ? decimal(i.getLotValueAtStart()) : null,
+                    i.hasChangeStepPct() ? decimal(i.getChangeStepPct()) : null,
+                    i.hasChangePeriodPct() ? decimal(i.getChangePeriodPct()) : null));
         }
         List<BlindBarData> history = new ArrayList<>(v.getHistoryCount());
         for (pac.simulation.v1.BlindBar b : v.getHistoryList()) {
@@ -403,16 +445,27 @@ final class WorkerMapper {
                     decimal(f.getExchangeFeePct()),
                     decimal(f.getSpreadCostPct()),
                     decimal(f.getSlippageCostPct()),
-                    f.getStopAndTakeSameBar()));
+                    f.getStopAndTakeSameBar(),
+                    decimal(f.getCostPct()),
+                    f.getSeq()));
         }
         pac.simulation.v1.BlindPortfolio bp = v.getPortfolio();
         List<BlindPositionData> positions = new ArrayList<>(bp.getPositionsCount());
         for (pac.simulation.v1.BlindPosition p : bp.getPositionsList()) {
             positions.add(new BlindPositionData(
-                    p.getInstrumentIndex(), p.getLots(), decimal(p.getAvgPrice()), decimal(p.getMarketValuePct())));
+                    p.getInstrumentIndex(),
+                    p.getLots(),
+                    decimal(p.getAvgPrice()),
+                    decimal(p.getMarketValuePct()),
+                    decimal(p.getPnlPct())));
         }
         BlindPortfolioData portfolio = new BlindPortfolioData(
-                decimal(bp.getCashPct()), decimal(bp.getEquityPct()), decimal(bp.getPnlPct()), positions);
+                decimal(bp.getCashPct()),
+                decimal(bp.getEquityPct()),
+                decimal(bp.getPnlPct()),
+                positions,
+                decimal(bp.getInvestedPct()),
+                decimal(bp.getCostsPct()));
         return new BlindViewData(papers, history, portfolio, orders, fills);
     }
 

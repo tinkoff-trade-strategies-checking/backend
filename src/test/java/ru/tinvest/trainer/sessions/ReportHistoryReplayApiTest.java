@@ -292,7 +292,7 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         assertThat(metrics.get("grossReturnPct").asString()).isEqualTo("1.25");
         assertThat(metrics.get("maxDrawdownPct").asString()).isEqualTo("0.40");
         assertThat(metrics.get("maxDrawdownDurationSteps").asInt()).isEqualTo(3);
-        assertThat(metrics.get("maxDrawdownDurationDays").isNull()).isTrue();
+        assertThat(metrics.get("maxDrawdownDurationDays").asInt()).isEqualTo(2);
         assertThat(metrics.get("cagrPct").isNull()).isTrue();
         assertThat(metrics.get("sharpe").isNull()).isTrue();
         assertThat(metrics.get("sortino").isNull()).isTrue();
@@ -303,9 +303,9 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         assertThat(metrics.get("largestPositionPct").asString()).isEqualTo("30.00");
         assertThat(metrics.get("bankrupt").asBoolean()).isFalse();
         assertThat(metrics.get("costs").get("commission").asString()).isEqualTo("6.00");
-        assertThat(metrics.get("costs").get("total").isNull()).isTrue();
+        assertThat(metrics.get("costs").get("total").asString()).isEqualTo("7.70");
 
-        // чего ядро пока не отдаёт — null или пусто
+        // отложенное (ФТ-18…20) — null
         assertThat(report.get("algoMetrics").isNull()).isTrue();
         assertThat(report.get("comparison").isNull()).isTrue();
         assertThat(report.get("backgroundAlgorithmName").isNull()).isTrue();
@@ -313,7 +313,12 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         // не посчитано — null, а не пустой массив
         assertThat(report.get("divergences").isNull()).isTrue();
         assertThat(report.get("reverseCheckTrades").isNull()).isTrue();
-        assertThat(report.get("underwaterCurve").isNull()).isTrue();
+        // просадка — из core: точка на каждую точку капитала, доля алгоритма отложена
+        JsonNode underwater = report.get("underwaterCurve");
+        assertThat(underwater).hasSize((int) LAST_STEP + 1);
+        assertThat(underwater.get(2).get("humanDrawdownPct").asString()).isEqualTo("0.00");
+        assertThat(underwater.get(2).get("algoDrawdownPct").isNull()).isTrue();
+        assertThat(underwater.get(2).get("date").asString()).endsWith("Z");
 
         JsonNode equity = report.get("equityCurve");
         assertThat(equity).hasSize((int) LAST_STEP + 1);
@@ -329,7 +334,8 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         assertThat(fill.get("orderType").asString()).isEqualTo("market");
         assertThat(fill.get("side").asString()).isEqualTo("buy");
         assertThat(fill.get("partial").asBoolean()).isFalse();
-        assertThat(fill.get("cost").isNull()).isTrue();
+        assertThat(fill.get("cost").asString()).isEqualTo("7.70");
+        assertThat(fill.get("id").asString()).isEqualTo(DerivedIds.fill(id, 0).toString());
 
         // отчёт строится по журналу целиком до итогового шага
         assertThat(worker.reportRequests).hasSize(1);

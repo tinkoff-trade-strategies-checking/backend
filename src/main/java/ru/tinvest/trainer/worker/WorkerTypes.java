@@ -148,11 +148,40 @@ public final class WorkerTypes {
             BigDecimal exchangeFee,
             BigDecimal spreadCost,
             BigDecimal slippageCost,
-            boolean stopAndTakeSameBar) {}
+            boolean stopAndTakeSameBar,
+            long seq,
+            BigDecimal cost,
+            BigDecimal costPct,
+            BigDecimal amountPct) {}
 
-    public record PositionState(String paperKey, long lots, BigDecimal avgPrice, BigDecimal marketValue) {}
+    /** Позиция ({@code Position}); {@code valuePct} и {@code pnlPct} — % начального капитала, считает core. */
+    public record PositionState(
+            String paperKey,
+            long lots,
+            BigDecimal avgPrice,
+            BigDecimal marketValue,
+            BigDecimal valuePct,
+            BigDecimal pnlPct) {}
 
-    public record PortfolioState(BigDecimal cash, BigDecimal equity, List<PositionState> positions) {}
+    /** Портфель ({@code Portfolio}): проценты (уже ×100) и рубли производных величин считает core. */
+    public record PortfolioState(
+            BigDecimal cash,
+            BigDecimal equity,
+            List<PositionState> positions,
+            BigDecimal investedPct,
+            BigDecimal costsPct,
+            BigDecimal pnlPct,
+            BigDecimal equityPct,
+            BigDecimal cashPct,
+            BigDecimal invested,
+            BigDecimal pnl,
+            BigDecimal costs) {}
+
+    /** Изменение цены бумаги на курсоре ({@code InstrumentChange}), %; {@code null} — у бумаги нет бара на курсоре. */
+    public record InstrumentChangeData(
+            String paperKey,
+            @Nullable BigDecimal stepPct,
+            @Nullable BigDecimal periodPct) {}
 
     public record BarData(
             long step,
@@ -169,7 +198,11 @@ public final class WorkerTypes {
     public record CommandOutcome(
             long seq, boolean accepted, @Nullable RejectCode reason, String invalidField, List<Long> orderIds) {}
 
-    public record BlindPaperData(int index, @Nullable BigDecimal lotValueAtStart) {}
+    public record BlindPaperData(
+            int index,
+            @Nullable BigDecimal lotValueAtStart,
+            @Nullable BigDecimal changeStepPct,
+            @Nullable BigDecimal changePeriodPct) {}
 
     public record BlindBarData(
             long step,
@@ -182,10 +215,16 @@ public final class WorkerTypes {
             BigDecimal volumeRel,
             boolean afterHalt) {}
 
-    public record BlindPositionData(int index, long lots, BigDecimal avgPrice, BigDecimal marketValuePct) {}
+    public record BlindPositionData(
+            int index, long lots, BigDecimal avgPrice, BigDecimal marketValuePct, BigDecimal pnlPct) {}
 
     public record BlindPortfolioData(
-            BigDecimal cashPct, BigDecimal equityPct, BigDecimal pnlPct, List<BlindPositionData> positions) {}
+            BigDecimal cashPct,
+            BigDecimal equityPct,
+            BigDecimal pnlPct,
+            List<BlindPositionData> positions,
+            BigDecimal investedPct,
+            BigDecimal costsPct) {}
 
     public record BlindOrderData(
             long id,
@@ -206,7 +245,9 @@ public final class WorkerTypes {
             BigDecimal exchangeFeePct,
             BigDecimal spreadCostPct,
             BigDecimal slippageCostPct,
-            boolean stopAndTakeSameBar) {}
+            boolean stopAndTakeSameBar,
+            BigDecimal costPct,
+            long seq) {}
 
     /** Слепой вид сессии ({@code BlindSessionView}): индексы бумаг вместо ключей, проценты вместо рублей. */
     public record BlindViewData(
@@ -237,7 +278,9 @@ public final class WorkerTypes {
             List<CommandOutcome> commandResults,
             long warmupSteps,
             @Nullable BlindViewData blindView,
-            @Nullable ReportData report) {}
+            @Nullable ReportData report,
+            int currentDay,
+            List<InstrumentChangeData> instrumentChanges) {}
 
     /**
      * Метрики отчёта ({@code Metrics}). Доли — как у ядра (0,12 = 12 %), {@code null} — необязательное значение ядра
@@ -262,11 +305,12 @@ public final class WorkerTypes {
             double maxPositionShare,
             @Nullable Double benchmarkReturn,
             int tradingDays,
-            long stopTakeSameBar) {}
+            long stopTakeSameBar,
+            long maxDrawdownDays) {}
 
     /** Издержки по видам ({@code CostTotals}). */
     public record CostTotalsData(
-            BigDecimal commission, BigDecimal exchangeFee, BigDecimal spread, BigDecimal slippage) {}
+            BigDecimal commission, BigDecimal exchangeFee, BigDecimal spread, BigDecimal slippage, BigDecimal total) {}
 
     /** Точка кривой капитала или бенчмарка ({@code EquityPoint}). */
     public record EquityPointData(long step, BigDecimal equity) {}
@@ -281,7 +325,11 @@ public final class WorkerTypes {
             BigDecimal exitPrice,
             BigDecimal grossPnl,
             BigDecimal costs,
-            BigDecimal netPnl) {}
+            BigDecimal netPnl,
+            long seq) {}
+
+    /** Точка кривой просадки ({@code UnderwaterPoint}): глубина от пика в процентах (уже ×100). */
+    public record UnderwaterPointData(long step, BigDecimal drawdownPct) {}
 
     /** Отчёт ядра ({@code Report}) в рублях: только раскрытая (завершённая) сессия. */
     public record ReportData(
@@ -290,7 +338,8 @@ public final class WorkerTypes {
             List<EquityPointData> equity,
             BigDecimal finalEquity,
             List<EquityPointData> benchmarkEquity,
-            List<RoundTripData> roundTrips) {}
+            List<RoundTripData> roundTrips,
+            List<UnderwaterPointData> underwater) {}
 
     /** Оценка заявки ({@code EstimateOrderResponse}); {@code resolvedOrder} — рублёвая заявка для журнала. */
     public record EstimateResult(

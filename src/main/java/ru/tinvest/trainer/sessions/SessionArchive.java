@@ -121,7 +121,7 @@ public class SessionArchive {
     /**
      * Номер торгового дня на курсоре. Основной путь — день, который плеер запомнил в {@code player_state.cursor_day} на
      * шаге курсора, без воркера (история не зависит от доступности ядра и данных снапшота). Запасной — строки нет или
-     * она на другом шаге: {@code Metrics.trading_days} ядра при {@code include_history = false}, журнал не нужен.
+     * она на другом шаге: {@code current_day} ядра без истории и отчёта, журнал не нужен.
      */
     public int playedDays(SessionRecord session) {
         PlayerStates.Row row = players.get(session.id());
@@ -150,9 +150,7 @@ public class SessionArchive {
                     if (replay.report() == null) {
                         throw new IllegalStateException("Воркер не вернул отчёт завершённой сессии " + session.id());
                     }
-                    ViewFormat.StepIndex index = new ViewFormat.StepIndex();
-                    replay.history().forEach(b -> index.add(b.step(), b.tradingDay()));
-                    return new CompletedReplay(session, replay, index.build().at(session.currentStep())[0]);
+                    return new CompletedReplay(session, replay, replay.currentDay());
                 });
     }
 }

@@ -1038,7 +1038,7 @@ class ArenaApiTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void fillCostsAreLeftToCoreAndTheMoneyIsNotRounded() throws Exception {
+    void fillCostsComeFromCoreAndTheMoneyIsNotRounded() throws Exception {
         UUID open = newSession(false);
         UUID blind = newSession(true);
         body(httpPost(open, "/orders", openOrder("SBER", 0, "buy", "market", 1, null), null));
@@ -1049,15 +1049,84 @@ class ArenaApiTest extends PostgresIntegrationTest {
         JsonNode openFill = body(httpGet(open, "")).get("fills").get(0);
         JsonNode blindFill = body(httpGet(blind, "")).get("fills").get(0);
 
-        assertThat(openFill.get("cost").isNull()).isTrue();
-        assertThat(openFill.get("costPct").isNull()).isTrue();
+        // издержки и проценты — значения core как есть (FakeWorker), backend ничего не складывает
+        assertThat(openFill.get("cost").asString()).isEqualTo("7.70");
+        assertThat(openFill.get("costPct").asString()).isEqualTo("0.08");
+        assertThat(openFill.get("amountPct").asString()).isEqualTo("2.00");
         assertThat(openFill.get("amount").asString())
                 .isEqualTo("%d.00".formatted((201 + 10 * index(open, "SBER")) * 10));
-        assertThat(blindFill.get("costPct").isNull()).isTrue();
+        assertThat(blindFill.get("costPct").asString()).isEqualTo("0.08");
         assertThat(blindFill.get("amountPct").asString()).isEqualTo("0.40");
+        // идентификатор исполнения — UUID v5 от (сессия, Fill.seq): одинаков в снимке и в слепой сессии с тем же seq
+        assertThat(openFill.get("id").asString())
+                .isEqualTo(DerivedIds.fill(open, 0).toString());
+        assertThat(blindFill.get("id").asString())
+                .isEqualTo(DerivedIds.fill(blind, 0).toString());
         // лишний знак у суммы ядра — ошибка, а не тихое округление
         assertThatThrownBy(() -> ViewFormat.money(new BigDecimal("10.005"))).isInstanceOf(ArithmeticException.class);
         assertThat(ViewFormat.money(new BigDecimal("10.5"))).isEqualTo("10.50");
+    }
+
+    @Test
+    void derivedValuesOfCoreAreReturnedAsIs() throws Exception {
+        UUID open = newSession(false);
+        UUID blind = newSession(true);
+        body(httpPost(open, "/orders", openOrder("SBER", 0, "buy", "market", 1, null), null));
+        body(httpPost(blind, "/orders", blindOrder(0, "buy", "market", 1, null), null));
+        setStep(open, 2);
+        setStep(blind, 2);
+
+        JsonNode openPortfolio = body(httpGet(open, "")).get("portfolio");
+        assertThat(openPortfolio.get("equityPct").asString()).isEqualTo("100.00");
+        assertThat(openPortfolio.get("cashPct").asString()).isEqualTo("100.00");
+        assertThat(openPortfolio.get("investedPct").asString()).isEqualTo("0.00");
+        assertThat(openPortfolio.get("pnlPct").asString()).isEqualTo("0.00");
+        assertThat(openPortfolio.get("costsPct").asString()).isEqualTo("0.08");
+        assertThat(openPortfolio.get("invested").asString()).isEqualTo("0.00");
+        assertThat(openPortfolio.get("pnl").asString()).isEqualTo("0.00");
+        assertThat(openPortfolio.get("costs").asString()).isEqualTo("7.70");
+        for (JsonNode paper : body(httpGet(open, "")).get("papers")) {
+            assertThat(paper.get("stat").get("changePct").asString()).isEqualTo("4.56");
+        }
+
+        JsonNode blindSnapshot = body(httpGet(blind, ""));
+        JsonNode blindPortfolio = blindSnapshot.get("portfolio");
+        assertThat(blindPortfolio.get("investedPct").asString()).isEqualTo("0.00");
+        assertThat(blindPortfolio.get("costsPct").asString()).isEqualTo("0.08");
+        for (JsonNode paper : blindSnapshot.get("papers")) {
+            assertThat(paper.get("stat").get("changePct").asString()).isEqualTo("4.56");
+        }
+    }
+
+    /** INV-7: новые производные величины слепого вида — только проценты, без рублёвых полей раскрытого вида. */
+    @Test
+    void blindDerivedValuesArePercentsOnly() throws Exception {
+        UUID blind = newSession(true);
+        body(httpPost(blind, "/orders", blindOrder(0, "buy", "market", 1, null), null));
+        setStep(blind, 2);
+
+        JsonNode snapshot = body(httpGet(blind, ""));
+        Set<String> rubles = Set.of(
+                "cost",
+                "amount",
+                "invested",
+                "pnl",
+                "costs",
+                "cash",
+                "equity",
+                "marketValue",
+                "commission",
+                "exchangeFee");
+        Set<String> keys = new HashSet<>();
+        collectKeys(snapshot, keys);
+        assertThat(keys).doesNotContainAnyElementsOf(rubles);
+        assertThat(keys).contains("investedPct", "costsPct", "pnlPct", "costPct", "changePct");
+        assertThat(snapshot.get("portfolio").propertyNames())
+                .containsExactlyInAnyOrder(
+                        "mode", "equityPct", "cashPct", "investedPct", "pnlPct", "costsPct", "positions");
+        assertThat(snapshot.get("fills").get(0).propertyNames()).doesNotContainAnyElementsOf(rubles);
+        // значения — проценты слепой шкалы, не рубли (рублёвый капитал — 500000)
+        assertThat(snapshot.toString()).doesNotContain("500000").doesNotContain("7.70");
     }
 
     // ---------- свойство маскировки (INV-7) ----------

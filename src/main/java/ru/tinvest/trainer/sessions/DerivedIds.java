@@ -14,9 +14,9 @@ public final class DerivedIds {
 
     private DerivedIds() {}
 
-    /** Исполнение: номер в ядре — ({@code order_id}, {@code step}) из {@code Fill}. */
-    public static UUID fill(UUID sessionId, long coreOrderId, long step) {
-        return v5(sessionId, "fill:" + coreOrderId + ":" + step);
+    /** Исполнение: номер в ядре — {@code Fill.seq} (порядковый номер в журнале сессии, стабилен при перепроигрывании). */
+    public static UUID fill(UUID sessionId, long seq) {
+        return v5(sessionId, "fill:" + seq);
     }
 
     static UUID v5(UUID namespace, String name) {

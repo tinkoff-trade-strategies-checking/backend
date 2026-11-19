@@ -83,7 +83,7 @@ class BlindMasking {
                 continue;
             }
             Map<String, Object> stat = new LinkedHashMap<>();
-            stat.put("changePct", null);
+            stat.put("changePct", ViewFormat.numberOrNull(paper.changePeriodPct()));
             stat.put("lastPrice", ViewFormat.number(lastClose.get(paper.index())));
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("paperIndex", paper.index());
@@ -215,7 +215,7 @@ class BlindMasking {
                 continue;
             }
             Map<String, Object> stat = new LinkedHashMap<>();
-            stat.put("changePct", null);
+            stat.put("changePct", ViewFormat.numberOrNull(paper.changePeriodPct()));
             stat.put("lastPrice", ViewFormat.number(lastClose.get(paper.index())));
             paperStats.put(Integer.toString(paper.index()), stat);
         }
@@ -383,7 +383,7 @@ class BlindMasking {
         int[] position = index.at(fill.step());
 
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("id", DerivedIds.fill(state.session().id(), fill.orderId(), fill.step()));
+        out.put("id", DerivedIds.fill(state.session().id(), fill.seq()));
         out.put("orderId", state.orderIds().get(fill.orderId()));
         out.put("paperIndex", fill.index());
         out.put("step", fill.step());
@@ -394,8 +394,8 @@ class BlindMasking {
         out.put("lots", fill.lots());
         out.put("price", ViewFormat.number(fill.price()));
         out.put("amountPct", ViewFormat.number(fill.valuePct()));
-        // общие издержки сделки в % считает core (core#54), backend ничего не складывает; пока не отдаёт — null
-        out.put("costPct", null);
+        // общие издержки сделки в % считает core (core#54), backend ничего не складывает
+        out.put("costPct", ViewFormat.number(fill.costPct()));
         out.put("stopAndTakeSameBar", fill.stopAndTakeSameBar());
         return out;
     }
@@ -407,7 +407,7 @@ class BlindMasking {
             position.put("paperIndex", p.index());
             position.put("lots", p.lots());
             position.put("avgPrice", ViewFormat.number(p.avgPrice()));
-            position.put("pnlPct", null);
+            position.put("pnlPct", ViewFormat.number(p.pnlPct()));
             position.put("valuePct", ViewFormat.number(p.marketValuePct()));
             positions.add(position);
         }
@@ -415,9 +415,9 @@ class BlindMasking {
         out.put("mode", "BLIND");
         out.put("equityPct", ViewFormat.number(view.portfolio().equityPct()));
         out.put("cashPct", ViewFormat.number(view.portfolio().cashPct()));
-        out.put("investedPct", null);
+        out.put("investedPct", ViewFormat.number(view.portfolio().investedPct()));
         out.put("pnlPct", ViewFormat.number(view.portfolio().pnlPct()));
-        out.put("costsPct", null);
+        out.put("costsPct", ViewFormat.number(view.portfolio().costsPct()));
         out.put("positions", positions);
         return out;
     }
