@@ -74,7 +74,7 @@ class Replay {
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("status", "READY");
-        out.put("kind", fromStep == null ? "SNAPSHOT" : "INCREMENT");
+        out.put("kind", (fromStep == null ? ReplayKind.SNAPSHOT : ReplayKind.INCREMENT).name());
         out.put("session", meta(session, replay));
         boolean finished = effective >= last;
         if (fromStep == null) {

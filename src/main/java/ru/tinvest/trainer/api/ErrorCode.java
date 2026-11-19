@@ -22,7 +22,31 @@ public enum ErrorCode {
     /** 422: недопустимые параметры запуска. */
     INVALID_PARAMS,
     /** 422: на периоде корпоративное действие. */
-    CORPORATE_ACTION_ON_PERIOD;
+    CORPORATE_ACTION_ON_PERIOD,
+    /** 400: некорректный запрос — валидация, тело, параметры. */
+    BAD_REQUEST,
+    /** 401: нет аутентификации. */
+    UNAUTHENTICATED,
+    /** 401: неверная почта или пароль при входе. */
+    INVALID_CREDENTIALS,
+    /** 403: нет или неверен CSRF-токен. */
+    CSRF_INVALID,
+    /** 403: доступ запрещён по другой причине. */
+    FORBIDDEN,
+    /** 404: нет ресурса или маршрута. */
+    NOT_FOUND,
+    /** 405: метод не поддерживается. */
+    METHOD_NOT_ALLOWED,
+    /** 406: нет подходящего формата ответа. */
+    NOT_ACCEPTABLE,
+    /** 415: тип содержимого не поддерживается. */
+    UNSUPPORTED_MEDIA_TYPE,
+    /** 429: слишком много запросов (попыток входа). */
+    TOO_MANY_REQUESTS,
+    /** 500: внутренняя ошибка. */
+    INTERNAL_ERROR,
+    /** 503: зависимость (воркер ядра, база, архив) недоступна. */
+    SERVICE_UNAVAILABLE;
 
     /** Кладёт код в тело ошибки. */
     public ProblemDetail applyTo(ProblemDetail problem) {

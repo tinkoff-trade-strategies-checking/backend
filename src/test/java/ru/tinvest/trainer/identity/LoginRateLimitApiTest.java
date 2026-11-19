@@ -74,6 +74,7 @@ class LoginRateLimitApiTest extends PostgresIntegrationTest {
         assertThat(blocked.getResponse().getStatus()).isEqualTo(429);
         assertThat(blocked.getResponse().getContentType()).contains("application/problem+json");
         assertThat(blocked.getResponse().getContentAsString()).contains("\"status\":429");
+        assertThat(blocked.getResponse().getContentAsString()).contains("\"code\":\"TOO_MANY_REQUESTS\"");
         assertThat(Long.parseLong(blocked.getResponse().getHeader("Retry-After")))
                 .isBetween(1L, 300L);
         // блокировка по паре (почта, IP): с другого IP почта не заблокирована (общий порог по почте — 50)

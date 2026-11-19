@@ -417,8 +417,8 @@ paths:
       summary: Воспроизведение завершённой сессии на заданном шаге (INV-8)
       description: |
         Без серверного состояния: курсор воспроизведения хранит клиент и передаёт явный `step`.
-        Без `fromStep` ответ — полный снимок `snapshot` на шаге `step`; с `fromStep` — приращение
-        `increment` (`kind`: `SNAPSHOT` или `INCREMENT`) (`OpenStepResult` за `(fromStep; step]` без истории свечей). `step` больше `totalSteps`
+        Ответ `READY` различается по `kind`: `SNAPSHOT` (запрос без `fromStep`) — полный снимок `snapshot` на шаге `step`;
+        `INCREMENT` (с `fromStep`) — приращение `increment` (`OpenStepResult` за `(fromStep; step]` без истории свечей). `step` больше `totalSteps`
         ограничивается последним шагом (ответ содержит фактический шаг); `fromStep` больше `step` — 400, равный — пустое приращение.
         Всегда 200 с `status` (`READY`, `NOT_FINISHED`, `NOT_FOUND`).
       parameters:
@@ -591,17 +591,17 @@ components:
     Problem:
       type: object
       description: RFC 9457. Для слепой сессии `detail` и `instance` не содержат дат, тикеров и названий (INV-7)
-      required: [type, title, status]
+      required: [type, title, status, code]
       properties:
         type: { type: string, format: uri-reference }
         title: { type: string }
         status: { type: integer }
         detail: { type: [string, 'null'] }
         instance: { type: [string, 'null'] }
-        code: { oneOf: [{ $ref: '#/components/schemas/ProblemCode' }, { type: 'null' }], description: Машинный код причины }
+        code: { $ref: '#/components/schemas/ProblemCode' }
     ProblemCode:
       type: string
-      description: Все машинные коды `Problem.code`, которые отдаёт API (enum `ErrorCode` в backend)
+      description: Машинный код любой ошибки API (enum `ErrorCode` в backend); клиент ветвится по нему, а не по `status` и `detail`
       enum:
         - IDEMPOTENCY_KEY_REUSED
         - IDEMPOTENCY_KEY_IN_PROGRESS
@@ -611,6 +611,18 @@ components:
         - TOO_MANY_BARS
         - INVALID_PARAMS
         - CORPORATE_ACTION_ON_PERIOD
+        - BAD_REQUEST
+        - UNAUTHENTICATED
+        - INVALID_CREDENTIALS
+        - CSRF_INVALID
+        - FORBIDDEN
+        - NOT_FOUND
+        - METHOD_NOT_ALLOWED
+        - NOT_ACCEPTABLE
+        - UNSUPPORTED_MEDIA_TYPE
+        - TOO_MANY_REQUESTS
+        - INTERNAL_ERROR
+        - SERVICE_UNAVAILABLE
     LaunchProblem:
       allOf:
         - $ref: '#/components/schemas/Problem'
@@ -1459,7 +1471,7 @@ components:
     PlayerEvent:
       type: object
       unevaluatedProperties: false
-      description: Смена состояния плеера (play, пауза, скорость) — для других вкладок
+      description: 'Смена состояния плеера (play, пауза, скорость) — для других вкладок. `playing: false` без следующего `paused` — завершение сессии (затем `finished`)'
       required: [type, eventId, playing, speed]
       properties:
         type: { type: string, const: player }

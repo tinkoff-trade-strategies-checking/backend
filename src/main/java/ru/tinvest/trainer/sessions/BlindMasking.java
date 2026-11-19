@@ -323,7 +323,7 @@ class BlindMasking {
         return out;
     }
 
-    /** Тело события {@code paused}; причина — {@code user}, {@code disconnect}, {@code worker_failure}. */
+    /** Тело события {@code paused}; причина — {@code user}, {@code disconnect}, {@code worker_failure}, {@code restart}. */
     Map<String, Object> pausedEvent(String reason) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("reason", reason);

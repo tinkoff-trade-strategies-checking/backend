@@ -16,6 +16,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.security.web.csrf.CsrfException;
 import org.springframework.security.web.csrf.CsrfFilter;
 import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.security.web.csrf.CsrfTokenRepository;
@@ -72,10 +73,19 @@ class SecurityConfiguration {
                         .authenticated()
                         .anyRequest()
                         .denyAll())
-                .exceptionHandling(handling -> handling.authenticationEntryPoint((request, response, ex) ->
-                                problems.write(response, 401, "Unauthorized", "Authentication required"))
-                        .accessDeniedHandler((request, response, ex) ->
-                                problems.write(response, 403, "Forbidden", "Access denied")));
+                .exceptionHandling(handling -> handling.authenticationEntryPoint(
+                                (request, response, ex) -> problems.write(
+                                        response,
+                                        401,
+                                        "Unauthorized",
+                                        "Authentication required",
+                                        ErrorCode.UNAUTHENTICATED))
+                        .accessDeniedHandler((request, response, ex) -> problems.write(
+                                response,
+                                403,
+                                "Forbidden",
+                                "Access denied",
+                                ex instanceof CsrfException ? ErrorCode.CSRF_INVALID : ErrorCode.FORBIDDEN)));
         return http.build();
     }
 
