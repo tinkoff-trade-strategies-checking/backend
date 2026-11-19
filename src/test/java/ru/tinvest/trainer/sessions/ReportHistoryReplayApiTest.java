@@ -4,12 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static ru.tinvest.trainer.PostgresIntegrationTest.registeredSnapshot;
 
 import jakarta.servlet.http.Cookie;
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -819,8 +818,7 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
     }
 
     private static LaunchPlan plan(boolean blind, Regime regime, List<String> secids, LocalDate start) {
-        Snapshot snapshot =
-                new Snapshot(UUID.randomUUID(), UUID.randomUUID().toString(), OffsetDateTime.now(ZoneOffset.UTC), "t");
+        Snapshot snapshot = registeredSnapshot();
         return plan(snapshot, blind, regime, secids, start);
     }
 

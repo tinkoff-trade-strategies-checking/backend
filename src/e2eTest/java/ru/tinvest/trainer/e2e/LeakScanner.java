@@ -77,7 +77,22 @@ final class LeakScanner {
     private static final Pattern RUBLE_TEXT = Pattern.compile("(?i)₽|руб");
 
     /** Поля, где число бывает большим и не деньгами. */
-    private static final Set<String> COUNT_FIELDS = Set.of("lots", "filledlots", "barscount", "maxbars", "status");
+    private static final Set<String> COUNT_FIELDS = Set.of(
+            "lots",
+            "filledlots",
+            "barscount",
+            "maxbars",
+            "step",
+            "totalsteps",
+            "warmupsteps",
+            "eventid",
+            "lasteventid",
+            "day",
+            "totaldays",
+            "playeddays",
+            "candleinday",
+            "finishedatstep",
+            "finishedatday");
 
     /** Слепое число не бывает больше этого: цены от 100, проценты, шаги, дни; больше — похоже на рубли. */
     private static final BigDecimal RUBLE_THRESHOLD = new BigDecimal("1000");

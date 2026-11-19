@@ -3,6 +3,7 @@ package ru.tinvest.trainer.sessions;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static ru.tinvest.trainer.PostgresIntegrationTest.registeredSnapshot;
 
 import jakarta.servlet.http.Cookie;
 import java.io.ByteArrayInputStream;
@@ -10,8 +11,6 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -378,8 +377,7 @@ class ReportExportApiTest extends PostgresIntegrationTest {
             list.add(new PlannedPaper(
                     Papers.id(SECIDS.get(i)), SECIDS.get(i), "Сектор" + i, 10 + i, new BigDecimal("0.01")));
         }
-        Snapshot snapshot =
-                new Snapshot(UUID.randomUUID(), UUID.randomUUID().toString(), OffsetDateTime.now(ZoneOffset.UTC), "t");
+        Snapshot snapshot = registeredSnapshot();
         LaunchPlan plan = new LaunchPlan(
                 snapshot,
                 blind,

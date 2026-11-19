@@ -218,10 +218,13 @@ public class Sessions {
 
     /**
      * Ключ снапшота в ClickHouse ({@code snapshot_id} воркера): сессия хранит первичный ключ снапшота PostgreSQL, а
-     * воркер читает данные по ключу. Нет строки снапшота — ключ равен идентификатору.
+     * воркер читает данные по ключу. Нет строки снапшота — ошибка (подставлять идентификатор нельзя).
      */
     private String snapshotKey(UUID snapshotId) {
-        return snapshots.find(snapshotId).map(Snapshot::snapshotKey).orElse(snapshotId.toString());
+        return snapshots
+                .find(snapshotId)
+                .map(Snapshot::snapshotKey)
+                .orElseThrow(() -> new IllegalStateException("Снапшот сессии не найден: " + snapshotId));
     }
 
     private List<PaperRecord> papers(UUID sessionId) {

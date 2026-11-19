@@ -1,8 +1,16 @@
 package ru.tinvest.trainer;
 
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.UUID;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import ru.tinvest.trainer.marketdata.Snapshot;
 
 /**
  * База для интеграционных тестов с PostgreSQL и миграциями Flyway. Контейнер один на JVM: Spring кэширует контекст
@@ -31,5 +39,22 @@ public abstract class PostgresIntegrationTest {
 
     static {
         postgres.start();
+    }
+
+    /** Снапшот, записанный в {@code marketdata.snapshot}: сессия берёт его ключ для воркера, строки нет — ошибка. */
+    public static Snapshot registeredSnapshot() {
+        UUID id = UUID.randomUUID();
+        String key = UUID.randomUUID().toString();
+        try (Connection c = DriverManager.getConnection(
+                        postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+                PreparedStatement ps = c.prepareStatement(
+                        "INSERT INTO marketdata.snapshot (id, snapshot_key, description) VALUES (?, ?, 't')")) {
+            ps.setObject(1, id);
+            ps.setString(2, key);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+        return new Snapshot(id, key, OffsetDateTime.now(ZoneOffset.UTC), "t");
     }
 }
