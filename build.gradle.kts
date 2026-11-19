@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.spring.dependency.management)
     alias(libs.plugins.spotless)
     alias(libs.plugins.errorprone)
+    alias(libs.plugins.protobuf)
 }
 
 group = "ru.tinvest.trainer"
@@ -35,9 +36,15 @@ dependencies {
     implementation(libs.spring.modulith.starter.core)
     implementation(libs.flyway.database.postgresql)
     runtimeOnly(libs.postgresql)
+    implementation(libs.protobuf.java)
+    implementation(libs.grpc.protobuf)
+    implementation(libs.grpc.stub)
+    runtimeOnly(libs.grpc.netty.shaded)
+    compileOnly("org.apache.tomcat:annotations-api:6.0.53")
 
     errorprone(libs.errorprone.core)
 
+    testImplementation(libs.grpc.inprocess)
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.spring.boot.starter.webmvc.test)
     testImplementation(libs.spring.boot.testcontainers)
@@ -45,6 +52,19 @@ dependencies {
     testImplementation(libs.testcontainers.junit.jupiter)
     testImplementation(libs.testcontainers.postgresql)
     testRuntimeOnly(libs.junit.platform.launcher)
+}
+
+protobuf {
+    protoc { artifact = libs.protobuf.protoc.get().toString() }
+    plugins {
+        create("grpc") { artifact = "${libs.grpc.protoc.gen.get()}:${osdetector.classifier}@exe" }
+    }
+}
+
+sourceSets {
+    main {
+        proto { srcDir("proto") }
+    }
 }
 
 spotless {

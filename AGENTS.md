@@ -11,7 +11,7 @@
 - Spring Boot 4 + Spring Modulith 2 (корневой пакет `ru.tinvest.trainer`).
 - PostgreSQL + Flyway (по схеме на модуль с таблицами).
 - Качество: Spotless + `palantir-java-format`, статический анализ ErrorProne (ошибки роняют сборку), JUnit + Testcontainers.
-- Внешние связи (добавляются отдельными задачами): REST/SSE по `api/openapi.yaml` (`backend#8`), gRPC к C++ Simulation Worker по копии `core/proto/` (`backend#9`), локальное окружение `deploy/` (`backend#10`).
+- Внешние связи (добавляются отдельными задачами): REST/SSE по `api/openapi.yaml` (`backend#8`), gRPC к C++ Simulation Worker по копии `core/proto/` в `proto/` (`backend#9`), локальное окружение `deploy/` (`backend#10`).
 
 ## Как работать над задачей
 Полностью — `home/workflow.md`. Коротко:
@@ -41,7 +41,7 @@
 - `api` — общие правила HTTP API, безопасность, `ApiExceptionHandler` (RFC 9457 `ProblemDetail`) и `GET /api/health`.
 - `identity` — учётные записи и вход пользователя (схема PostgreSQL `identity`).
 - `config` — общие настройки приложения.
-- `worker` — связь с Simulation Worker по gRPC, передача заданий и результатов.
+- `worker` — связь с Simulation Worker по gRPC, передача заданий и результатов. Публичный интерфейс — `SimulationWorkerClient` (пока `ping()`); реализация на `ManagedChannel`, адрес `worker.address` (env `WORKER_ADDRESS`, по умолчанию `localhost:50051`), дедлайн вызова `worker.deadline` (env `WORKER_DEADLINE`, по умолчанию `5s`); `UNAVAILABLE` и `DEADLINE_EXCEEDED` → `DependencyUnavailableException` (503).
 - `marketdata` — каталог бумаг и доступной истории; подбор отрезка выбранной категории периода (схема `marketdata`).
 - `workshop` — черновики стратегий, публикация неизменяемых версий, форки и скрытие из каталога (схема `workshop`).
 - `sessions` — ручная торговля: журнал команд, виртуальное время, плеер, слепой режим, завершение и воспроизведение (схема `sessions`).
@@ -49,6 +49,9 @@
 - `analysis` — отчёты, история, каталог алгоритмов, сравнение результатов, разбор расхождений и выгрузка CSV/XLSX (схема `analysis`).
 
 Миграции Flyway — в `src/main/resources/db/migration/` (`V1__baseline.sql` создаёт схемы модулей). Нумерация: `V<N>__<что>.sql`, по возрастанию в одном каталоге; таблицы модуля — только в его схеме. Конфигурация — `src/main/resources/application.yml` (БД из `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, без значений по умолчанию) и профиль `application-local.yml` (значения для локального запуска).
+
+## gRPC-контракт (proto)
+`proto/simulation.proto` и `proto/common.proto` — копии `core/proto/` с ветки `main` репозитория `core` (источник правды), без изменений. Java-код (protobuf и gRPC-стабы, пакет `pac.simulation.v1`) генерируется при сборке плагином `com.google.protobuf` в `build/generated` и не коммитится; ErrorProne и Spotless его не проверяют. Джоба CI `proto-sync` падает, если копия отличается от `core/main`. Контракт изменился в `core` — PR в `backend` с новой копией сразу после слияния PR в `core` (порядок контракта — `home/AGENTS.md`).
 
 ## Команды
 Для интеграционных тестов (Testcontainers) нужен запущенный Docker. На машине без локального JDK 25 Gradle автоматически скачает toolchain 25 через Foojay.
@@ -74,7 +77,7 @@ curl -s http://localhost:8080/actuator/health
 docker stop trainer-pg
 ```
 
-CI (`.github/workflows/ci.yml`): джоба `format` (`./gradlew spotlessCheck --no-daemon`), джоба `build-test` (`./gradlew build -x spotlessCheck --no-daemon`), джоба `pr-size` (наблюдение размера PR).
+CI (`.github/workflows/ci.yml`): джоба `format` (`./gradlew spotlessCheck --no-daemon`), джоба `build-test` (`./gradlew build -x spotlessCheck --no-daemon`), джоба `proto-sync` (сверка `proto/` с `core/main`), джоба `pr-size` (наблюдение размера PR).
 
 ## Когда обновлять документы
 Общая таблица — `home/workflow.md`, раздел «Когда обновлять документы». Для этого репозитория:
