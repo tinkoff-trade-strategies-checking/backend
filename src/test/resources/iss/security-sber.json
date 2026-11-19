@@ -1,0 +1,7 @@
+{
+"securities": {
+	"columns": ["SECID", "LOTSIZE", "MINSTEP"], 
+	"data": [
+		["SBER", 1, 0.01]
+	]
+}}

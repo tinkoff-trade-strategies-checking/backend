@@ -37,4 +37,16 @@ public class Snapshots {
                         rs.getString("description")))
                 .optional();
     }
+
+    public Optional<Snapshot> findByKey(String snapshotKey) {
+        return jdbc.sql(
+                        "SELECT id, snapshot_key, loaded_at, description FROM marketdata.snapshot WHERE snapshot_key = :k")
+                .param("k", snapshotKey)
+                .query((rs, n) -> new Snapshot(
+                        rs.getObject("id", UUID.class),
+                        rs.getString("snapshot_key"),
+                        rs.getObject("loaded_at", OffsetDateTime.class),
+                        rs.getString("description")))
+                .optional();
+    }
 }

@@ -1,0 +1,13 @@
+# Профиль импорта архива ISS -> ClickHouse (marketdata.importer): без веб-сервера.
+# БД PostgreSQL — SPRING_DATASOURCE_* из application.yml, без значений по умолчанию; для локального запуска
+# добавьте профиль local: --spring.profiles.active=import,local. ClickHouse — только из окружения.
+spring:
+  main:
+    web-application-type: none
+
+import:
+  clickhouse:
+    url: ${IMPORT_CLICKHOUSE_URL}
+    database: ${IMPORT_CLICKHOUSE_DATABASE}
+    user: ${IMPORT_CLICKHOUSE_USER}
+    password: ${IMPORT_CLICKHOUSE_PASSWORD}
