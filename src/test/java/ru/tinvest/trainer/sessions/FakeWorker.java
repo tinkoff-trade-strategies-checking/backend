@@ -51,6 +51,8 @@ final class FakeWorker implements SimulationWorkerClient {
     static final long BASE_TIME_MS = 1_647_241_200_000L; // 2022-03-14T07:00:00Z
 
     volatile boolean down;
+    /** Шаг банкротства: курсор дальше него останавливается на нём, статус {@code BANKRUPT}; {@code -1} — нет. */
+    volatile long bankruptAt = -1;
     /** Бумаги без баров до курсора (в раскрытом виде их свечей нет). */
     volatile Set<String> noBars = Set.of();
     /** Если задан, {@code replaySession} сообщает о входе в {@code entered} и ждёт {@code gate}. */
@@ -65,6 +67,7 @@ final class FakeWorker implements SimulationWorkerClient {
 
     void reset() {
         down = false;
+        bankruptAt = -1;
         noBars = Set.of();
         entered = null;
         gate = null;
@@ -148,6 +151,13 @@ final class FakeWorker implements SimulationWorkerClient {
         lastMarket = market;
         waitAtGate();
         replayJournals.add(List.copyOf(journal));
+        // конец периода — последний шаг шкалы; банкротство останавливает раньше
+        long lastStep = Math.min(upToStep, TOTAL_STEPS - 1);
+        RunState runState = lastStep >= TOTAL_STEPS - 1 ? RunState.FINISHED_END : RunState.RUNNING;
+        if (bankruptAt >= 0 && lastStep >= bankruptAt) {
+            lastStep = bankruptAt;
+            runState = RunState.BANKRUPT;
+        }
         Map<Long, OrderState> orders = new TreeMap<>();
         List<CommandOutcome> outcomes = new ArrayList<>();
         for (JournalRecord entry : journal) {
@@ -230,7 +240,7 @@ final class FakeWorker implements SimulationWorkerClient {
         List<BarData> history = new ArrayList<>();
         List<BlindBarData> blindHistory = new ArrayList<>();
         if (includeHistory) {
-            for (long step = -WARMUP; step <= upToStep; step++) {
+            for (long step = -WARMUP; step <= lastStep; step++) {
                 for (int i = 0; i < market.papers().size(); i++) {
                     if (noBars.contains(market.papers().get(i).key())) {
                         continue;
@@ -285,16 +295,7 @@ final class FakeWorker implements SimulationWorkerClient {
                     blindFills);
         }
         return new ReplayResult(
-                TOTAL_STEPS,
-                RunState.RUNNING,
-                upToStep,
-                history,
-                portfolio,
-                visible,
-                fills,
-                outcomes,
-                WARMUP,
-                blindView);
+                TOTAL_STEPS, runState, lastStep, history, portfolio, visible, fills, outcomes, WARMUP, blindView);
     }
 
     private static BigDecimal rubles(int paperIndex, long step) {

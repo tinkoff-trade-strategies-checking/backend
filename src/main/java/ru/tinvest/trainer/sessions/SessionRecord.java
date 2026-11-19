@@ -44,6 +44,14 @@ public record SessionRecord(
         papers = List.copyOf(papers);
     }
 
+    /**
+     * Данные сессии раскрыты: неслепая сессия или слепая после завершения (INV-7, {@code decisions.md}: раскрытие только
+     * после завершения). Отчёт, история и воспроизведение отдают реальные даты и тикеры только при {@code true}.
+     */
+    public boolean revealed() {
+        return !blind || !"running".equals(status);
+    }
+
     @Override
     public String toString() {
         return "SessionRecord[" + id + ", blind=" + blind + ", status=" + status + "]";

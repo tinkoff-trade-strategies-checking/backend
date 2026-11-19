@@ -132,6 +132,35 @@ public class Sessions {
         return requireOwned(sessionId, true);
     }
 
+    /**
+     * Сессия по идентификатору без проверки владельца и с блокировкой строки: для часов плеера, у которых нет
+     * пользователя запроса. Вызывать внутри транзакции.
+     */
+    Optional<SessionRecord> lockById(UUID sessionId) {
+        return find(sessionId, true);
+    }
+
+    /** Сессия по идентификатору без проверки владельца (после изменения под блокировкой — перечитать). */
+    SessionRecord reload(UUID sessionId) {
+        return find(sessionId, false).orElseThrow(() -> new NotFoundException("Session not found"));
+    }
+
+    /** Двигает курсор вперёд; назад триггер БД не пускает. Вызывать под блокировкой строки сессии. */
+    void advance(UUID sessionId, long step) {
+        jdbc.sql("UPDATE sessions.session SET current_step = :step WHERE id = :id")
+                .param("step", step)
+                .param("id", sessionId)
+                .update();
+    }
+
+    /** Переводит сессию из {@code running} в завершённый статус (триггер БД не пускает обратно). */
+    void finish(UUID sessionId, String status) {
+        jdbc.sql("UPDATE sessions.session SET status = :status WHERE id = :id AND status = 'running'")
+                .param("status", status)
+                .param("id", sessionId)
+                .update();
+    }
+
     private SessionRecord requireOwned(UUID sessionId, boolean lock) {
         UUID userId = currentUser.requireId();
         return find(sessionId, lock)

@@ -31,19 +31,7 @@ final class OpenViews {
         Map<String, List<Object>> candles = new HashMap<>();
         Map<String, BigDecimal> lastClose = new HashMap<>();
         for (BarData bar : replay.history()) {
-            int[] position = index.at(bar.step());
-            Map<String, Object> candle = new LinkedHashMap<>();
-            candle.put("step", bar.step());
-            candle.put("day", bar.tradingDay());
-            candle.put("candleInDay", position[1]);
-            candle.put("openedAt", ViewFormat.instant(bar.timeUnixMs()));
-            candle.put("open", ViewFormat.number(bar.open()));
-            candle.put("high", ViewFormat.number(bar.high()));
-            candle.put("low", ViewFormat.number(bar.low()));
-            candle.put("close", ViewFormat.number(bar.close()));
-            candle.put("volume", bar.volumeLots());
-            candle.put("afterHalt", bar.afterHalt());
-            candles.computeIfAbsent(bar.paperKey(), k -> new ArrayList<>()).add(candle);
+            candles.computeIfAbsent(bar.paperKey(), k -> new ArrayList<>()).add(candle(bar, index.at(bar.step())[1]));
             lastClose.put(bar.paperKey(), bar.close());
         }
 
@@ -86,6 +74,67 @@ final class OpenViews {
         return out;
     }
 
+    /** Результат шага раскрытой сессии ({@code OpenStepResult}); правила набора — {@link BlindMasking#stepResult}. */
+    static Map<String, Object> stepResult(ArenaState state, long fromStep) {
+        ReplayResult replay = state.replay();
+        ViewFormat.StepIndex index = new ViewFormat.StepIndex();
+        replay.history().forEach(b -> index.add(b.step(), b.tradingDay()));
+        index.build();
+        long step = state.step();
+
+        Map<String, Object> bars = new LinkedHashMap<>();
+        Map<String, BigDecimal> lastClose = new HashMap<>();
+        for (BarData bar : replay.history()) {
+            lastClose.put(bar.paperKey(), bar.close());
+            if (bar.step() == step) {
+                bars.put(paper(state, bar.paperKey()).paperId().toString(), candle(bar, index.at(step)[1]));
+            }
+        }
+        Map<String, Object> paperStats = new LinkedHashMap<>();
+        for (PaperRecord paper : state.session().papers()) {
+            if (!lastClose.containsKey(paper.secid())) {
+                continue;
+            }
+            Map<String, Object> stat = new LinkedHashMap<>();
+            stat.put("changePct", null);
+            stat.put("lastPrice", ViewFormat.number(lastClose.get(paper.secid())));
+            paperStats.put(paper.paperId().toString(), stat);
+        }
+        List<Object> fills = new ArrayList<>();
+        for (FillState fill : replay.fills()) {
+            if (fill.step() > fromStep && fill.step() <= step) {
+                fills.add(fill(state, fill, index, replay));
+            }
+        }
+        List<Object> orders = new ArrayList<>();
+        for (OrderState order : ViewFormat.changedOrders(state, fromStep)) {
+            orders.add(order(state, order));
+        }
+        Map<String, Object> out = ViewFormat.stepBase(state, index.at(step)[0]);
+        out.put("mode", "OPEN");
+        out.put("bars", bars);
+        out.put("paperStats", paperStats);
+        out.put("portfolio", portfolio(state));
+        out.put("fills", fills);
+        out.put("orders", orders);
+        return out;
+    }
+
+    private static Map<String, Object> candle(BarData bar, int candleInDay) {
+        Map<String, Object> candle = new LinkedHashMap<>();
+        candle.put("step", bar.step());
+        candle.put("day", bar.tradingDay());
+        candle.put("candleInDay", candleInDay);
+        candle.put("openedAt", ViewFormat.instant(bar.timeUnixMs()));
+        candle.put("open", ViewFormat.number(bar.open()));
+        candle.put("high", ViewFormat.number(bar.high()));
+        candle.put("low", ViewFormat.number(bar.low()));
+        candle.put("close", ViewFormat.number(bar.close()));
+        candle.put("volume", bar.volumeLots());
+        candle.put("afterHalt", bar.afterHalt());
+        return candle;
+    }
+
     static Map<String, Object> commandResult(
             Map<String, Object> base, ArenaState state, ArenaState.CommandReply reply) {
         List<Object> shown = new ArrayList<>();
@@ -117,7 +166,7 @@ final class OpenViews {
         target.put("requiredCash", ViewFormat.money(amounts.requiredCash()));
     }
 
-    private static Map<String, Object> order(ArenaState state, OrderState order) {
+    static Map<String, Object> order(ArenaState state, OrderState order) {
         BigDecimal[] levels = ViewFormat.levels(
                 order.spec().kind(), order.spec().limitPrice(), order.spec().stopPrice());
         Map<String, Object> out = ViewFormat.orderBase(state, order, levels, order.trailingStopLevel());
@@ -164,7 +213,7 @@ final class OpenViews {
         return out;
     }
 
-    private static Map<String, Object> portfolio(ArenaState state) {
+    static Map<String, Object> portfolio(ArenaState state) {
         var portfolio = state.replay().portfolio();
         List<Object> positions = new ArrayList<>();
         for (PositionState p : portfolio.positions()) {

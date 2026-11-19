@@ -23,6 +23,13 @@ identity:
     max-failures-per-ip: 20
     window: 5m
 
+lab:
+  session:
+    # ручная сессия без подписчиков SSE дольше этого срока встаёт на паузу (decisions.md)
+    disconnect-pause-after: 5s
+    min-tick: 200ms
+    heartbeat: 2s
+
 worker:
   address: ${WORKER_ADDRESS:localhost:50051}
   deadline: ${WORKER_DEADLINE:5s}
