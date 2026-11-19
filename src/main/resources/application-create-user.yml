@@ -1,0 +1,5 @@
+# Профиль создания учётной записи (identity): без веб-сервера.
+# --spring.profiles.active=create-user[,local] --user.email=... ; пароль — USER_PASSWORD или --user.password.
+spring:
+  main:
+    web-application-type: none

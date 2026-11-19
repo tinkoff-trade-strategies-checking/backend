@@ -6,6 +6,15 @@ spring:
     username: ${SPRING_DATASOURCE_USERNAME}
     password: ${SPRING_DATASOURCE_PASSWORD}
 
+server:
+  servlet:
+    session:
+      cookie:
+        name: SESSION
+        http-only: true
+        secure: true
+        same-site: lax
+
 worker:
   address: ${WORKER_ADDRESS:localhost:50051}
   deadline: ${WORKER_DEADLINE:5s}

@@ -40,7 +40,7 @@
 ## Структура
 Корневой пакет: `ru.tinvest.trainer` (`TrainerApplication`). Модули верхнего уровня (`documentation/architecture.md`, «Модули бэкенда»):
 - `api` — общие правила HTTP API, безопасность, `ApiExceptionHandler` (RFC 9457 `ProblemDetail`) и `GET /api/health`.
-- `identity` — учётные записи и вход пользователя (схема PostgreSQL `identity`).
+- `identity` — учётные записи и вход пользователя (схема PostgreSQL `identity`): `/api/v1/auth/login`, `/auth/logout`, `GET /me`. Публичный API для других модулей — `identity.CurrentUser` (`requireId()` / `findId()`: UUID вошедшего пользователя); пароли bcrypt (до 72 байт UTF-8), роль одна — `USER`. Безопасность — `api.SecurityConfiguration`: cookie `SESSION` (HttpOnly, Secure, SameSite=Lax; сессии в памяти Tomcat), CSRF `XSRF-TOKEN` / `X-XSRF-TOKEN` (cookie выдаётся любым запросом, в том числе `GET /me` с 401), всё под `/api/v1/**` кроме входа требует входа (401 ProblemDetail), CSRF — 403; `/api/health` и `/actuator/health` открыты. Новый защищённый контроллер ничего настраивать не должен; в тестах MockMvc сессия и CSRF — как в `IdentityApiTest`.
 - `config` — общие настройки приложения.
 - `worker` — связь с Simulation Worker по gRPC, передача заданий и результатов. Публичный интерфейс — `SimulationWorkerClient` (пока `ping()`); реализация на `ManagedChannel`, адрес `worker.address` (env `WORKER_ADDRESS`, по умолчанию `localhost:50051`), дедлайн вызова `worker.deadline` (env `WORKER_DEADLINE`, по умолчанию `5s`); `UNAVAILABLE` и `DEADLINE_EXCEEDED` → `DependencyUnavailableException` (503).
 - `marketdata` — каталог бумаг и доступной истории; подбор отрезка выбранной категории периода (схема `marketdata`). Импортёр архива ISS — пакет `marketdata.importer` (профиль `import`, раздел «Импорт архива ISS»).
@@ -50,6 +50,15 @@
 - `analysis` — отчёты, история, каталог алгоритмов, сравнение результатов, разбор расхождений и выгрузка CSV/XLSX (схема `analysis`).
 
 Миграции Flyway — в `src/main/resources/db/migration/` (`V1__baseline.sql` создаёт схемы модулей). Нумерация: `V<N>__<что>.sql`, по возрастанию в одном каталоге; таблицы модуля — только в его схеме. Конфигурация — `src/main/resources/application.yml` (БД из `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, без значений по умолчанию) и профиль `application-local.yml` (значения для локального запуска).
+
+## Создание пользователя
+Регистрации нет, учётные записи заводит команда профилем `create-user` (без веб-сервера, нужен PostgreSQL; для локальной БД добавьте `local`). Пароль лучше передавать переменной `USER_PASSWORD` (не виден в списке процессов), допустим `--user.password`:
+
+```bash
+USER_PASSWORD='...' ./gradlew bootRun --args='--spring.profiles.active=create-user,local --user.email=trader@example.com'
+```
+
+Почта хранится в нижнем регистре и уникальна без учёта регистра; пароль длиннее 72 байт UTF-8 отклоняется. Сброс пароля — команда вручную (решение «Учётные записи»).
 
 ## Импорт архива ISS
 Импортёр (UC-26, `backend#7`) грузит MOEX ISS и ставки RUONIA ЦБ РФ в ClickHouse как неизменяемый снапшот и регистрирует его в `marketdata.snapshot` (`Snapshots.register`). Запускается тем же приложением под профилем `import` (без веб-сервера), нужны PostgreSQL и ClickHouse:
