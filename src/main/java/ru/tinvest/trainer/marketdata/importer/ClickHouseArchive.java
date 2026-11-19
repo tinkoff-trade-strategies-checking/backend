@@ -41,8 +41,11 @@ final class ClickHouseArchive {
         ch.execute("CREATE DATABASE IF NOT EXISTS " + ch.database());
         ch.execute("CREATE TABLE IF NOT EXISTS snapshots_ready (snapshot_id UUID) ENGINE = MergeTree() "
                 + "ORDER BY snapshot_id");
-        ch.execute("CREATE TABLE IF NOT EXISTS securities (snapshot_id UUID, secid String, sector String, "
-                + "lot_size Int64, price_step Decimal(18, 6)) ENGINE = MergeTree() ORDER BY (snapshot_id, secid)");
+        ch.execute(
+                "CREATE TABLE IF NOT EXISTS securities (snapshot_id UUID, secid String, sector String, "
+                        + "lot_size Int64, price_step Decimal(18, 6), name String DEFAULT '') ENGINE = MergeTree() ORDER BY (snapshot_id, secid)");
+        // название бумаги добавлено после контракта core (core читает столбцы по именам); старые таблицы — ALTER
+        ch.execute("ALTER TABLE securities ADD COLUMN IF NOT EXISTS name String DEFAULT ''");
         // Кодеки не меняют типы столбцов (контракт core), но сжимают минутные свечи в 2,4 раза (замер 19.11.2026)
         ch.execute("CREATE TABLE IF NOT EXISTS candles (snapshot_id UUID CODEC(ZSTD), secid LowCardinality(String), "
                 + "interval_sec UInt32 CODEC(ZSTD), ts_open DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD), "
@@ -57,6 +60,14 @@ final class ClickHouseArchive {
                 + "ENGINE = MergeTree() ORDER BY (snapshot_id, date)");
         ch.execute("CREATE TABLE IF NOT EXISTS corporate_actions (snapshot_id UUID, secid String, date Date, "
                 + "kind String, before Int64, after Int64) ENGINE = MergeTree() ORDER BY (snapshot_id, secid, date)");
+    }
+
+    /** Удаляет строки снапшота из всех таблиц архива строго по его идентификатору. */
+    void deleteSnapshot(UUID snapshot) {
+        for (String table : List.of(
+                "snapshots_ready", "securities", "candles", "trading_calendar", "ruonia", "corporate_actions")) {
+            ch.execute("DELETE FROM " + table + " WHERE snapshot_id = '" + snapshot + "'");
+        }
     }
 
     boolean isReady(UUID snapshot) {
@@ -118,9 +129,9 @@ final class ClickHouseArchive {
     void insertSecurities(UUID snapshot, List<SecurityRow> rows) {
         String values = rows.stream()
                 .map(r -> "(" + str(snapshot.toString()) + "," + str(r.secid()) + "," + str(r.sector()) + ","
-                        + r.lotSize() + "," + num(r.priceStep()) + ")")
+                        + r.lotSize() + "," + num(r.priceStep()) + "," + str(r.name()) + ")")
                 .collect(Collectors.joining(","));
-        ch.execute("INSERT INTO securities (snapshot_id, secid, sector, lot_size, price_step) VALUES " + values);
+        ch.execute("INSERT INTO securities (snapshot_id, secid, sector, lot_size, price_step, name) VALUES " + values);
     }
 
     List<String> secids(UUID snapshot) {
@@ -176,6 +187,48 @@ final class ClickHouseArchive {
         ch.execute("INSERT INTO corporate_actions (snapshot_id, secid, date, kind, before, after) VALUES " + values);
     }
 
+    /** Столбцы таблиц данных, входящие в хэш снапшота (без {@code snapshot_id}). */
+    private static final Map<String, String> HASHED = new java.util.LinkedHashMap<>();
+
+    static {
+        HASHED.put("securities", "secid, sector, lot_size, price_step, name");
+        HASHED.put("candles", "secid, interval_sec, ts_open, available_at, open, high, low, close, volume, value");
+        HASHED.put("trading_calendar", "date, is_trading");
+        HASHED.put("ruonia", "date, rate");
+        HASHED.put("corporate_actions", "secid, date, kind, before, after");
+    }
+
+    /**
+     * Хэш данных снапшота: SHA-256 над строками {@code таблица|число строк|сумма 128-битных sipHash128 по строкам} всех таблиц
+     * данных (порядок таблиц фиксирован). Сумма по строкам не зависит от порядка вставки и частей MergeTree, поэтому
+     * хэш не зависит от докачки, метки ({@code label}) и идентификатора снапшота — только от самих данных. Вызывать
+     * после {@code snapshots_ready}: до этого набор строк ещё меняется.
+     */
+    String dataHash(UUID snapshot, String schemaVersion) {
+        StringBuilder canon = new StringBuilder("iss-v").append(schemaVersion).append('\n');
+        HASHED.forEach((table, cols) -> {
+            String[] r = ch.execute("SELECT count(), sum(reinterpretAsUInt128(sipHash128(" + cols + "))) FROM " + table
+                            + " WHERE snapshot_id = '" + snapshot + "' FORMAT TSV")
+                    .trim()
+                    .split("\t", -1);
+            canon.append(table)
+                    .append('(')
+                    .append(cols)
+                    .append(")|")
+                    .append(r[0])
+                    .append('|')
+                    .append(r[1])
+                    .append('\n');
+        });
+        try {
+            byte[] d = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(canon.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(d);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     /** Объём таблиц на диске: имя → {строк, байт сжато, байт без сжатия}. */
     Map<String, long[]> diskUsage() {
         String out = ch.execute("SELECT table, sum(rows), sum(data_compressed_bytes), sum(data_uncompressed_bytes) "
@@ -197,7 +250,7 @@ final class ClickHouseArchive {
         return parts;
     }
 
-    record SecurityRow(String secid, String sector, long lotSize, BigDecimal priceStep) {}
+    record SecurityRow(String secid, String sector, long lotSize, BigDecimal priceStep, String name) {}
 
     record ActionRow(String secid, LocalDate date, String kind, long before, long after) {}
 }

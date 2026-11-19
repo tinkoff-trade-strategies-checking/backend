@@ -18,6 +18,7 @@ public record ImportProperties(
         List<String> tickers,
         @DefaultValue("") String label,
         @DefaultValue("false") boolean allowGaps,
+        @DefaultValue("false") boolean dropLegacy,
         @DefaultValue("30m") Duration endOfDayTolerance,
         @DefaultValue Iss iss,
         @DefaultValue Cbr cbr,

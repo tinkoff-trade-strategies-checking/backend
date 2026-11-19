@@ -57,8 +57,9 @@ class ClickHouseArchiveCatalogTest {
     static void load() throws Exception {
         clickhouse.start();
         exec("CREATE TABLE snapshots_ready (snapshot_id UUID) ENGINE = MergeTree() ORDER BY snapshot_id");
-        exec("CREATE TABLE securities (snapshot_id UUID, secid String, sector String, lot_size Int64, "
-                + "price_step Decimal(18, 6)) ENGINE = MergeTree() ORDER BY (snapshot_id, secid)");
+        exec(
+                "CREATE TABLE securities (snapshot_id UUID, secid String, sector String, lot_size Int64, "
+                        + "price_step Decimal(18, 6), name String DEFAULT '') ENGINE = MergeTree() ORDER BY (snapshot_id, secid)");
         exec("CREATE TABLE candles (snapshot_id UUID, secid LowCardinality(String), interval_sec UInt32, "
                 + "ts_open DateTime64(3, 'UTC'), available_at DateTime64(3, 'UTC'), open Decimal(18, 6), "
                 + "high Decimal(18, 6), low Decimal(18, 6), close Decimal(18, 6), volume Int64, "
@@ -69,8 +70,8 @@ class ClickHouseArchiveCatalogTest {
                 + "before Int64, after Int64) ENGINE = MergeTree() ORDER BY (snapshot_id, secid, date)");
 
         exec("INSERT INTO snapshots_ready VALUES ('" + SNAP + "')");
-        exec("INSERT INTO securities VALUES ('" + SNAP + "', 'SBER', 'Финансы', 10, 0.01), ('" + SNAP
-                + "', 'GAZP', '', 10, 0.02), ('" + OTHER + "', 'LKOH', 'Нефть и газ', 1, 0.5)");
+        exec("INSERT INTO securities VALUES ('" + SNAP + "', 'SBER', 'Финансы', 10, 0.01, 'Сбербанк'), ('" + SNAP
+                + "', 'GAZP', '', 10, 0.02, ''), ('" + OTHER + "', 'LKOH', 'Нефть и газ', 1, 0.5, 'Лукойл')");
         exec("INSERT INTO trading_calendar VALUES ('" + SNAP + "', '2024-03-05', 1), ('" + SNAP
                 + "', '2024-03-04', 1), ('" + SNAP + "', '2024-03-06', 0)");
         // SBER: 04.03 — две минутные свечи, вечерняя 23:49 МСК (20:49 UTC) тоже 04.03; 05.03 00:00 МСК = 04.03 21:00
@@ -123,8 +124,34 @@ class ClickHouseArchiveCatalogTest {
         assertThat(list).extracting(ArchiveCatalog.ArchivePaper::secid).containsExactly("GAZP", "SBER");
         assertThat(list.get(0).sector()).isEmpty();
         assertThat(list.get(1).sector()).isEqualTo("Финансы");
+        assertThat(list.get(1).name()).isEqualTo("Сбербанк");
+        assertThat(list.get(0).name()).isEmpty();
         assertThat(list.get(1).lotSize()).isEqualTo(10);
         assertThat(list.get(1).priceStep()).isEqualByComparingTo("0.01");
+    }
+
+    @Test
+    void securitiesOfArchiveWithoutNameColumnHaveEmptyNames() throws Exception {
+        exec("CREATE DATABASE IF NOT EXISTS legacy_arch");
+        exec("CREATE TABLE legacy_arch.securities (snapshot_id UUID, secid String, sector String, lot_size Int64, "
+                + "price_step Decimal(18, 6)) ENGINE = MergeTree() ORDER BY (snapshot_id, secid)");
+        exec("INSERT INTO legacy_arch.securities VALUES ('" + SNAP + "', 'SBER', 'Финансы', 10, 0.01)");
+        var legacy = new ClickHouseArchiveCatalog(HTTP, url(), "legacy_arch", "ttsc", "secret", Duration.ofSeconds(10));
+
+        var list = legacy.securities(SNAP);
+
+        assertThat(list).extracting(ArchiveCatalog.ArchivePaper::secid).containsExactly("SBER");
+        assertThat(list.get(0).name()).isEmpty();
+        assertThat(list.get(0).sector()).isEqualTo("Финансы");
+    }
+
+    @Test
+    void nameWithEscapedCharactersIsReadBack() throws Exception {
+        exec("INSERT INTO securities VALUES ('" + OTHER + "', 'ESC', '', 1, 0.5, 'О\\'Брайен \\\\ ПАО')");
+
+        var list = catalog(url()).securities(OTHER);
+
+        assertThat(list).extracting(ArchiveCatalog.ArchivePaper::name).contains("О'Брайен \\ ПАО");
     }
 
     @Test

@@ -146,7 +146,12 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
         List<PlannedPaper> list = new ArrayList<>();
         for (int i = 0; i < papers; i++) {
             list.add(new PlannedPaper(
-                    Papers.id(SECIDS.get(i)), SECIDS.get(i), "Сектор" + i, 10 + i, new BigDecimal("0.01")));
+                    Papers.id(SECIDS.get(i)),
+                    SECIDS.get(i),
+                    "Сектор" + i,
+                    10 + i,
+                    new BigDecimal("0.01"),
+                    i == 1 ? "" : "Название" + i));
         }
         Snapshot snapshot =
                 new Snapshot(UUID.randomUUID(), UUID.randomUUID().toString(), OffsetDateTime.now(ZoneOffset.UTC), "t");
@@ -193,6 +198,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
         }
         assertThat(text)
                 .doesNotContain("Сектор")
+                .doesNotContain("Название")
                 .doesNotContain("2022")
                 .doesNotContain("500000")
                 .doesNotContain("0.1234")
@@ -417,7 +423,10 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[0].id").value(Papers.id("SBER").toString()))
                 .andExpect(jsonPath("$[0].ticker").value("SBER"))
-                .andExpect(jsonPath("$[0].sector").value("Сектор0"));
+                .andExpect(jsonPath("$[0].sector").value("Сектор0"))
+                .andExpect(jsonPath("$[0].name").value("Название0"))
+                // названия нет в снапшоте — тикер
+                .andExpect(jsonPath("$[1].name").value("GAZP"));
     }
 
     @Test

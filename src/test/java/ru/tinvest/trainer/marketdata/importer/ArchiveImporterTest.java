@@ -133,11 +133,12 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
                         + "' AND secid = 'IMOEX' AND interval_sec = 86400 AND ts_open >= '2024-02-27 00:00:00' "
                         + "ORDER BY ts_open LIMIT 1"))
                 .isEqualTo("2024-02-27 21:00:00.000\t2024-02-28 21:00:00.000");
-        // бумаги: лот, шаг цены, сектор; SBER в двух отраслевых индексах — берётся первый по коду индекса (MOEXFN);
+        // бумаги: лот, шаг цены, сектор; SBER в двух отраслевых индексах — берётся индекс с наибольшим весом (MOEXOG:
+        // 30,25 против 10,5);
         // TINY (шаг < 1e-6) и GONE (нет на TQBR) не попали
-        assertThat(q("SELECT secid, sector, lot_size, toString(price_step) FROM securities WHERE snapshot_id = '" + id
-                        + "' ORDER BY secid"))
-                .isEqualTo("GAZP\tНефть и газ\t10\t0.01\nSBER\tФинансы\t1\t0.01");
+        assertThat(q("SELECT secid, sector, lot_size, toString(price_step), name FROM securities WHERE snapshot_id = '"
+                        + id + "' ORDER BY secid"))
+                .isEqualTo("GAZP\tНефть и газ\t10\t0.01\tГазпром ПАО ао\nSBER\tНефть и газ\t1\t0.01\tСбербанк");
     }
 
     @Test
@@ -237,6 +238,111 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         assertThat(q("SELECT count() FROM securities WHERE snapshot_id = '" + id + "'"))
                 .isEqualTo("2");
         assertThat(snapshots.findByKey(id.toString())).isPresent();
+        // докачка частями даёт тот же хэш, что загрузка за один раз
+        assertThat(r.snapshot().dataHash())
+                .isEqualTo(importer.run(params()).snapshot().dataHash());
+    }
+
+    @Test
+    void legacySchemaLoadIsNotResumedSilently() {
+        ArchiveImporter.Params p = params();
+        ClickHouseArchive archive = new ClickHouseArchive(ch);
+        archive.createSchema();
+        archive.insertSecurities(
+                p.snapshotId(ArchiveImporter.LEGACY_SCHEMA_VERSION),
+                java.util.List.of(
+                        new ClickHouseArchive.SecurityRow("SBER", "", 1, new java.math.BigDecimal("0.01"), "")));
+
+        assertThatThrownBy(() -> importer.run(p))
+                .isInstanceOf(ImportException.class)
+                .hasMessageContaining("недогруженный снапшот")
+                .hasMessageContaining("--import.drop-legacy=true")
+                .hasMessageContaining(
+                        p.snapshotId(ArchiveImporter.LEGACY_SCHEMA_VERSION).toString());
+        assertThat(snapshots.findByKey(p.snapshotId().toString())).isEmpty();
+    }
+
+    @Test
+    void dropLegacyRemovesOnlyTheLegacySnapshotAndLoadsAnew() {
+        ArchiveImporter.Params p = params();
+        ClickHouseArchive archive = new ClickHouseArchive(ch);
+        archive.createSchema();
+        UUID legacy = p.snapshotId(ArchiveImporter.LEGACY_SCHEMA_VERSION);
+        UUID bystander = UUID.randomUUID();
+        for (UUID id : java.util.List.of(legacy, bystander)) {
+            archive.insertSecurities(
+                    id,
+                    java.util.List.of(
+                            new ClickHouseArchive.SecurityRow("SBER", "", 1, new java.math.BigDecimal("0.01"), "")));
+            archive.insertCandles(id, "SBER", 60, java.util.List.of(candle("2024-03-04T07:00:00Z", "10")));
+        }
+        ArchiveImporter.Params drop = new ArchiveImporter.Params(p.from(), p.to(), p.tickers(), p.label(), false, true);
+
+        ArchiveImporter.Result r = importer.run(drop);
+
+        assertThat(r.alreadyLoaded()).isFalse();
+        assertThat(q("SELECT count() FROM securities WHERE snapshot_id = '" + legacy + "'"))
+                .isEqualTo("0");
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + legacy + "'"))
+                .isEqualTo("0");
+        // чужой снапшот не тронут
+        assertThat(q("SELECT count() FROM securities WHERE snapshot_id = '" + bystander + "'"))
+                .isEqualTo("1");
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + bystander + "'"))
+                .isEqualTo("1");
+        assertThat(r.snapshot().dataHash()).matches("[0-9a-f]{64}");
+    }
+
+    private static Candle candle(String time, String close) {
+        java.math.BigDecimal c = new java.math.BigDecimal(close);
+        return new Candle(java.time.Instant.parse(time), c, c, c, c, 100, c);
+    }
+
+    private String hashOfCloses(String first, String second) {
+        UUID id = UUID.randomUUID();
+        ClickHouseArchive archive = new ClickHouseArchive(ch);
+        archive.createSchema();
+        archive.insertCandles(
+                id,
+                "SBER",
+                60,
+                java.util.List.of(candle("2024-03-04T07:00:00Z", first), candle("2024-03-04T07:01:00Z", second)));
+        return archive.dataHash(id, ArchiveImporter.SCHEMA_VERSION);
+    }
+
+    @Test
+    void hashSeesValuesNotOnlyRowCounts() {
+        String base = hashOfCloses("10", "20");
+
+        // то же число строк и тот же набор значений, но на других свечах; и одно другое значение
+        assertThat(hashOfCloses("20", "10")).isNotEqualTo(base);
+        assertThat(hashOfCloses("10", "21")).isNotEqualTo(base);
+        assertThat(hashOfCloses("10", "20")).isEqualTo(base);
+    }
+
+    @Test
+    void hashOfFixedFixtureMatchesReference() {
+        // эталон: хэш не должен меняться при обновлении ClickHouse и кода; изменился — это новая версия схемы
+        UUID id = UUID.fromString("00000000-0000-0000-0000-000000000042");
+        ClickHouseArchive archive = new ClickHouseArchive(ch);
+        archive.createSchema();
+        archive.insertSecurities(
+                id,
+                java.util.List.of(new ClickHouseArchive.SecurityRow(
+                        "SBER", "Финансы", 10, new java.math.BigDecimal("0.01"), "Сбербанк")));
+        archive.insertCandles(
+                id,
+                "SBER",
+                60,
+                java.util.List.of(candle("2024-03-04T07:00:00Z", "290.5"), candle("2024-03-04T07:01:00Z", "291.25")));
+        archive.insertCalendar(id, java.util.Map.of(LocalDate.of(2024, 3, 4), true));
+        archive.insertRuonia(id, java.util.Map.of(LocalDate.of(2024, 3, 4), new java.math.BigDecimal("16.05")));
+        archive.insertActions(
+                id,
+                java.util.List.of(new ClickHouseArchive.ActionRow("SBER", LocalDate.of(2024, 2, 28), "split", 1, 10)));
+
+        assertThat(archive.dataHash(id, "2"))
+                .isEqualTo("06939b914988b7ddf17ffffedb5d15d20a9276866f02126f70da89059962b98a");
     }
 
     @Test
@@ -517,5 +623,82 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         assertThat(q("SELECT groupArray(secid) FROM (SELECT secid FROM securities WHERE snapshot_id = '"
                         + p.snapshotId() + "' ORDER BY secid)"))
                 .isEqualTo("['GAZP','SBER']");
+    }
+
+    @Test
+    void sectorIsTheIndexWithTheLargestWeight() {
+        assertThat(ArchiveImporter.sectorIndex(java.util.Map.of(
+                        "MOEXFN", new java.math.BigDecimal("10.5"), "MOEXOG", new java.math.BigDecimal("30.25"))))
+                .contains("MOEXOG");
+        // 9,5 < 10 как числа, а не как строки
+        assertThat(ArchiveImporter.sectorIndex(java.util.Map.of(
+                        "MOEXFN", new java.math.BigDecimal("9.5"), "MOEXOG", new java.math.BigDecimal("10"))))
+                .contains("MOEXOG");
+    }
+
+    @Test
+    void sectorTieGoesToTheSmallerIndexCode() {
+        java.math.BigDecimal w = new java.math.BigDecimal("5.0");
+        assertThat(ArchiveImporter.sectorIndex(java.util.Map.of("MOEXOG", w, "MOEXFN", w, "MOEXIT", w)))
+                .contains("MOEXFN");
+        assertThat(ArchiveImporter.sectorIndex(java.util.Map.of("MOEXOG", w, "MOEXFN", new java.math.BigDecimal("5"))))
+                .contains("MOEXFN");
+    }
+
+    @Test
+    void sectorNamesAreTheOnesApprovedByTheProductOwner() {
+        assertThat(ArchiveImporter.SECTOR_INDEXES)
+                .containsEntry("MOEXCN", "Потребсектор")
+                .containsEntry("MOEXIT", "IT")
+                .containsEntry("MOEXRE", "Недвижимость")
+                .containsEntry("MOEXOG", "Нефть и газ")
+                .hasSize(10);
+    }
+
+    @Test
+    void paperOutsideSectorIndexesHasNoSector() {
+        assertThat(ArchiveImporter.sectorIndex(java.util.Map.of())).isEmpty();
+    }
+
+    @Test
+    void snapshotHashIsStoredAndDoesNotDependOnLabel() {
+        ArchiveImporter.Params a = params();
+        ArchiveImporter.Params b = params();
+
+        ArchiveImporter.Result ra = importer.run(a);
+        ArchiveImporter.Result rb = importer.run(b);
+
+        assertThat(ra.snapshot().dataHash()).matches("[0-9a-f]{64}");
+        assertThat(snapshots.findByKey(a.snapshotId().toString()).orElseThrow().dataHash())
+                .isEqualTo(ra.snapshot().dataHash());
+        assertThat(ra.snapshot().description())
+                .contains("хэш: sha256:" + ra.snapshot().dataHash());
+        // другой снапшот (метка), те же данные — тот же хэш
+        assertThat(rb.snapshotId()).isNotEqualTo(ra.snapshotId());
+        assertThat(rb.snapshot().dataHash()).isEqualTo(ra.snapshot().dataHash());
+    }
+
+    @Test
+    void snapshotHashChangesWhenDataChanges() {
+        ArchiveImporter.Params p = params();
+        String before = importer.run(p).snapshot().dataHash();
+        UUID id = p.snapshotId();
+
+        String same = new ClickHouseArchive(ch).dataHash(id, ArchiveImporter.SCHEMA_VERSION);
+        assertThat(same).isEqualTo(before);
+
+        // на самом деле снапшот неизменяем; меняем ClickHouse напрямую только чтобы проверить чувствительность хэша
+        ch.execute("INSERT INTO ruonia (snapshot_id, date, rate) VALUES ('" + id + "', '2030-01-01', 1)");
+        assertThat(new ClickHouseArchive(ch).dataHash(id, ArchiveImporter.SCHEMA_VERSION))
+                .isNotEqualTo(before);
+    }
+
+    @Test
+    void snapshotHashDiffersForDifferentPeriod() {
+        String a = importer.run(params()).snapshot().dataHash();
+        ArchiveImporter.Params shorter = new ArchiveImporter.Params(
+                FROM, TO.minusDays(3), java.util.List.of("SBER", "GAZP"), "test-" + UUID.randomUUID());
+
+        assertThat(importer.run(shorter).snapshot().dataHash()).isNotEqualTo(a);
     }
 }

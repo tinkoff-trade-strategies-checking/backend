@@ -191,22 +191,27 @@ final class FakeIssServer implements AutoCloseable {
                 + "\"begin\", \"end\"], \"data\": [" + String.join(", ", page) + "]}}";
     }
 
-    private static final Map<String, List<String>> SECTORS = Map.of(
-            "MOEXFN", List.of("SBER"),
-            "MOEXOG", List.of("GAZP", "SBER"),
-            "MOEXIT", List.of());
+    /** Состав отраслевых индексов: индекс → бумага → вес, %. SBER в двух индексах, больший вес — в MOEXOG. */
+    private static final Map<String, Map<String, String>> SECTORS = Map.of(
+            "MOEXFN", Map.of("SBER", "10.5"),
+            "MOEXOG", new java.util.LinkedHashMap<>(Map.of("GAZP", "20.0", "SBER", "30.25")),
+            "MOEXIT", Map.of());
 
     private String analytics(String index, Map<String, String> q, boolean empty) {
+        Map<String, String> weights = index.equals("IMOEX")
+                ? Map.of("SBER", "1.0", "GAZP", "1.0", "TINY", "1.0", "GONE", "1.0")
+                : SECTORS.getOrDefault(index, Map.of());
         List<String> secids = index.equals("IMOEX")
                 ? List.of("SBER", "GAZP", "TINY", "GONE")
-                : SECTORS.getOrDefault(index, List.of());
+                : weights.keySet().stream().sorted().toList();
         int start = Integer.parseInt(q.getOrDefault("start", "0"));
         int size = 2;
         List<String> page = empty || start >= secids.size()
                 ? List.of()
                 : secids.subList(start, Math.min(secids.size(), start + size));
         String rows = page.stream()
-                .map(s -> "[\"" + index + "\", \"2024-03-12\", \"" + s + "\", \"x\", \"" + s + "\", 1.0, 3, null]")
+                .map(s -> "[\"" + index + "\", \"2024-03-12\", \"" + s + "\", \"x\", \"" + s + "\", " + weights.get(s)
+                        + ", 3, null]")
                 .collect(Collectors.joining(", "));
         return "{\"analytics\": {\"columns\": [\"indexid\", \"tradedate\", \"ticker\", \"shortnames\", \"secids\", "
                 + "\"weight\", \"tradingsession\", \"trade_session_date\"], \"data\": [" + rows + "]}, "
@@ -216,12 +221,12 @@ final class FakeIssServer implements AutoCloseable {
 
     private String security(String secid) {
         String data = switch (secid) {
-            case "SBER" -> "[\"SBER\", 1, 0.01]";
-            case "GAZP" -> "[\"GAZP\", 10, 0.01]";
-            case "TINY" -> "[\"TINY\", 1, 0.0000001]";
+            case "SBER" -> "[\"SBER\", 1, 0.01, \"Сбербанк\", \"Сбербанк России ПАО ао\"]";
+            case "GAZP" -> "[\"GAZP\", 10, 0.01, null, \"Газпром ПАО ао\"]";
+            case "TINY" -> "[\"TINY\", 1, 0.0000001, \"Tiny\", \"Tiny\"]";
             default -> null;
         };
-        return "{\"securities\": {\"columns\": [\"SECID\", \"LOTSIZE\", \"MINSTEP\"], \"data\": ["
+        return "{\"securities\": {\"columns\": [\"SECID\", \"LOTSIZE\", \"MINSTEP\", \"SHORTNAME\", \"SECNAME\"], \"data\": ["
                 + (data == null ? "" : data) + "]}}";
     }
 

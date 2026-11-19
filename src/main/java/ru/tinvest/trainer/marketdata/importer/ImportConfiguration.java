@@ -45,7 +45,7 @@ class ImportConfiguration {
                 throw new ImportException("Задайте --import.from и --import.to (yyyy-MM-dd)");
             }
             importer.run(new ArchiveImporter.Params(
-                    props.from(), props.to(), props.tickers(), props.label(), props.allowGaps()));
+                    props.from(), props.to(), props.tickers(), props.label(), props.allowGaps(), props.dropLegacy()));
         };
     }
 }

@@ -39,7 +39,11 @@ public final class ArchiveImporter {
 
     private static final Logger log = LoggerFactory.getLogger(ArchiveImporter.class);
 
-    static final String SCHEMA_VERSION = "1";
+    /** 2: сектор по наибольшему весу, столбец {@code securities.name}, хэш снапшота (backend#21). */
+    static final String SCHEMA_VERSION = "2";
+    /** Версия схемы до backend#21: загрузки с ней докачивать нельзя ({@link #rejectLegacyLoad}). */
+    static final String LEGACY_SCHEMA_VERSION = "1";
+
     static final int MINUTE = 60;
     static final int DAY = 86400;
     static final String BENCHMARK = "IMOEX";
@@ -52,11 +56,11 @@ public final class ArchiveImporter {
             Map.entry("MOEXTL", "Телекоммуникации"),
             Map.entry("MOEXMM", "Металлы и добыча"),
             Map.entry("MOEXFN", "Финансы"),
-            Map.entry("MOEXCN", "Потребительский сектор"),
+            Map.entry("MOEXCN", "Потребсектор"),
             Map.entry("MOEXCH", "Химия и нефтехимия"),
             Map.entry("MOEXTN", "Транспорт"),
-            Map.entry("MOEXIT", "Информационные технологии"),
-            Map.entry("MOEXRE", "Строительство и недвижимость"));
+            Map.entry("MOEXIT", "IT"),
+            Map.entry("MOEXRE", "Недвижимость"));
 
     /** Шаг цены не меньше 1e-6 ₽ ({@code decisions.md}, «Деньги и округление», п. 12). */
     private static final BigDecimal MIN_PRICE_STEP = new BigDecimal("0.000001");
@@ -74,10 +78,15 @@ public final class ArchiveImporter {
      * в какие-то торговые дни (например, торги бумагой приостанавливали) или календарь IMOEX подозрительно редок
      * (остановка торгов на бирже); и то и другое попадёт в лог и {@code description}.
      */
-    public record Params(LocalDate from, LocalDate to, List<String> tickers, String label, boolean allowGaps) {
+    public record Params(
+            LocalDate from, LocalDate to, List<String> tickers, String label, boolean allowGaps, boolean dropLegacy) {
 
         public Params(LocalDate from, LocalDate to, List<String> tickers, String label) {
-            this(from, to, tickers, label, false);
+            this(from, to, tickers, label, false, false);
+        }
+
+        public Params(LocalDate from, LocalDate to, List<String> tickers, String label, boolean allowGaps) {
+            this(from, to, tickers, label, allowGaps, false);
         }
 
         public Params {
@@ -92,8 +101,12 @@ public final class ArchiveImporter {
 
         /** UUID по имени: те же параметры — тот же снапшот. */
         public UUID snapshotId() {
+            return snapshotId(SCHEMA_VERSION);
+        }
+
+        UUID snapshotId(String schemaVersion) {
             String name =
-                    "iss-v" + SCHEMA_VERSION + "|" + from + "|" + to + "|" + String.join(",", tickers) + "|" + label;
+                    "iss-v" + schemaVersion + "|" + from + "|" + to + "|" + String.join(",", tickers) + "|" + label;
             return UUID.nameUUIDFromBytes(name.getBytes(StandardCharsets.UTF_8));
         }
     }
@@ -149,14 +162,40 @@ public final class ArchiveImporter {
             return new Result(id, true, existing.get());
         }
         archive.createSchema();
+        rejectLegacyLoad(p);
         if (!archive.isReady(id)) {
             load(p, id);
             archive.markReady(id);
         }
         List<String> loaded = archive.secids(id);
-        Snapshot s = snapshots.register(id.toString(), description(p, id, loaded));
+        String hash = archive.dataHash(id, SCHEMA_VERSION);
+        Snapshot s = snapshots.register(id.toString(), description(p, id, loaded, hash), hash);
         log.info("Снапшот {} зарегистрирован, бумаг: {}", id, loaded.size());
         return new Result(id, false, s);
+    }
+
+    /**
+     * Загрузка с теми же параметрами по схеме версии {@value #LEGACY_SCHEMA_VERSION} (сектор «первый по коду», нет
+     * названий) имеет другой идентификатор, поэтому новый код начал бы новую загрузку с нуля, а недокачанные данные
+     * старой остались бы в ClickHouse. Чтобы это не прошло молча, запуск прекращается; с {@code dropLegacy}
+     * ({@code --import.drop-legacy=true}) строки недогруженного снапшота старой версии удаляются строго по его id и
+     * загрузка идёт заново.
+     */
+    private void rejectLegacyLoad(Params p) {
+        UUID legacy = p.snapshotId(LEGACY_SCHEMA_VERSION);
+        if (snapshots.findByKey(legacy.toString()).isEmpty() && archive.countRows("securities", legacy) > 0) {
+            if (!p.dropLegacy()) {
+                throw new ImportException("В ClickHouse есть недогруженный снапшот " + legacy + " по схеме версии "
+                        + LEGACY_SCHEMA_VERSION + ": сектор и названия там считаются по старым правилам, докачать"
+                        + " его нельзя. Перезапустите с --import.drop-legacy=true: строки этого снапшота (и только"
+                        + " его) будут удалены из всех таблиц архива, загрузка пойдёт с нуля");
+            }
+            log.warn(
+                    "--import.drop-legacy: удаляю недогруженный снапшот {} схемы версии {}",
+                    legacy,
+                    LEGACY_SCHEMA_VERSION);
+            archive.deleteSnapshot(legacy);
+        }
     }
 
     private void load(Params p, UUID id) {
@@ -271,11 +310,13 @@ public final class ArchiveImporter {
             log.info("Пул {} на {}: {} бумаг", POOL_INDEX, imoex.date(), tickers.size());
         }
         LocalDate asOf = imoex != null ? imoex.date() : p.to();
-        Map<String, List<String>> sectors = new TreeMap<>();
-        for (Map.Entry<String, String> e : new TreeMap<>(SECTOR_INDEXES).entrySet()) {
-            for (String secid : iss.composition(e.getKey(), asOf).secids()) {
-                sectors.computeIfAbsent(secid, k -> new ArrayList<>()).add(e.getValue());
-            }
+        // бумага → отраслевой индекс → вес; сектор выбирает sectorIndex
+        Map<String, Map<String, BigDecimal>> sectors = new TreeMap<>();
+        for (String index : new TreeMap<>(SECTOR_INDEXES).keySet()) {
+            iss.composition(index, asOf)
+                    .weights()
+                    .forEach((secid, weight) ->
+                            sectors.computeIfAbsent(secid, k -> new TreeMap<>()).put(index, weight));
         }
         List<ClickHouseArchive.SecurityRow> rows = new ArrayList<>();
         for (String secid : tickers) {
@@ -298,21 +339,47 @@ public final class ArchiveImporter {
                 log.warn("{}: шаг цены {} или лот {} не проходят условие импорта, пропущена", secid, step, lot);
                 continue;
             }
-            List<String> own = sectors.getOrDefault(secid, List.of());
+            Map<String, BigDecimal> own = sectors.getOrDefault(secid, Map.of());
+            Optional<String> index = sectorIndex(own);
             if (own.size() != 1) {
                 log.warn(
-                        "{}: секторов по отраслевым индексам {} ({}), сектор — {}",
+                        "{}: отраслевых индексов {} ({}), сектор — {}",
                         secid,
                         own.size(),
                         own,
-                        own.isEmpty() ? "пустая строка" : own.get(0));
+                        index.map(SECTOR_INDEXES::get).orElse("пустая строка"));
             }
-            rows.add(new ClickHouseArchive.SecurityRow(secid, own.isEmpty() ? "" : own.get(0), lot, step));
+            rows.add(new ClickHouseArchive.SecurityRow(
+                    secid, index.map(SECTOR_INDEXES::get).orElse(""), lot, step, name(info, r)));
         }
         if (rows.isEmpty()) {
             throw new ImportException("Ни одна бумага не прошла проверку, снапшот пуст");
         }
         archive.insertSecurities(id, rows);
+    }
+
+    /** Название бумаги: {@code SHORTNAME} («Сбербанк»), нет — {@code SECNAME}, нет обоих — пустая строка. */
+    private static String name(IssTable info, List<tools.jackson.databind.JsonNode> row) {
+        for (String column : List.of("SHORTNAME", "SECNAME")) {
+            tools.jackson.databind.JsonNode v = info.get(row, column);
+            if (v != null && !v.isNull() && !v.asString().isBlank()) {
+                return v.asString().trim();
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Отраслевой индекс, где вес бумаги наибольший ({@code decisions.md}, «Слепой режим»). Равные веса — индекс с
+     * меньшим кодом по алфавиту (детерминированно, не зависит от порядка ответа ISS). Нет индексов — пусто: бумага без
+     * сектора в слепой пул не попадает.
+     */
+    static Optional<String> sectorIndex(Map<String, BigDecimal> weightsByIndex) {
+        return weightsByIndex.entrySet().stream()
+                .max(Map.Entry.<String, BigDecimal>comparingByValue()
+                        .thenComparing(
+                                Map.Entry.<String, BigDecimal>comparingByKey().reversed()))
+                .map(Map.Entry::getKey);
     }
 
     private void loadCandles(Params p, UUID id, String secid, Set<LocalDate> trading) {
@@ -483,10 +550,10 @@ public final class ArchiveImporter {
         return missing;
     }
 
-    private String description(Params p, UUID id, List<String> secids) {
+    private String description(Params p, UUID id, List<String> secids, String hash) {
         String base = "источник: MOEX ISS (свечи interval=1, IMOEX interval=24), ЦБ РФ (RUONIA); тикеры: "
                 + String.join(",", secids) + "; интервал: 1 мин; период: " + p.from() + "…" + p.to()
-                + "; получен: " + Instant.now(clock) + "; версия схемы: " + SCHEMA_VERSION
+                + "; получен: " + Instant.now(clock) + "; хэш: sha256:" + hash + "; версия схемы: " + SCHEMA_VERSION
                 + (p.label().isEmpty() ? "" : "; метка: " + p.label());
         TreeSet<LocalDate> trading = new TreeSet<>(archive.candleDates(id, BENCHMARK, DAY));
         // календарь, как и пробелы, — по данным ClickHouse: кусок, принятый прошлым запуском, тоже попадёт в описание
