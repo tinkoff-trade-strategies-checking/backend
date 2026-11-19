@@ -198,13 +198,16 @@ paths:
       description: |
         Единая операция управления временем сессии на сервере: `play`, `pause`, `step` (один шаг) и `speed` (`1`, `5`, `10`, `100`).
         При `action: step` дополнительно возвращает `stepResult` (и публикует событие `step` в SSE).
-        `speed` обязателен при `action: speed`; при остальных действиях его нет (иначе 400).
+        `speed` обязателен при `action: speed`; при остальных действиях его нет или он `null` (число — 400).
+        `Idempotency-Key` защищает `step` от двойного шага при повторе после обрыва сети.
         409 с кодом `PLAYER_STATE_CONFLICT`: `step` во время `play`, `play` на последнем шаге, `step` на последнем шаге.
         Изменение состояния плеера публикуется событием `player`.
       security:
         - sessionCookie: []
           xsrfToken: []
-      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -221,11 +224,11 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/Problem' }
         '409':
-          description: 'Сессия не активна (`SESSION_NOT_ACTIVE`) или команда не подходит состоянию плеера (`PLAYER_STATE_CONFLICT`): `step` во время `play`, `play` и `step` на последнем шаге'
+          description: 'Сессия не активна (`SESSION_NOT_ACTIVE`), команда не подходит состоянию плеера (`PLAYER_STATE_CONFLICT`: `step` во время `play`, `play` и `step` на последнем шаге) или повтор, пока первый запрос с тем же `Idempotency-Key` выполняется (`IDEMPOTENCY_KEY_IN_PROGRESS`)'
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
-        '422': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/IdempotencyKeyReused' }
         '503': { $ref: '#/components/responses/WorkerUnavailable' }
   /sessions/{sessionId}/events:
     get:
@@ -282,6 +285,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/OrderCommand' }
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '422': { $ref: '#/components/responses/IdempotencyKeyReused' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -307,6 +311,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/OrderCommand' }
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '422': { $ref: '#/components/responses/IdempotencyKeyReused' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -334,6 +339,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/OrderCommand' }
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '422': { $ref: '#/components/responses/IdempotencyKeyReused' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -399,7 +405,7 @@ paths:
         Без серверного состояния: курсор воспроизведения хранит клиент и передаёт явный `step`.
         Без `fromStep` ответ — полный снимок `snapshot` на шаге `step`; с `fromStep` — приращение
         `increment` (`OpenStepResult` за `(fromStep; step]` без истории свечей). `step` больше `totalSteps`
-        ограничивается последним шагом (ответ содержит фактический шаг); `fromStep` не меньше `step` — 400.
+        ограничивается последним шагом (ответ содержит фактический шаг); `fromStep` больше `step` — 400, равный — пустое приращение.
         Всегда 200 с `status` (`READY`, `NOT_FINISHED`, `NOT_FOUND`).
       parameters:
         - $ref: '#/components/parameters/SessionId'
@@ -478,9 +484,11 @@ components:
       in: header
       required: false
       description: |
-        Необязательный ключ идемпотентности (UUID) для подачи, отмены и замены заявки. Повтор запроса с тем же ключом
-        (например, после обрыва сети) возвращает прежний результат и не пишет в журнал второй раз (INV-8).
-        Область ключа — сессия; ключ, уже использованный для другой команды или с другим телом, — 409 `IDEMPOTENCY_KEY_REUSED`.
+        Необязательный ключ идемпотентности (UUID) для подачи, отмены и замены заявки и для команд плеера. Повтор запроса
+        с тем же ключом (например, после обрыва сети) возвращает прежний результат и не пишет в журнал второй раз (INV-8).
+        Область ключа — сессия; ключ хранится до конца сессии. Поведение по черновику IETF: тот же ключ с другим телом или
+        для другой операции — 422 `IDEMPOTENCY_KEY_REUSED`; повтор, пока первый запрос ещё выполняется, —
+        409 `IDEMPOTENCY_KEY_IN_PROGRESS`.
       schema: { type: string, format: uuid }
     SessionId:
       name: sessionId
@@ -499,7 +507,12 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     IdempotencyConflict:
-      description: '`Idempotency-Key` уже использован для другой команды или с другим телом (`IDEMPOTENCY_KEY_REUSED`)'
+      description: Первый запрос с этим `Idempotency-Key` ещё выполняется (`IDEMPOTENCY_KEY_IN_PROGRESS`)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    IdempotencyKeyReused:
+      description: '`Idempotency-Key` уже использован с другим телом или для другой операции (`IDEMPOTENCY_KEY_REUSED`)'
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -542,12 +555,14 @@ components:
       description: |
         Детерминированный UUID v5 из (сессия, вид сущности, номер в ядре). Для сущностей, которые
         пересчитываются из журнала (исполнения, сделки, расхождения): id одинаков в снимке, SSE и отчёте (INV-8).
+        Номер в ядре по видам: исполнение — (`order_id`, `step`) из `Fill`; закрытая сделка — индекс в `round_trips` отчёта ядра;
+        расхождение и сделка обратной проверки — индекс в результате разбора core.
     DerivedUuidOrNull:
       oneOf: [{ $ref: '#/components/schemas/DerivedUuid' }, { type: 'null' }]
     PaperIndex:
       type: integer
       minimum: 0
-      description: Индекс бумаги в сессии (как `instrument_index` ядра); в слепом режиме единственный идентификатор бумаги (INV-7)
+      description: Индекс бумаги в сессии (как `instrument_index` ядра); в слепом режиме единственный идентификатор бумаги (INV-7). Backend передаёт бумаги в `MarketSpec.instruments` в случайном порядке, индекс не должен совпадать с порядком по тикеру
     UuidOrNull:
       oneOf: [{ $ref: '#/components/schemas/Uuid' }, { type: 'null' }]
     Problem:
@@ -658,7 +673,7 @@ components:
       required: [email, password]
       properties:
         email: { type: string, format: email }
-        password: { type: string, format: password, maxLength: 72, description: 'Не длиннее 72 символов (предел bcrypt)' }
+        password: { type: string, format: password, description: 'Не длиннее 72 байт в UTF-8 (предел bcrypt, кириллица — 2 байта на символ); длиннее — 400. maxLength не задан, так как считает символы, а не байты' }
     CurrentUser:
       type: object
       required: [id, email, role]
@@ -897,6 +912,7 @@ components:
         positions: { type: array, items: { $ref: '#/components/schemas/OpenPosition' } }
     PaperStat:
       type: object
+      unevaluatedProperties: false
       required: [changePct, lastPrice]
       properties:
         changePct: { $ref: '#/components/schemas/PctOrNull', description: 'Считает core; null, пока core не отдаёт' }
@@ -913,7 +929,7 @@ components:
         paperIndex: { $ref: '#/components/schemas/PaperIndex' }
         label: { type: string, description: 'Бумага A/B/C' }
         sector: { type: string }
-        lotValueAtStart: { $ref: '#/components/schemas/PctOrNull', description: 'Стоимость 1 лота в % от начального капитала по первой показанной свече; null до её появления' }
+        lotValueAtStart: { $ref: '#/components/schemas/Pct', description: 'Стоимость 1 лота в % от начального капитала по первой показанной свече' }
         candles: { type: array, items: { $ref: '#/components/schemas/BlindCandle' } }
         stat: { $ref: '#/components/schemas/PaperStat' }
     OpenPaper:
@@ -922,7 +938,7 @@ components:
       required: [id, instrumentIndex, label, sector, ticker, name, lotSize, candles, stat]
       properties:
         id: { $ref: '#/components/schemas/Uuid' }
-        instrumentIndex: { type: integer, minimum: 0 }
+        instrumentIndex: { type: integer, minimum: 0, description: 'Индекс бумаги в сессии; backend передаёт бумаги в `MarketSpec.instruments` в случайном порядке, индекс не совпадает с порядком по тикеру' }
         label: { type: string }
         sector: { type: string }
         ticker: { type: string }
@@ -1032,7 +1048,7 @@ components:
     # ---------- плеер ----------
     PlayerCommand:
       type: object
-      description: 'Команда плеера; `speed` обязателен при `action: speed`'
+      description: 'Команда плеера; `speed` обязателен при `action: speed`, при остальных — отсутствует или null'
       required: [action]
       properties:
         action: { $ref: '#/components/schemas/PlayerAction' }
@@ -1248,7 +1264,7 @@ components:
         sessionId: { $ref: '#/components/schemas/Uuid' }
         endReason:
           type: string
-          description: 'Причина завершения: конец периода, досрочно по команде, банкротство (`SessionStatus.BANKRUPT`)'
+          description: 'Причина завершения: конец периода, досрочно по команде, банкротство (`SessionStatus.BANKRUPT`). Соответствие `HistoryStatus`: `period_end` — `completed`, `early` — `finished_early`, `bankrupt` — `bankrupt`'
           enum: [period_end, early, bankrupt]
         finishedAtStep: { type: integer }
         finishedAtDay: { type: integer }
@@ -1298,6 +1314,7 @@ components:
           report_ready: '#/components/schemas/ReportReadyEvent'
     StepEvent:
       type: object
+      unevaluatedProperties: false
       required: [type, eventId, result]
       properties:
         type: { type: string, const: step }
@@ -1337,6 +1354,7 @@ components:
         mapping: { BLIND: '#/components/schemas/BlindOrderUpdatedEvent', OPEN: '#/components/schemas/OpenOrderUpdatedEvent' }
     PausedEvent:
       type: object
+      unevaluatedProperties: false
       required: [type, eventId, reason]
       properties:
         type: { type: string, const: paused }
@@ -1344,6 +1362,7 @@ components:
         reason: { type: string, enum: [user, disconnect, worker_failure] }
     PlayerEvent:
       type: object
+      unevaluatedProperties: false
       description: Смена состояния плеера (play, пауза, скорость) — для других вкладок
       required: [type, eventId, playing, speed]
       properties:
@@ -1353,6 +1372,7 @@ components:
         speed: { $ref: '#/components/schemas/PlayerSpeed' }
     FinishedEvent:
       type: object
+      unevaluatedProperties: false
       required: [type, eventId, result]
       properties:
         type: { type: string, const: finished }
@@ -1360,6 +1380,7 @@ components:
         result: { $ref: '#/components/schemas/FinishResult' }
     ReportReadyEvent:
       type: object
+      unevaluatedProperties: false
       required: [type, eventId, sessionId]
       properties:
         type: { type: string, const: report_ready }
@@ -1531,7 +1552,8 @@ components:
           oneOf: [{ $ref: '#/components/schemas/OrderSide' }, { type: 'null' }]
         lots: { type: [integer, 'null'] }
         orderType:
-          oneOf: [{ $ref: '#/components/schemas/OrderType' }, { type: 'null' }]
+          description: 'В сравнении участвуют только рыночные и лимитные заявки; защитные, OCO и отмены не учитываются (`decisions.md`, «Разбор расхождений»)'
+          oneOf: [{ type: string, enum: [market, limit] }, { type: 'null' }]
     Divergence:
       type: object
       description: Разбор расхождений считает core; `id` — детерминированный UUID v5 (сессия, вид, номер в ядре)
@@ -1691,7 +1713,14 @@ components:
             status: { type: string, const: running }
       unevaluatedProperties: false
     HistoryEntryRevealed:
-      description: Раскрытая запись (завершённая либо неслепая); у незавершённой неслепой `netReturnPct` равен null (INV-1)
+      description: |
+        Раскрытая запись (завершённая либо неслепая); у незавершённой неслепой `netReturnPct` равен null (INV-1).
+        Сочетание `blind: true` и `status: running` запрещено — такая запись валидна только как `HistoryEntryBlindUnfinished`.
+      not:
+        required: [blind, status]
+        properties:
+          blind: { const: true }
+          status: { const: running }
       allOf:
         - $ref: '#/components/schemas/HistoryEntryBase'
         - type: object
