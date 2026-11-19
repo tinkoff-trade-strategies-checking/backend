@@ -80,6 +80,7 @@ class IdentityApiTest extends PostgresIntegrationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"))
                 .andReturn();
 
         Cookie xsrf = result.getResponse().getCookie("XSRF-TOKEN");
@@ -97,7 +98,8 @@ class IdentityApiTest extends PostgresIntegrationTest {
                         .content(loginBody(EMAIL, PASSWORD)))
                 .andExpect(status().isForbidden())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
-                .andExpect(jsonPath("$.status").value(403));
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.code").value("CSRF_INVALID"));
     }
 
     @Test
@@ -108,7 +110,8 @@ class IdentityApiTest extends PostgresIntegrationTest {
                         .header("X-XSRF-TOKEN", "other")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(loginBody(EMAIL, PASSWORD)))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("CSRF_INVALID"));
     }
 
     @Test
@@ -123,6 +126,7 @@ class IdentityApiTest extends PostgresIntegrationTest {
         assertThat(wrongPassword.getResponse().getContentAsString())
                 .isEqualTo(unknownEmail.getResponse().getContentAsString());
         assertThat(wrongPassword.getRequest().getSession(false)).isNull();
+        assertThat(wrongPassword.getResponse().getContentAsString()).contains("\"code\":\"INVALID_CREDENTIALS\"");
     }
 
     @Test

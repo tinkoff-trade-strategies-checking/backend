@@ -141,7 +141,8 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         for (long step : steps) {
             JsonNode replay = body(httpGet("/api/v1/sessions/" + id + "/replay?step=" + step));
             assertThat(replay.get("status").asString()).isEqualTo("READY");
-            assertThat(replay.get("increment").isNull()).isTrue();
+            assertThat(replay.get("kind").asString()).isEqualTo("SNAPSHOT");
+            assertThat(replay.has("increment")).isFalse();
             assertThat(withoutPlayerState(replay.get("snapshot")))
                     .as("шаг %d", step)
                     .isEqualTo(withoutPlayerState(arena.get(step)));
@@ -220,7 +221,8 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         assertThat(empty.get("fills")).isEmpty();
         assertThat(empty.get("orders")).isEmpty();
         JsonNode full = body(httpGet("/api/v1/sessions/" + id + "/replay?step=4&fromStep=1"));
-        assertThat(full.get("snapshot").isNull()).isTrue();
+        assertThat(full.get("kind").asString()).isEqualTo("INCREMENT");
+        assertThat(full.has("snapshot")).isFalse();
     }
 
     @Test

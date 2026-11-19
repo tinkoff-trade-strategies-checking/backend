@@ -115,7 +115,7 @@ class PlayerController {
     ProblemDetail conflict(SessionConflictException e) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
         problem.setTitle("Conflict");
-        problem.setProperty("code", e.code());
+        e.code().applyTo(problem);
         return problem;
     }
 }

@@ -29,6 +29,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import ru.tinvest.trainer.api.ErrorCode;
 import ru.tinvest.trainer.api.InvalidRequestException;
 
 /** Вход, выход и текущий пользователь (контракт {@code api/openapi.yaml}, тег {@code identity}). */
@@ -83,6 +84,7 @@ class AuthController {
             ProblemDetail problem =
                     ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS, "Too many login attempts");
             problem.setTitle("Too Many Requests");
+            ErrorCode.TOO_MANY_REQUESTS.applyTo(problem);
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                     .header(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds(blocked)))
                     .body(problem);
@@ -105,6 +107,7 @@ class AuthController {
             ProblemDetail problem =
                     ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, "Invalid email or password");
             problem.setTitle("Unauthorized");
+            ErrorCode.INVALID_CREDENTIALS.applyTo(problem);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(problem);
         }
 

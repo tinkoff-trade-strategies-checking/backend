@@ -1,14 +1,15 @@
 package ru.tinvest.trainer.sessions;
 
 import org.springframework.http.HttpStatus;
+import ru.tinvest.trainer.api.ErrorCode;
 
 /** Конфликт ключа {@code Idempotency-Key}: 422 {@code IDEMPOTENCY_KEY_REUSED} или 409 {@code IDEMPOTENCY_KEY_IN_PROGRESS}. */
 final class IdempotencyException extends RuntimeException {
 
     private final HttpStatus status;
-    private final String code;
+    private final ErrorCode code;
 
-    private IdempotencyException(HttpStatus status, String code, String message) {
+    private IdempotencyException(HttpStatus status, ErrorCode code, String message) {
         super(message, null, false, false);
         this.status = status;
         this.code = code;
@@ -18,7 +19,7 @@ final class IdempotencyException extends RuntimeException {
     static IdempotencyException reused() {
         return new IdempotencyException(
                 HttpStatus.UNPROCESSABLE_ENTITY,
-                "IDEMPOTENCY_KEY_REUSED",
+                ErrorCode.IDEMPOTENCY_KEY_REUSED,
                 "Idempotency-Key was already used with another request");
     }
 
@@ -26,7 +27,7 @@ final class IdempotencyException extends RuntimeException {
     static IdempotencyException inProgress() {
         return new IdempotencyException(
                 HttpStatus.CONFLICT,
-                "IDEMPOTENCY_KEY_IN_PROGRESS",
+                ErrorCode.IDEMPOTENCY_KEY_IN_PROGRESS,
                 "A request with this Idempotency-Key is still in progress");
     }
 
@@ -34,7 +35,7 @@ final class IdempotencyException extends RuntimeException {
         return status;
     }
 
-    String code() {
+    ErrorCode code() {
         return code;
     }
 }

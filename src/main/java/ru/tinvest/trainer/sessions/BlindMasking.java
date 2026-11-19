@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Component;
+import ru.tinvest.trainer.api.ErrorCode;
 import ru.tinvest.trainer.marketdata.LaunchRejectReason;
 import ru.tinvest.trainer.marketdata.LaunchRejection;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindBarData;
@@ -49,7 +50,7 @@ class BlindMasking {
         body.put("status", 422);
         body.put("detail", detail(rejection.reason()));
         body.put("instance", null);
-        body.put("code", rejection.reason().name());
+        body.put("code", ErrorCode.valueOf(rejection.reason().name()).name());
         body.put("field", rejection.field());
         body.put("barsCount", rejection.barsCount());
         body.put("maxBars", rejection.maxBars());
@@ -322,7 +323,7 @@ class BlindMasking {
         return out;
     }
 
-    /** Тело события {@code paused}; причина — {@code user}, {@code disconnect}, {@code worker_failure}. */
+    /** Тело события {@code paused}; причина — {@code user}, {@code disconnect}, {@code worker_failure}, {@code restart}. */
     Map<String, Object> pausedEvent(String reason) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("reason", reason);

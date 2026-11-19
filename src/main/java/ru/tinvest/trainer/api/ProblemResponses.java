@@ -16,12 +16,14 @@ final class ProblemResponses {
         this.mapper = mapper;
     }
 
-    void write(HttpServletResponse response, int status, String title, String detail) throws IOException {
+    void write(HttpServletResponse response, int status, String title, String detail, ErrorCode code)
+            throws IOException {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("type", "about:blank");
         body.put("title", title);
         body.put("status", status);
         body.put("detail", detail);
+        body.put("code", code.name());
         response.setStatus(status);
         response.setContentType("application/problem+json");
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());

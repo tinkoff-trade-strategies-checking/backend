@@ -74,6 +74,7 @@ class Replay {
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("status", "READY");
+        out.put("kind", (fromStep == null ? ReplayKind.SNAPSHOT : ReplayKind.INCREMENT).name());
         out.put("session", meta(session, replay));
         boolean finished = effective >= last;
         if (fromStep == null) {
@@ -83,7 +84,6 @@ class Replay {
             snapshot.put("speed", null);
             snapshot.put("finished", finished);
             out.put("snapshot", snapshot);
-            out.put("increment", null);
         } else {
             ViewFormat.StepIndex index = new ViewFormat.StepIndex();
             replay.history().forEach(b -> index.add(b.step(), b.tradingDay()));
@@ -92,7 +92,6 @@ class Replay {
                     OpenViews.stepResult(state, from, replay.history(), index.positions(), index.at(effective)[0]);
             // воспроизведение: «завершено» — дошли до итогового шага, а не статус сессии
             increment.put("finished", finished);
-            out.put("snapshot", null);
             out.put("increment", increment);
         }
         return out;

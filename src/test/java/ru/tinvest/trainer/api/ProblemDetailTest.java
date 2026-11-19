@@ -3,6 +3,7 @@ package ru.tinvest.trainer.api;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -18,6 +19,8 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -37,7 +40,8 @@ class ProblemDetailTest {
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.title").value("Bad Request"))
-                .andExpect(jsonPath("$.detail").value("invalid lot count"));
+                .andExpect(jsonPath("$.detail").value("invalid lot count"))
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
     }
 
     @Test
@@ -47,7 +51,8 @@ class ProblemDetailTest {
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.status").value(404))
                 .andExpect(jsonPath("$.title").value("Not Found"))
-                .andExpect(jsonPath("$.detail").value("session not found"));
+                .andExpect(jsonPath("$.detail").value("session not found"))
+                .andExpect(jsonPath("$.code").value("NOT_FOUND"));
     }
 
     @Test
@@ -68,6 +73,7 @@ class ProblemDetailTest {
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                     .andExpect(jsonPath("$.status").value(503))
                     .andExpect(jsonPath("$.title").value("Service Unavailable"))
+                    .andExpect(jsonPath("$.code").value("SERVICE_UNAVAILABLE"))
                     .andExpect(jsonPath("$.detail").value("Service temporarily unavailable"))
                     .andExpect(content().string(not(containsString("secret"))));
         }
@@ -80,8 +86,27 @@ class ProblemDetailTest {
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.status").value(500))
                 .andExpect(jsonPath("$.title").value("Internal Server Error"))
+                .andExpect(jsonPath("$.code").value("INTERNAL_ERROR"))
                 .andExpect(jsonPath("$.detail").value("Internal server error"))
                 .andExpect(content().string(not(containsString("secret"))));
+    }
+
+    @Test
+    void frameworkErrorsGetCodeByStatus() throws Exception {
+        mockMvc.perform(get("/api/test/no-such-route"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+        mockMvc.perform(post("/api/test/bad-request"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"));
+        mockMvc.perform(post("/api/test/body").contentType(MediaType.TEXT_PLAIN).content("x"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.code").value("UNSUPPORTED_MEDIA_TYPE"));
+        mockMvc.perform(post("/api/test/body")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{broken"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
     }
 
     @RestController
@@ -92,6 +117,9 @@ class ProblemDetailTest {
         void badRequest() {
             throw new InvalidRequestException("invalid lot count");
         }
+
+        @PostMapping(path = "/body", consumes = MediaType.APPLICATION_JSON_VALUE)
+        void body(@RequestBody java.util.Map<String, Object> body) {}
 
         @GetMapping("/not-found")
         void notFound() {
