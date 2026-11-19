@@ -13,14 +13,18 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 import ru.tinvest.trainer.PostgresIntegrationTest;
 
 @AutoConfigureMockMvc
+@Import(IdentityApiTest.WhoAmIController.class)
 class IdentityApiTest extends PostgresIntegrationTest {
 
     private static final String EMAIL = "Trader@Example.com";
@@ -38,10 +42,14 @@ class IdentityApiTest extends PostgresIntegrationTest {
     @Autowired
     private JdbcClient jdbc;
 
+    @Autowired
+    private LoginRateLimiter limiter;
+
     private UUID userId;
 
     @BeforeEach
     void createAccount() {
+        limiter.reset();
         jdbc.sql("DELETE FROM identity.user_account").update();
         userId = accounts.create(EMAIL, PASSWORD);
     }
@@ -146,22 +154,44 @@ class IdentityApiTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void currentUserApiReturnsIdOfLoggedInUser() throws Exception {
+    void currentUserApiReturnsIdOfLoggedInUserInsideRequest() throws Exception {
         assertThat(currentUser.findId()).isEmpty();
         String token = csrfToken();
         MockHttpSession session =
                 (MockHttpSession) login(token, EMAIL, PASSWORD).getRequest().getSession(false);
 
-        // идентификатор в сессии совпадает с записью, которую видят остальные модули
-        mockMvc.perform(get("/api/v1/me").session(session))
-                .andExpect(jsonPath("$.id").value(userId.toString()));
+        mockMvc.perform(get("/api/v1/test/whoami").session(session))
+                .andExpect(status().isOk())
+                .andExpect(content().string(userId.toString()));
+    }
+
+    @Test
+    void loginChangesIdOfExistingSession() throws Exception {
+        String token = csrfToken();
+        MockHttpSession existing = new MockHttpSession();
+        String before = existing.getId();
+
+        MvcResult result = mockMvc.perform(post("/api/v1/auth/login")
+                        .session(existing)
+                        .cookie(new Cookie("XSRF-TOKEN", token))
+                        .header("X-XSRF-TOKEN", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(loginBody(EMAIL, PASSWORD)))
+                .andExpect(status().isNoContent())
+                .andReturn();
+
+        MockHttpSession after = (MockHttpSession) result.getRequest().getSession(false);
+        assertThat(after).isNotNull();
+        assertThat(after.getId()).isNotEqualTo(before);
+        mockMvc.perform(get("/api/v1/me").session(after)).andExpect(status().isOk());
     }
 
     @Test
     void logoutWithoutCsrfIs403AndWithCsrfInvalidatesSession() throws Exception {
-        String token = csrfToken();
-        MockHttpSession session =
-                (MockHttpSession) login(token, EMAIL, PASSWORD).getRequest().getSession(false);
+        MvcResult login = login(csrfToken(), EMAIL, PASSWORD);
+        MockHttpSession session = (MockHttpSession) login.getRequest().getSession(false);
+        // токен после входа новый, из ответа входа
+        String token = login.getResponse().getCookie("XSRF-TOKEN").getValue();
         Cookie current = new Cookie("XSRF-TOKEN", token);
 
         mockMvc.perform(post("/api/v1/auth/logout").session(session)).andExpect(status().isForbidden());
@@ -171,7 +201,14 @@ class IdentityApiTest extends PostgresIntegrationTest {
                         .session(session)
                         .cookie(current)
                         .header("X-XSRF-TOKEN", token))
-                .andExpect(status().isNoContent());
+                .andExpect(status().isNoContent())
+                .andExpect(result -> {
+                    assertThat(result.getResponse().getHeaders("Set-Cookie"))
+                            .anySatisfy(
+                                    c -> assertThat(c).startsWith("SESSION=;").contains("Max-Age=0"));
+                    assertThat(result.getResponse().getCookie("XSRF-TOKEN").getMaxAge())
+                            .isZero();
+                });
 
         assertThat(session.isInvalid()).isTrue();
         mockMvc.perform(get("/api/v1/me").session(session)).andExpect(status().isUnauthorized());
@@ -196,5 +233,20 @@ class IdentityApiTest extends PostgresIntegrationTest {
     void emailIsUniqueIgnoringCase() {
         org.junit.jupiter.api.Assertions.assertThrows(
                 org.springframework.dao.DuplicateKeyException.class, () -> accounts.create("TRADER@example.com", "x"));
+    }
+
+    @RestController
+    static class WhoAmIController {
+
+        private final CurrentUser currentUser;
+
+        WhoAmIController(CurrentUser currentUser) {
+            this.currentUser = currentUser;
+        }
+
+        @GetMapping("/api/v1/test/whoami")
+        String whoAmI() {
+            return currentUser.requireId().toString();
+        }
     }
 }

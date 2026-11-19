@@ -21,6 +21,7 @@ import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.security.web.csrf.CsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
 import org.springframework.web.filter.OncePerRequestFilter;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Безопасность HTTP API: cookie-сессия, CSRF через cookie {@code XSRF-TOKEN} и заголовок {@code X-XSRF-TOKEN}
@@ -45,8 +46,12 @@ class SecurityConfiguration {
 
     @Bean
     SecurityFilterChain securityFilterChain(
-            HttpSecurity http, CsrfTokenRepository csrfTokenRepository, SecurityContextRepository contextRepository)
+            HttpSecurity http,
+            CsrfTokenRepository csrfTokenRepository,
+            SecurityContextRepository contextRepository,
+            ObjectMapper objectMapper)
             throws Exception {
+        ProblemResponses problems = new ProblemResponses(objectMapper);
         http.csrf(csrf -> csrf.csrfTokenRepository(csrfTokenRepository)
                         // без XOR-маскировки: Angular отправляет значение cookie как есть
                         .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))
@@ -68,9 +73,9 @@ class SecurityConfiguration {
                         .anyRequest()
                         .denyAll())
                 .exceptionHandling(handling -> handling.authenticationEntryPoint((request, response, ex) ->
-                                ProblemResponses.write(response, 401, "Unauthorized", "Authentication required"))
+                                problems.write(response, 401, "Unauthorized", "Authentication required"))
                         .accessDeniedHandler((request, response, ex) ->
-                                ProblemResponses.write(response, 403, "Forbidden", "Access denied")));
+                                problems.write(response, 403, "Forbidden", "Access denied")));
         return http.build();
     }
 
