@@ -20,17 +20,17 @@ import ru.tinvest.trainer.worker.WorkerTypes.RunState;
 import ru.tinvest.trainer.worker.WorkerTypes.TradeSide;
 
 /** Общие правила представления ответов арены (форматы чисел и перечислений контракта) для слепого и раскрытого вида. */
-final class ViewFormat {
+public final class ViewFormat {
 
     private ViewFormat() {}
 
     /** Цена и процент ({@code Price}, {@code Pct}): десятичная строка без экспоненты, не меньше двух знаков. */
-    static String number(BigDecimal value) {
+    public static String number(BigDecimal value) {
         BigDecimal stripped = value.stripTrailingZeros();
         return stripped.setScale(Math.max(2, stripped.scale())).toPlainString();
     }
 
-    static @Nullable String numberOrNull(@Nullable BigDecimal value) {
+    public static @Nullable String numberOrNull(@Nullable BigDecimal value) {
         return value == null ? null : number(value);
     }
 
@@ -38,26 +38,26 @@ final class ViewFormat {
      * Рубли ({@code Money}): два знака. Суммы ядра уже округлены до копейки; лишний знак — ошибка ядра
      * ({@link ArithmeticException}), backend не округляет (INV-6, «Кто считает»).
      */
-    static String money(BigDecimal value) {
+    public static String money(BigDecimal value) {
         return value.setScale(2).toPlainString();
     }
 
     /** Время бара: RFC 3339, секунды всегда. */
-    static String instant(long unixMs) {
+    public static String instant(long unixMs) {
         return DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(
                 Instant.ofEpochMilli(unixMs).atOffset(ZoneOffset.UTC));
     }
 
     /** Подпись бумаги по индексу: «Бумага A». */
-    static String label(int index) {
+    public static String label(int index) {
         return "Бумага " + (char) ('A' + index);
     }
 
-    static String side(TradeSide side) {
+    public static String side(TradeSide side) {
         return side == TradeSide.BUY ? "buy" : "sell";
     }
 
-    static String legType(OrderKind kind) {
+    public static String legType(OrderKind kind) {
         return switch (kind) {
             case MARKET -> "market";
             case LIMIT -> "limit";
@@ -206,7 +206,7 @@ final class ViewFormat {
      * Торговый день и номер свечи в дне по шагу общей шкалы сессии: свечи дня нумеруются с 1 по различным шагам. Шаги
      * прогрева отрицательные, у них день {@code <= 0}.
      */
-    static final class StepIndex {
+    public static final class StepIndex {
 
         private final TreeMap<Long, int[]> byStep = new TreeMap<>();
 
@@ -219,12 +219,17 @@ final class ViewFormat {
             return index;
         }
 
+        /** Позиции шагов {@code шаг -> [день, свеча в дне]} для {@link #of}. */
+        Map<Long, int[]> positions() {
+            return java.util.Collections.unmodifiableMap(byStep);
+        }
+
         /** Добавляет шаг с бара; порядок добавления не важен, нумерацию считает {@link #build()}. */
-        void add(long step, int tradingDay) {
+        public void add(long step, int tradingDay) {
             days.put(step, tradingDay);
         }
 
-        StepIndex build() {
+        public StepIndex build() {
             Map<Integer, Integer> counters = new HashMap<>();
             for (Map.Entry<Long, Integer> e : days.entrySet()) {
                 int candle = counters.merge(e.getValue(), 1, Integer::sum);
@@ -234,7 +239,7 @@ final class ViewFormat {
         }
 
         /** {@code [день, свеча в дне]} шага или ближайшего предыдущего; нет баров — {@code [0, 0]}. */
-        int[] at(long step) {
+        public int[] at(long step) {
             Map.Entry<Long, int[]> entry = byStep.floorEntry(step);
             return entry == null ? new int[] {0, 0} : entry.getValue();
         }

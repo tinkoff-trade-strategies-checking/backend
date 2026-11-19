@@ -176,8 +176,7 @@ final class OpenViews {
         return out;
     }
 
-    private static Map<String, Object> fill(
-            ArenaState state, FillState fill, ViewFormat.StepIndex index, List<BarData> bars) {
+    static Map<String, Object> fill(ArenaState state, FillState fill, ViewFormat.StepIndex index, List<BarData> bars) {
         OrderState order = state.replay().orders().stream()
                 .filter(o -> o.id() == fill.orderId())
                 .findFirst()

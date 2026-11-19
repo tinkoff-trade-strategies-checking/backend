@@ -23,10 +23,13 @@ import ru.tinvest.trainer.worker.WorkerTypes.BlindPortfolioData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindViewData;
 import ru.tinvest.trainer.worker.WorkerTypes.Command;
 import ru.tinvest.trainer.worker.WorkerTypes.CommandOutcome;
+import ru.tinvest.trainer.worker.WorkerTypes.CostTotalsData;
+import ru.tinvest.trainer.worker.WorkerTypes.EquityPointData;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.FillState;
 import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
+import ru.tinvest.trainer.worker.WorkerTypes.MetricsData;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderKind;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderParams;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderPhase;
@@ -34,6 +37,8 @@ import ru.tinvest.trainer.worker.WorkerTypes.OrderState;
 import ru.tinvest.trainer.worker.WorkerTypes.PortfolioState;
 import ru.tinvest.trainer.worker.WorkerTypes.RejectCode;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
+import ru.tinvest.trainer.worker.WorkerTypes.ReportData;
+import ru.tinvest.trainer.worker.WorkerTypes.RoundTripData;
 import ru.tinvest.trainer.worker.WorkerTypes.RunState;
 import ru.tinvest.trainer.worker.WorkerTypes.StepBars;
 import ru.tinvest.trainer.worker.WorkerTypes.StepReplay;
@@ -51,6 +56,7 @@ final class FakeWorker implements SimulationWorkerClient {
     static final BigDecimal UNCONVERTIBLE = new BigDecimal("999");
     static final long TOTAL_STEPS = 10;
     static final long WARMUP = 2;
+    static final BigDecimal EQUITY_PER_STEP = new BigDecimal("100.00");
     static final long BASE_TIME_MS = 1_647_241_200_000L; // 2022-03-14T07:00:00Z
 
     volatile boolean down;
@@ -67,6 +73,10 @@ final class FakeWorker implements SimulationWorkerClient {
     final List<List<JournalRecord>> replayJournals = new CopyOnWriteArrayList<>();
     final List<List<JournalRecord>> estimateJournals = new CopyOnWriteArrayList<>();
     final List<OrderParams> estimated = new CopyOnWriteArrayList<>();
+    final java.util.concurrent.atomic.AtomicInteger reportAttempts = new java.util.concurrent.atomic.AtomicInteger();
+    final List<Long> dayRequests = new CopyOnWriteArrayList<>();
+    final List<Long> replayUpToSteps = new CopyOnWriteArrayList<>();
+    final List<ReportRequest> reportRequests = new CopyOnWriteArrayList<>();
 
     void reset() {
         down = false;
@@ -84,6 +94,10 @@ final class FakeWorker implements SimulationWorkerClient {
         replayJournals.clear();
         estimateJournals.clear();
         estimated.clear();
+        reportRequests.clear();
+        replayUpToSteps.clear();
+        dayRequests.clear();
+        reportAttempts.set(0);
     }
 
     @Override
@@ -201,7 +215,8 @@ final class FakeWorker implements SimulationWorkerClient {
                 full.fills(),
                 full.commandResults(),
                 full.warmupSteps(),
-                view);
+                view,
+                null);
         return new StepReplay(trimmed, new StepBars(bars, blindBars));
     }
 
@@ -219,6 +234,7 @@ final class FakeWorker implements SimulationWorkerClient {
             lastStep = bankruptAt;
             runState = RunState.BANKRUPT;
         }
+        replayUpToSteps.add(upToStep);
         Map<Long, OrderState> orders = new TreeMap<>();
         List<CommandOutcome> outcomes = new ArrayList<>();
         for (JournalRecord entry : journal) {
@@ -356,8 +372,86 @@ final class FakeWorker implements SimulationWorkerClient {
                     blindFills);
         }
         return new ReplayResult(
-                TOTAL_STEPS, runState, lastStep, history, portfolio, visible, fills, outcomes, WARMUP, blindView);
+                TOTAL_STEPS, runState, lastStep, history, portfolio, visible, fills, outcomes, WARMUP, blindView, null);
     }
+
+    /** Отчёт по заранее заданным значениям: капитал растёт на {@link #EQUITY_PER_STEP} за шаг, бенчмарк — на концах дней. */
+    @Override
+    public ReplayResult replayWithReport(Market market, List<JournalRecord> journal, long upToStep) {
+        reportAttempts.incrementAndGet();
+        ReplayResult base = replaySession(market, journal, upToStep, true, false);
+        reportRequests.add(new ReportRequest(List.copyOf(journal), upToStep));
+        List<EquityPointData> equity = new ArrayList<>();
+        List<EquityPointData> benchmark = new ArrayList<>();
+        for (long step = 0; step <= upToStep; step++) {
+            equity.add(new EquityPointData(
+                    step, market.initialCash().add(EQUITY_PER_STEP.multiply(BigDecimal.valueOf(step)))));
+            if (step % 3 == 2) {
+                benchmark.add(new EquityPointData(step, market.initialCash().add(BigDecimal.valueOf(step * 5))));
+            }
+        }
+        List<RoundTripData> trips = upToStep >= 3
+                ? List.of(new RoundTripData(
+                        market.papers().get(0).key(),
+                        1,
+                        3,
+                        2,
+                        new BigDecimal("200.00"),
+                        new BigDecimal("210.00"),
+                        new BigDecimal("200.00"),
+                        new BigDecimal("12.00"),
+                        new BigDecimal("188.00")))
+                : List.of();
+        ReportData report = new ReportData(
+                new MetricsData(
+                        0.0123,
+                        0.0125,
+                        null,
+                        0.004,
+                        3,
+                        null,
+                        null,
+                        null,
+                        1.5,
+                        2,
+                        trips.size(),
+                        trips.isEmpty() ? null : 1.0,
+                        1,
+                        0,
+                        0.5,
+                        0.3,
+                        null,
+                        20,
+                        0),
+                new CostTotalsData(
+                        new BigDecimal("6.00"), new BigDecimal("0.20"), new BigDecimal("1.00"), new BigDecimal("0.50")),
+                equity,
+                market.initialCash().add(EQUITY_PER_STEP.multiply(BigDecimal.valueOf(upToStep))),
+                benchmark,
+                trips);
+        return new ReplayResult(
+                base.totalSteps(),
+                base.state(),
+                base.lastStep(),
+                base.history(),
+                base.portfolio(),
+                base.orders(),
+                base.fills(),
+                base.commandResults(),
+                base.warmupSteps(),
+                null,
+                report);
+    }
+
+    /** Номер дня на курсоре: как в {@code replaySession} (прогрев — 0). */
+    @Override
+    public int tradingDaysAt(Market market, long upToStep) {
+        checkUp();
+        dayRequests.add(upToStep);
+        return upToStep < 0 ? 0 : (int) (1 + upToStep / 3);
+    }
+
+    record ReportRequest(List<JournalRecord> journal, long upToStep) {}
 
     private static BigDecimal rubles(int paperIndex, long step) {
         return BigDecimal.valueOf(20000 + 1000L * paperIndex + 100L * step, 2);

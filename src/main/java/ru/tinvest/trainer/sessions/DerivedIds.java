@@ -10,12 +10,12 @@ import java.util.UUID;
  * Детерминированные идентификаторы UUID v5 (RFC 9562) для сущностей, которые пересчитываются из журнала: исполнения,
  * сделки. Идентификатор — от (сессия, вид, номер в ядре), поэтому одинаков в снимке, SSE и отчёте (INV-8).
  */
-final class DerivedIds {
+public final class DerivedIds {
 
     private DerivedIds() {}
 
     /** Исполнение: номер в ядре — ({@code order_id}, {@code step}) из {@code Fill}. */
-    static UUID fill(UUID sessionId, long coreOrderId, long step) {
+    public static UUID fill(UUID sessionId, long coreOrderId, long step) {
         return v5(sessionId, "fill:" + coreOrderId + ":" + step);
     }
 

@@ -58,6 +58,23 @@ public interface SimulationWorkerClient {
     }
 
     /**
+     * Воспроизводит журнал до курсора с отчётом ядра ({@code include_report}) и историей баров: отчёт завершённой
+     * сессии и итог для истории (INV-8). Слепой вид не запрашивается — отчёт только раскрытый.
+     *
+     * @return результат, у которого {@link ReplayResult#report()} заполнен
+     * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
+     */
+    ReplayResult replayWithReport(Market market, List<JournalRecord> journal, long upToStep);
+
+    /**
+     * Число торговых дней на курсоре ({@code Metrics.trading_days}) без журнала, истории баров и полного отчёта: лёгкий
+     * вызов для номера дня в истории и ответах об идущей сессии.
+     *
+     * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
+     */
+    int tradingDaysAt(Market market, long upToStep);
+
+    /**
      * Оценивает заявку по {@code close} последнего бара до курсора, журнал не меняет (INV-8). Для слепых цен
      * ({@code OrderParams.blindPrice}) возвращает рублёвую заявку {@code resolvedOrder}.
      *

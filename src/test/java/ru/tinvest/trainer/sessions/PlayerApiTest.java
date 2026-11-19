@@ -30,10 +30,12 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import ru.tinvest.trainer.PostgresIntegrationTest;
+import ru.tinvest.trainer.analysis.ReportBuilder;
 import ru.tinvest.trainer.marketdata.LaunchPlan;
 import ru.tinvest.trainer.marketdata.Papers;
 import ru.tinvest.trainer.marketdata.PlannedPaper;
@@ -51,6 +53,10 @@ import tools.jackson.databind.ObjectMapper;
 @AutoConfigureMockMvc
 @Import(PlayerApiTest.TestWiring.class)
 class PlayerApiTest extends PostgresIntegrationTest {
+
+    /** Отчёт строится в фоне и добавил бы {@code report_ready} в поток; плеер его не проверяет (см. отчёт: `ReportHistoryReplayApiTest`). */
+    @MockitoBean
+    private ReportBuilder reportBuilder;
 
     private static final String PASSWORD = "correct horse";
     private static final List<String> SECIDS = List.of("SBER", "GAZP", "LKOH");
