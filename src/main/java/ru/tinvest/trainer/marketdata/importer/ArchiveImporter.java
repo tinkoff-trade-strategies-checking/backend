@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
@@ -64,12 +65,14 @@ public final class ArchiveImporter {
     private static final int LOOKBACK_DAYS = 14;
 
     private static final int MIN_MONTH_SHARE_PERCENT = 50;
-    private static final int MIN_TOTAL_SHARE_PERCENT = 85;
     private static final int EDGE_DAYS = 10;
+    /** Сколько дат пробелов одной бумаги показывать в {@code description}: при массовых пробелах — начало и конец. */
+    static final int DESCRIPTION_DATES = 5;
 
     /**
      * {@code allowGaps} не входит в идентификатор снапшота: разрешает пометить снапшот готовым, если у бумаги нет свечей
-     * в какие-то торговые дни (например, торги бумагой приостанавливали); пробелы всё равно попадут в лог.
+     * в какие-то торговые дни (например, торги бумагой приостанавливали) или календарь IMOEX подозрительно редок
+     * (остановка торгов на бирже); и то и другое попадёт в лог и {@code description}.
      */
     public record Params(LocalDate from, LocalDate to, List<String> tickers, String label, boolean allowGaps) {
 
@@ -170,60 +173,90 @@ public final class ArchiveImporter {
     }
 
     private void loadBenchmark(Params p, UUID id) {
-        LocalDate start = p.from().minusDays(LOOKBACK_DAYS);
-        for (YearMonth ym = YearMonth.from(start); !ym.isAfter(YearMonth.from(p.to())); ym = ym.plusYears(1)) {
-            LocalDate from = max(start, ym.atDay(1));
-            LocalDate till = min(p.to(), ym.plusMonths(11).atEndOfMonth());
+        for (LocalDate[] chunk : benchmarkChunks(p)) {
+            LocalDate from = chunk[0];
+            LocalDate till = chunk[1];
             if (archive.countCandles(id, BENCHMARK, DAY, startOf(from), startOf(till.plusDays(1))) > 0) {
                 continue;
             }
             List<Candle> candles = inRange(iss.indexDailyCandles(BENCHMARK, from, till), from, till);
-            checkCalendar(candles, from, till, LocalDate.now(clock));
+            checkCalendar(candles, from, till, LocalDate.now(clock), p.allowGaps());
             archive.insertCandles(id, BENCHMARK, DAY, candles);
             log.info("{} дневные {}…{}: {} свечей", BENCHMARK, from, till, candles.size());
         }
     }
 
+    /** Годовые куски дневного ряда IMOEX: от {@code from} минус запас до {@code to}. */
+    private static List<LocalDate[]> benchmarkChunks(Params p) {
+        LocalDate start = p.from().minusDays(LOOKBACK_DAYS);
+        List<LocalDate[]> chunks = new ArrayList<>();
+        for (YearMonth ym = YearMonth.from(start); !ym.isAfter(YearMonth.from(p.to())); ym = ym.plusYears(1)) {
+            chunks.add(new LocalDate[] {
+                max(start, ym.atDay(1)), min(p.to(), ym.plusMonths(11).atEndOfMonth())
+            });
+        }
+        return chunks;
+    }
+
     /**
-     * Дневной ряд IMOEX — основа календаря и проверки покрытия, поэтому усечённый ответ принимать нельзя (иначе
-     * неизменяемый снапшот получит пустой календарь). Ошибка, если: ответ пуст; в каком-то месяце торговых дней меньше
-     * {@value #MIN_MONTH_SHARE_PERCENT} % будней; за весь кусок меньше {@value #MIN_TOTAL_SHARE_PERCENT} % будней; первый
-     * или последний день ряда дальше {@value #EDGE_DAYS} дней от границы куска (последний — только для прошедших
-     * дат). Праздники не страшны: в январе РФ торгуется около 74 % будней.
+     * Дневной ряд IMOEX — основа календаря и проверки покрытия. Пустой ответ — всегда ошибка: иначе неизменяемый
+     * снапшот получит пустой календарь. Подозрительно редкий ряд ({@link #calendarWarnings}) бывает и на настоящих
+     * событиях — остановка торгов 28.02–23.03.2022, — поэтому без {@code allowGaps} это ошибка с объяснением, а с ним
+     * предупреждение в логе и запись в {@code description}.
      */
-    static void checkCalendar(List<Candle> candles, LocalDate from, LocalDate till, LocalDate today) {
+    static void checkCalendar(
+            List<Candle> candles, LocalDate from, LocalDate till, LocalDate today, boolean allowGaps) {
         TreeSet<LocalDate> days = new TreeSet<>();
         candles.forEach(c -> days.add(IssParsers.mskDate(c)));
         if (days.isEmpty()) {
             throw new ImportException("IMOEX " + from + "…" + till + ": ISS отдал пустой дневной ряд");
         }
-        int weekdaysTotal = 0;
-        Map<YearMonth, int[]> perMonth = new TreeMap<>();
-        for (LocalDate d = from; !d.isAfter(till); d = d.plusDays(1)) {
-            if (d.getDayOfWeek() != DayOfWeek.SATURDAY && d.getDayOfWeek() != DayOfWeek.SUNDAY) {
-                weekdaysTotal++;
-                int[] c = perMonth.computeIfAbsent(YearMonth.from(d), k -> new int[2]);
-                c[0]++;
-                c[1] += days.contains(d) ? 1 : 0;
-            }
+        List<String> warnings = calendarWarnings(days, from, till, today);
+        if (warnings.isEmpty()) {
+            return;
         }
-        for (Map.Entry<YearMonth, int[]> e : perMonth.entrySet()) {
-            if (e.getValue()[1] * 100 < e.getValue()[0] * MIN_MONTH_SHARE_PERCENT) {
-                throw new ImportException("IMOEX " + e.getKey() + ": торговых дней " + e.getValue()[1] + " из "
-                        + e.getValue()[0] + " будних, ряд усечён");
-            }
+        String report = "Календарь IMOEX " + from + "…" + till + " подозрительно редок: " + String.join(", ", warnings);
+        if (!allowGaps) {
+            throw new ImportException(report
+                    + ".\nВозможна остановка торгов на бирже (как 28.02–23.03.2022) или усечённый ответ ISS. Если дни"
+                    + " действительно нерабочие — перезапустите с --import.allow-gaps=true: календарь будет принят и"
+                    + " записан в description снапшота");
         }
-        if (days.size() * 100 < weekdaysTotal * MIN_TOTAL_SHARE_PERCENT) {
-            throw new ImportException("IMOEX " + from + "…" + till + ": торговых дней " + days.size() + " из "
-                    + weekdaysTotal + " будних, ряд усечён");
+        log.warn("{}\nКалендарь принят (allow-gaps): возможна остановка торгов", report);
+    }
+
+    /**
+     * Признаки усечённого ряда в куске {@code from}…{@code till}: в месяце, целиком лежащем внутри куска, торговых
+     * дней меньше {@value #MIN_MONTH_SHARE_PERCENT} % будней (неполные месяцы на краях дают ложно малую долю, поэтому
+     * не считаются); первый или последний день ряда дальше {@value #EDGE_DAYS} дней от границы куска (последний —
+     * только для прошедших дат). Праздники не срабатывают: в январе РФ торгуется около 74 % будней, новогодний перерыв
+     * короче {@value #EDGE_DAYS} дней. Доли за весь кусок нет: на коротком периоде с январём она ложно мала.
+     */
+    static List<String> calendarWarnings(SortedSet<LocalDate> days, LocalDate from, LocalDate till, LocalDate today) {
+        List<String> warnings = new ArrayList<>();
+        for (YearMonth ym = YearMonth.from(from); !ym.isAfter(YearMonth.from(till)); ym = ym.plusMonths(1)) {
+            if (ym.atDay(1).isBefore(from) || ym.atEndOfMonth().isAfter(till)) {
+                continue;
+            }
+            int weekdays = 0;
+            int trading = 0;
+            for (LocalDate d = ym.atDay(1); !d.isAfter(ym.atEndOfMonth()); d = d.plusDays(1)) {
+                if (d.getDayOfWeek() != DayOfWeek.SATURDAY && d.getDayOfWeek() != DayOfWeek.SUNDAY) {
+                    weekdays++;
+                    trading += days.contains(d) ? 1 : 0;
+                }
+            }
+            if (trading * 100 < weekdays * MIN_MONTH_SHARE_PERCENT) {
+                warnings.add(ym + " " + trading + " из " + weekdays + " будних");
+            }
         }
         if (days.first().isAfter(from.plusDays(EDGE_DAYS))) {
-            throw new ImportException("IMOEX: ряд начинается " + days.first() + ", ожидалось около " + from);
+            warnings.add("ряд начинается " + days.first() + ", ожидалось около " + from);
         }
-        LocalDate last = days.last();
-        if (till.isBefore(today) && last.isBefore(till.minusDays(EDGE_DAYS))) {
-            throw new ImportException("IMOEX: ряд кончается " + last + ", ожидалось около " + till);
+        if (till.isBefore(today) && days.last().isBefore(till.minusDays(EDGE_DAYS))) {
+            warnings.add("ряд кончается " + days.last() + ", ожидалось около " + till);
         }
+        return warnings;
     }
 
     private void loadSecurities(Params p, UUID id) {
@@ -455,7 +488,15 @@ public final class ArchiveImporter {
                 + String.join(",", secids) + "; интервал: 1 мин; период: " + p.from() + "…" + p.to()
                 + "; получен: " + Instant.now(clock) + "; версия схемы: " + SCHEMA_VERSION
                 + (p.label().isEmpty() ? "" : "; метка: " + p.label());
-        Set<LocalDate> trading = new HashSet<>(archive.candleDates(id, BENCHMARK, DAY));
+        TreeSet<LocalDate> trading = new TreeSet<>(archive.candleDates(id, BENCHMARK, DAY));
+        // календарь, как и пробелы, — по данным ClickHouse: кусок, принятый прошлым запуском, тоже попадёт в описание
+        List<String> calendar = new ArrayList<>();
+        for (LocalDate[] chunk : benchmarkChunks(p)) {
+            SortedSet<LocalDate> inChunk = trading.subSet(chunk[0], true, chunk[1], true);
+            if (!inChunk.isEmpty()) {
+                calendar.addAll(calendarWarnings(inChunk, chunk[0], chunk[1], LocalDate.now(clock)));
+            }
+        }
         StringBuilder gaps = new StringBuilder();
         for (String secid : secids) {
             Map<LocalDate, String> all = new TreeMap<>(storedMissingDays(p, id, secid, trading));
@@ -466,11 +507,27 @@ public final class ArchiveImporter {
                         .append(": ")
                         .append(all.size())
                         .append(" дн. ")
-                        .append(all.keySet());
+                        .append(dates(all.keySet()));
             }
         }
-        // пробелы пишем всегда, по данным ClickHouse; флаг лишь разрешает пометить снапшот готовым
-        return base + (gaps.length() == 0 ? "" : "; пробелы: " + gaps) + (p.allowGaps() ? "; allow-gaps: включён" : "");
+        // календарь и пробелы пишем всегда, по данным ClickHouse; флаг лишь разрешает пометить снапшот готовым
+        return base
+                + (calendar.isEmpty() ? "" : "; календарь: " + String.join(", ", calendar))
+                + (gaps.length() == 0 ? "" : "; пробелы: " + gaps)
+                + (p.allowGaps() ? "; allow-gaps: включён" : "");
+    }
+
+    /** Даты по порядку; больше {@value #DESCRIPTION_DATES} — первые и последние через «…»: описание не разрастается. */
+    static String dates(Set<LocalDate> sorted) {
+        List<String> all = sorted.stream().map(LocalDate::toString).toList();
+        if (all.size() <= DESCRIPTION_DATES) {
+            return all.toString();
+        }
+        int head = (DESCRIPTION_DATES + 1) / 2;
+        List<String> shown = new ArrayList<>(all.subList(0, head));
+        shown.add("…");
+        shown.addAll(all.subList(all.size() - (DESCRIPTION_DATES - head), all.size()));
+        return shown.toString();
     }
 
     /** Свечи с датой МСК внутри периода (ISS отдаёт даты включительно, но проверяем сами). */

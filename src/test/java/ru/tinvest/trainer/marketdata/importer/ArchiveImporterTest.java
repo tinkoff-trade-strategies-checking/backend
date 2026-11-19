@@ -363,18 +363,49 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void truncatedImoexSeriesFailsAndIsNotInserted() {
+    void sparseImoexSeriesNeedsAllowGapsAndIsRecordedInDescription() {
         ArchiveImporter.Params p = params();
-        // в марте остаётся два торговых дня из девяти будних
+        // ряд кончается 2024-03-01, за 11 дней до конца периода: остановка торгов или усечённый ответ
         for (String d : new String[] {"04", "05", "06", "07", "08", "11", "12"}) {
             server.skipDays.add("IMOEX|2024-03-" + d);
         }
 
         assertThatThrownBy(() -> importer.run(p))
                 .isInstanceOf(ImportException.class)
-                .hasMessageContaining("усечён");
+                .hasMessageContaining("ряд кончается 2024-03-01")
+                .hasMessageContaining("остановка торгов")
+                .hasMessageContaining("--import.allow-gaps=true");
         assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + p.snapshotId() + "'"))
                 .isEqualTo("0");
+
+        ArchiveImporter.Params lenient = new ArchiveImporter.Params(p.from(), p.to(), p.tickers(), p.label(), true);
+        String description = importer.run(lenient).snapshot().description();
+
+        assertThat(description)
+                .contains("календарь: ряд кончается 2024-03-01, ожидалось около 2024-03-12")
+                .contains("allow-gaps: включён");
+        assertThat(q("SELECT countIf(is_trading) FROM trading_calendar WHERE snapshot_id = '" + p.snapshotId()
+                        + "' AND date >= '2024-03-04'"))
+                .isEqualTo("0");
+    }
+
+    @Test
+    void massGapsAreTruncatedInDescription() {
+        ArchiveImporter.Params p = params();
+        for (LocalDate d : FakeIssServer.tradingDays()) {
+            if (d.isAfter(FROM) && d.isBefore(LocalDate.of(2024, 3, 12))) {
+                server.skipDays.add("GAZP|" + d);
+            }
+        }
+        ArchiveImporter.Params lenient = new ArchiveImporter.Params(p.from(), p.to(), p.tickers(), p.label(), true);
+
+        String description = importer.run(lenient).snapshot().description();
+
+        // 8 торговых дней 29.02–11.03: показаны первые три и последние два
+        assertThat(description)
+                .contains("GAZP: 8 дн. [2024-02-29, 2024-03-01, 2024-03-04, …, 2024-03-08, 2024-03-11]")
+                .doesNotContain("2024-03-05")
+                .doesNotContain("календарь");
     }
 
     @Test
