@@ -15,6 +15,12 @@ import tools.jackson.databind.ObjectMapper;
 @Component
 class StoredReports {
 
+    /**
+     * Версия формата сохранённого отчёта. Строки другой версии при чтении считаются отсутствующими, отчёт собирается
+     * заново отдельной строкой. Менять при изменении формы или смысла полей отчёта (версия 1 — до core#54).
+     */
+    static final int FORMAT_VERSION = 2;
+
     /** {@code report} — тело {@code SessionReport}; {@code playedDays} и {@code netReturnPct} — для истории. */
     record Stored(UUID sessionId, JsonNode report, int playedDays, String netReturnPct) {}
 
@@ -36,8 +42,9 @@ class StoredReports {
             return out;
         }
         jdbc.sql("SELECT session_id, report::text AS report, played_days, net_return_pct "
-                        + "FROM analysis.session_report WHERE session_id IN (:ids)")
+                        + "FROM analysis.session_report WHERE session_id IN (:ids) AND format_version = :format")
                 .param("ids", sessionIds)
+                .param("format", FORMAT_VERSION)
                 .query((rs, n) -> out.put(
                         rs.getObject("session_id", UUID.class),
                         new Stored(
@@ -56,9 +63,11 @@ class StoredReports {
      */
     boolean insert(UUID sessionId, Object report, int playedDays, String netReturnPct) {
         return jdbc.sql(
-                                "INSERT INTO analysis.session_report (session_id, report, played_days, net_return_pct) "
-                                        + "VALUES (:id, CAST(:report AS jsonb), :days, :net) ON CONFLICT (session_id) DO NOTHING")
+                                "INSERT INTO analysis.session_report (session_id, format_version, report, played_days, net_return_pct) "
+                                        + "VALUES (:id, :format, CAST(:report AS jsonb), :days, :net) "
+                                        + "ON CONFLICT (session_id, format_version) DO NOTHING")
                         .param("id", sessionId)
+                        .param("format", FORMAT_VERSION)
                         .param("report", json.writeValueAsString(report))
                         .param("days", playedDays)
                         .param("net", netReturnPct)

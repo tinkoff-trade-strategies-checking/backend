@@ -6,9 +6,11 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.jspecify.annotations.Nullable;
 import ru.tinvest.trainer.worker.WorkerTypes.BarData;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.FillState;
+import ru.tinvest.trainer.worker.WorkerTypes.InstrumentChangeData;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderState;
 import ru.tinvest.trainer.worker.WorkerTypes.PositionState;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
@@ -38,8 +40,7 @@ final class OpenViews {
         List<Object> papers = new ArrayList<>();
         for (PaperRecord paper : session.papers()) {
             Map<String, Object> stat = new LinkedHashMap<>();
-            // изменение за день считает core; пока не отдаёт — null
-            stat.put("changePct", null);
+            stat.put("changePct", changePct(replay, paper.secid()));
             // бумага без бара до курсора: цены ещё нет (null), заявку на неё ядро отклоняет до первого бара
             stat.put("lastPrice", ViewFormat.numberOrNull(lastClose.get(paper.secid())));
             Map<String, Object> out = new LinkedHashMap<>();
@@ -97,7 +98,7 @@ final class OpenViews {
                 continue;
             }
             Map<String, Object> stat = new LinkedHashMap<>();
-            stat.put("changePct", null);
+            stat.put("changePct", changePct(state.replay(), paper.secid()));
             stat.put("lastPrice", ViewFormat.number(lastClose.get(paper.secid())));
             paperStats.put(paper.paperId().toString(), stat);
         }
@@ -119,6 +120,16 @@ final class OpenViews {
         out.put("fills", fills);
         out.put("orders", orders);
         return out;
+    }
+
+    /** Изменение цены бумаги с начала сессии ({@code period_pct} ядра); {@code null} — на курсоре у бумаги нет бара. */
+    private static @Nullable String changePct(ReplayResult replay, String paperKey) {
+        return replay.instrumentChanges().stream()
+                .filter(c -> c.paperKey().equals(paperKey))
+                .findFirst()
+                .map(InstrumentChangeData::periodPct)
+                .map(ViewFormat::number)
+                .orElse(null);
     }
 
     private static Map<String, Object> candle(BarData bar, int candleInDay) {
@@ -191,7 +202,7 @@ final class OpenViews {
                 .orElseThrow(() -> new IllegalStateException("Исполнение без бара на своём шаге"));
 
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("id", DerivedIds.fill(state.session().id(), fill.orderId(), fill.step()));
+        out.put("id", DerivedIds.fill(state.session().id(), fill.seq()));
         out.put("orderId", state.orderIds().get(fill.orderId()));
         out.put("paperId", paper(state, fill.paperKey()).paperId());
         out.put("step", fill.step());
@@ -202,11 +213,11 @@ final class OpenViews {
         out.put("type", ViewFormat.legType(order.spec().kind()));
         out.put("lots", fill.lots());
         out.put("price", ViewFormat.number(fill.price()));
-        // проценты и общие издержки сделки считает core (core#54), backend ничего не складывает; пока не отдаёт — null
-        out.put("amountPct", null);
-        out.put("costPct", null);
+        // проценты и общие издержки сделки считает core (core#54), backend ничего не складывает
+        out.put("amountPct", ViewFormat.number(fill.amountPct()));
+        out.put("costPct", ViewFormat.number(fill.costPct()));
         out.put("amount", ViewFormat.money(fill.value()));
-        out.put("cost", null);
+        out.put("cost", ViewFormat.money(fill.cost()));
         out.put("stopAndTakeSameBar", fill.stopAndTakeSameBar());
         return out;
     }
@@ -219,23 +230,23 @@ final class OpenViews {
             position.put("paperId", paper(state, p.paperKey()).paperId());
             position.put("lots", p.lots());
             position.put("avgPrice", ViewFormat.number(p.avgPrice()));
-            position.put("pnlPct", null);
-            position.put("valuePct", null);
+            position.put("pnlPct", ViewFormat.number(p.pnlPct()));
+            position.put("valuePct", ViewFormat.number(p.valuePct()));
             position.put("marketValue", ViewFormat.money(p.marketValue()));
             positions.add(position);
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("mode", "OPEN");
-        out.put("equityPct", null);
-        out.put("cashPct", null);
-        out.put("investedPct", null);
-        out.put("pnlPct", null);
-        out.put("costsPct", null);
+        out.put("equityPct", ViewFormat.number(portfolio.equityPct()));
+        out.put("cashPct", ViewFormat.number(portfolio.cashPct()));
+        out.put("investedPct", ViewFormat.number(portfolio.investedPct()));
+        out.put("pnlPct", ViewFormat.number(portfolio.pnlPct()));
+        out.put("costsPct", ViewFormat.number(portfolio.costsPct()));
         out.put("equity", ViewFormat.money(portfolio.equity()));
         out.put("cash", ViewFormat.money(portfolio.cash()));
-        out.put("invested", null);
-        out.put("pnl", null);
-        out.put("costs", null);
+        out.put("invested", ViewFormat.money(portfolio.invested()));
+        out.put("pnl", ViewFormat.money(portfolio.pnl()));
+        out.put("costs", ViewFormat.money(portfolio.costs()));
         out.put("positions", positions);
         return out;
     }

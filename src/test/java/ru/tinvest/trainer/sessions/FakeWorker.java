@@ -27,6 +27,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.CostTotalsData;
 import ru.tinvest.trainer.worker.WorkerTypes.EquityPointData;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.FillState;
+import ru.tinvest.trainer.worker.WorkerTypes.InstrumentChangeData;
 import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
 import ru.tinvest.trainer.worker.WorkerTypes.MetricsData;
@@ -42,6 +43,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.RoundTripData;
 import ru.tinvest.trainer.worker.WorkerTypes.RunState;
 import ru.tinvest.trainer.worker.WorkerTypes.StepBars;
 import ru.tinvest.trainer.worker.WorkerTypes.StepReplay;
+import ru.tinvest.trainer.worker.WorkerTypes.UnderwaterPointData;
 
 /**
  * Воркер для тестов арены: без состояния, как настоящий (журнал приходит целиком). Отвечает заранее заданными
@@ -216,7 +218,9 @@ final class FakeWorker implements SimulationWorkerClient {
                 full.commandResults(),
                 full.warmupSteps(),
                 view,
-                null);
+                null,
+                full.currentDay(),
+                full.instrumentChanges());
         return new StepReplay(trimmed, new StepBars(bars, blindBars));
     }
 
@@ -279,7 +283,11 @@ final class FakeWorker implements SimulationWorkerClient {
                         new BigDecimal("0.20"),
                         new BigDecimal("1.00"),
                         new BigDecimal("0.50"),
-                        false));
+                        false,
+                        fills.size(),
+                        new BigDecimal("7.70"),
+                        new BigDecimal("0.08"),
+                        new BigDecimal("2.00")));
                 blindFills.add(new BlindFillData(
                         order.id(),
                         order.closedStep(),
@@ -292,7 +300,9 @@ final class FakeWorker implements SimulationWorkerClient {
                         new BigDecimal("0.01"),
                         new BigDecimal("0.02"),
                         new BigDecimal("0.01"),
-                        false));
+                        false,
+                        new BigDecimal("0.08"),
+                        blindFills.size()));
             }
         }
         // исполненная после курсора заявка пока активна
@@ -347,13 +357,36 @@ final class FakeWorker implements SimulationWorkerClient {
                 }
             }
         }
-        PortfolioState portfolio = new PortfolioState(market.initialCash(), market.initialCash(), List.of());
+        PortfolioState portfolio = new PortfolioState(
+                market.initialCash(),
+                market.initialCash(),
+                List.of(),
+                new BigDecimal("0.00"),
+                new BigDecimal("0.08"),
+                new BigDecimal("0.00"),
+                new BigDecimal("100.00"),
+                new BigDecimal("100.00"),
+                new BigDecimal("0.00"),
+                new BigDecimal("0.00"),
+                new BigDecimal("7.70"));
+        List<InstrumentChangeData> changes = new ArrayList<>();
+        for (int i = 0; i < market.papers().size(); i++) {
+            if (!noBars.contains(market.papers().get(i).key())) {
+                changes.add(new InstrumentChangeData(
+                        market.papers().get(i).key(), new BigDecimal("1.23"), new BigDecimal("4.56")));
+            }
+        }
         BlindViewData blindView = null;
         if (blind) {
             List<BlindPaperData> papers = new ArrayList<>();
             List<BlindOrderData> blindOrders = new ArrayList<>();
             for (int i = 0; i < market.papers().size(); i++) {
-                papers.add(new BlindPaperData(i, new BigDecimal("5.00")));
+                boolean bars = !noBars.contains(market.papers().get(i).key());
+                papers.add(new BlindPaperData(
+                        i,
+                        new BigDecimal("5.00"),
+                        bars ? new BigDecimal("1.23") : null,
+                        bars ? new BigDecimal("4.56") : null));
             }
             for (OrderState order : visible) {
                 blindOrders.add(new BlindOrderData(
@@ -367,12 +400,29 @@ final class FakeWorker implements SimulationWorkerClient {
                     papers,
                     blindHistory,
                     new BlindPortfolioData(
-                            new BigDecimal("100.00"), new BigDecimal("100.00"), BigDecimal.ZERO, List.of()),
+                            new BigDecimal("100.00"),
+                            new BigDecimal("100.00"),
+                            BigDecimal.ZERO,
+                            List.of(),
+                            new BigDecimal("0.00"),
+                            new BigDecimal("0.08")),
                     blindOrders,
                     blindFills);
         }
         return new ReplayResult(
-                TOTAL_STEPS, runState, lastStep, history, portfolio, visible, fills, outcomes, WARMUP, blindView, null);
+                TOTAL_STEPS,
+                runState,
+                lastStep,
+                history,
+                portfolio,
+                visible,
+                fills,
+                outcomes,
+                WARMUP,
+                blindView,
+                null,
+                lastStep < 0 ? 0 : (int) (1 + lastStep / 3),
+                changes);
     }
 
     /** Отчёт по заранее заданным значениям: капитал растёт на {@link #EQUITY_PER_STEP} за шаг, бенчмарк — на концах дней. */
@@ -400,8 +450,13 @@ final class FakeWorker implements SimulationWorkerClient {
                         new BigDecimal("210.00"),
                         new BigDecimal("200.00"),
                         new BigDecimal("12.00"),
-                        new BigDecimal("188.00")))
+                        new BigDecimal("188.00"),
+                        0))
                 : List.of();
+        List<UnderwaterPointData> underwater = new ArrayList<>();
+        for (EquityPointData point : equity) {
+            underwater.add(new UnderwaterPointData(point.step(), new BigDecimal("0.00")));
+        }
         ReportData report = new ReportData(
                 new MetricsData(
                         0.0123,
@@ -422,13 +477,19 @@ final class FakeWorker implements SimulationWorkerClient {
                         0.3,
                         null,
                         20,
-                        0),
+                        0,
+                        2),
                 new CostTotalsData(
-                        new BigDecimal("6.00"), new BigDecimal("0.20"), new BigDecimal("1.00"), new BigDecimal("0.50")),
+                        new BigDecimal("6.00"),
+                        new BigDecimal("0.20"),
+                        new BigDecimal("1.00"),
+                        new BigDecimal("0.50"),
+                        new BigDecimal("7.70")),
                 equity,
                 market.initialCash().add(EQUITY_PER_STEP.multiply(BigDecimal.valueOf(upToStep))),
                 benchmark,
-                trips);
+                trips,
+                underwater);
         return new ReplayResult(
                 base.totalSteps(),
                 base.state(),
@@ -440,7 +501,9 @@ final class FakeWorker implements SimulationWorkerClient {
                 base.commandResults(),
                 base.warmupSteps(),
                 null,
-                report);
+                report,
+                base.currentDay(),
+                base.instrumentChanges());
     }
 
     /** Номер дня на курсоре: как в {@code replaySession} (прогрев — 0). */

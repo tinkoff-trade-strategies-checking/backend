@@ -21,12 +21,14 @@ import ru.tinvest.trainer.worker.WorkerTypes.OrderState;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
 import ru.tinvest.trainer.worker.WorkerTypes.ReportData;
 import ru.tinvest.trainer.worker.WorkerTypes.RoundTripData;
+import ru.tinvest.trainer.worker.WorkerTypes.UnderwaterPointData;
 
 /**
  * Раскрытый отчёт завершённой сессии ({@code SessionReport}). Backend ничего не считает: значения берутся из отчёта
  * ядра; единственное преобразование — доли ядра в проценты контракта (×100, без округления, до шести знаков) и
- * шаг → время бара. Чего ядро пока не отдаёт (алгоритм, сравнение, разбор расхождений, издержки одной суммой,
- * длительность просадки в днях), в ответе {@code null} или пусто (core#54).
+ * шаг → время бара. Производные величины (общая сумма издержек, издержки исполнений, кривая просадки, длительность
+ * просадки в днях) считает core (core#54), они уже ×100 там, где это проценты. Чего нет (алгоритм, сравнение, разбор
+ * расхождений — ФТ-18…20), в ответе {@code null}.
  */
 final class ReportViews {
 
@@ -64,9 +66,9 @@ final class ReportViews {
         out.put("algoMetrics", null);
         out.put("comparison", null);
         out.put("equityCurve", equityCurve(report, times));
-        // ядро пока не отдаёт: null, а не пустой массив — «не посчитано» не должно читаться как «нет
-        // просадок/расхождений»
-        out.put("underwaterCurve", null);
+        out.put("underwaterCurve", underwaterCurve(report, times));
+        // разбор расхождений и обратная проверка — после решения по DSL: null, а не пустой массив — «не посчитано» не
+        // должно читаться как «нет расхождений»
         out.put("divergenceSummary", null);
         out.put("divergences", null);
         out.put("reverseCheckTrades", null);
@@ -110,7 +112,7 @@ final class ReportViews {
         MetricsData m = report.metrics();
         Map<String, Object> costs = new LinkedHashMap<>();
         // общую сумму издержек считает core (core#54), backend не складывает
-        costs.put("total", null);
+        costs.put("total", ViewFormat.money(report.costs().total()));
         costs.put("commission", ViewFormat.money(report.costs().commission()));
         costs.put("exchangeFee", ViewFormat.money(report.costs().exchangeFee()));
         costs.put("spread", ViewFormat.money(report.costs().spread()));
@@ -125,7 +127,7 @@ final class ReportViews {
         // отдельного «чистого» значения ядро не отдаёт: total_return — после издержек (decisions.md, «Метрики отчёта»)
         out.put("netReturnPct", pct(m.totalReturn()));
         out.put("maxDrawdownPct", pct(m.maxDrawdown()));
-        out.put("maxDrawdownDurationDays", null);
+        out.put("maxDrawdownDurationDays", m.maxDrawdownDays());
         out.put("maxDrawdownDurationSteps", m.maxDrawdownSteps());
         out.put("volatilityPct", pctOrNull(m.volatility()));
         out.put("sharpe", ratioOrNull(m.sharpe()));
@@ -163,6 +165,20 @@ final class ReportViews {
         return points;
     }
 
+    /** Кривая просадки ядра: точка на каждую точку капитала; доля фонового алгоритма — {@code null} (ФТ-18…20). */
+    private static List<Object> underwaterCurve(ReportData report, Map<Long, Long> times) {
+        List<Object> points = new ArrayList<>(report.underwater().size());
+        for (UnderwaterPointData p : report.underwater()) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("step", p.step());
+            out.put("date", date(times, p.step()));
+            out.put("humanDrawdownPct", ViewFormat.number(p.drawdownPct()));
+            out.put("algoDrawdownPct", null);
+            points.add(out);
+        }
+        return points;
+    }
+
     private static List<Object> roundTrips(ReportData report, Map<Long, Long> times) {
         List<Object> trips = new ArrayList<>(report.roundTrips().size());
         for (RoundTripData t : report.roundTrips()) {
@@ -194,7 +210,7 @@ final class ReportViews {
                 throw new IllegalStateException("Исполнение без заявки в отчёте сессии " + session.id());
             }
             Map<String, Object> out = new LinkedHashMap<>();
-            out.put("id", DerivedIds.fill(session.id(), fill.orderId(), fill.step()));
+            out.put("id", DerivedIds.fill(session.id(), fill.seq()));
             out.put("day", index.at(fill.step())[0]);
             out.put("date", date(times, fill.step()));
             out.put("paperTicker", fill.paperKey());
@@ -203,7 +219,7 @@ final class ReportViews {
             out.put("lots", fill.lots());
             out.put("price", ViewFormat.number(fill.price()));
             // общие издержки исполнения считает core (core#54)
-            out.put("cost", null);
+            out.put("cost", ViewFormat.money(fill.cost()));
             out.put("partial", fill.lots() != order.spec().lots());
             fills.add(out);
         }

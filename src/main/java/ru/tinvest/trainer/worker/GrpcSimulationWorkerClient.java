@@ -127,13 +127,10 @@ class GrpcSimulationWorkerClient implements SimulationWorkerClient {
                 .setUpToStep(upToStep)
                 .setEventsFromStep(-1)
                 .setIncludeHistory(false)
-                .setIncludeReport(true)
+                .setIncludeReport(false)
                 .setBlind(false)
                 .build();
-        return call(() -> stub().replaySession(request))
-                .getReport()
-                .getMetrics()
-                .getTradingDays();
+        return call(() -> stub().replaySession(request)).getCurrentDay();
     }
 
     @Override

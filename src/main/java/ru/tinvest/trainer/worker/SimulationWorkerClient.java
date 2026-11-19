@@ -67,8 +67,8 @@ public interface SimulationWorkerClient {
     ReplayResult replayWithReport(Market market, List<JournalRecord> journal, long upToStep);
 
     /**
-     * Число торговых дней на курсоре ({@code Metrics.trading_days}) без журнала, истории баров и полного отчёта: лёгкий
-     * вызов для номера дня в истории и ответах об идущей сессии.
+     * Номер торгового дня на курсоре ({@code ReplaySessionResponse.current_day}) без журнала, истории баров и отчёта:
+     * лёгкий вызов для номера дня в истории и ответах об идущей сессии.
      *
      * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
      */
