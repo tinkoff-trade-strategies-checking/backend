@@ -11,7 +11,13 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 // Подбор запуска обязателен, поэтому в тестах ClickHouse — заглушка; реальные запросы проверяет
 // ClickHouseArchiveCatalogTest.
 @SpringBootTest(
-        properties = {"marketdata.clickhouse.url=http://localhost:1", "spring.datasource.hikari.maximum-pool-size=8"})
+        properties = {
+            "marketdata.clickhouse.url=http://localhost:1",
+            "spring.datasource.hikari.maximum-pool-size=8",
+            // пул в тестах меньше (лимит соединений Postgres); такты урезаны так, чтобы пул оставался не меньше тактов
+            // + 6
+            "lab.session.max-concurrent-ticks=2"
+        })
 public abstract class PostgresIntegrationTest {
 
     @ServiceConnection
