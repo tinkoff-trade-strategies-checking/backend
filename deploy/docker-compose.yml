@@ -1,5 +1,5 @@
 # Локальное окружение: Caddy (HTTPS) -> backend -> PostgreSQL, ClickHouse, Simulation Worker.
-# Запуск: docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build
+# Запуск — AGENTS.md, «Окружение»: образы собираются `docker build`, затем `up -d --no-build` (compose build через bake не читает ../../core).
 # Наружу публикует порты только caddy (INV-10); остальное — во внутренней сети.
 
 name: trainer
