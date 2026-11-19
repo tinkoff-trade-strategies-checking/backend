@@ -25,7 +25,7 @@ final class FakeIssServer implements AutoCloseable {
 
     static final int PAGE = 5;
     static final int CANDLES_PER_DAY = 3;
-    static final LocalDate FIRST = LocalDate.of(2024, 2, 26);
+    static final LocalDate FIRST = LocalDate.of(2024, 2, 12);
     static final LocalDate LAST = LocalDate.of(2024, 3, 12);
 
     private final HttpServer server;

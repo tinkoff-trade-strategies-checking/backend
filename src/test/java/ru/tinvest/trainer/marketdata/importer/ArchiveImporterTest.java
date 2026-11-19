@@ -127,7 +127,7 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         assertThat(q(
                         "SELECT toString(ts_open), toString(open), volume, toString(value) FROM candles WHERE snapshot_id = '"
                                 + id + "' AND secid = 'SBER' AND interval_sec = 60 ORDER BY ts_open LIMIT 1"))
-                .isEqualTo("2024-02-28 07:00:00.000\t292.1\t1000\t40851055.7");
+                .isEqualTo("2024-02-28 07:00:00.000\t302.1\t1000\t40851055.7");
         // дневной ряд IMOEX для бенчмарка: интервал 1 сутки, начало 00:00 МСК = 21:00 UTC предыдущих суток
         assertThat(q("SELECT toString(ts_open), toString(available_at) FROM candles WHERE snapshot_id = '" + id
                         + "' AND secid = 'IMOEX' AND interval_sec = 86400 AND ts_open >= '2024-02-27 00:00:00' "
@@ -332,7 +332,7 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         assertThat(r.alreadyLoaded()).isFalse();
         assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + p.snapshotId() + "' AND secid = 'GAZP'"))
                 .isEqualTo("21");
-        assertThat(r.snapshot().description()).doesNotContain("allow-gaps");
+        assertThat(r.snapshot().description()).doesNotContain("пробел").doesNotContain("allow-gaps");
     }
 
     @Test
@@ -345,9 +345,82 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         String description = importer.run(lenient).snapshot().description();
 
         assertThat(description)
-                .contains("allow-gaps: пробелы приняты")
+                .contains("allow-gaps: включён")
                 .contains("GAZP: 1 дн. [2024-03-05]")
                 .contains("SBER: 1 дн. [2024-03-06]");
+    }
+
+    @Test
+    void emptyImoexSeriesFailsInsteadOfProducingEmptyCalendar() {
+        ArchiveImporter.Params p = params();
+        server.empties.put("/IMOEX/candles", new AtomicInteger(100));
+
+        assertThatThrownBy(() -> importer.run(p))
+                .isInstanceOf(ImportException.class)
+                .hasMessageContaining("пустой дневной ряд");
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + p.snapshotId() + "'"))
+                .isEqualTo("0");
+    }
+
+    @Test
+    void truncatedImoexSeriesFailsAndIsNotInserted() {
+        ArchiveImporter.Params p = params();
+        // в марте остаётся два торговых дня из девяти будних
+        for (String d : new String[] {"04", "05", "06", "07", "08", "11", "12"}) {
+            server.skipDays.add("IMOEX|2024-03-" + d);
+        }
+
+        assertThatThrownBy(() -> importer.run(p))
+                .isInstanceOf(ImportException.class)
+                .hasMessageContaining("усечён");
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + p.snapshotId() + "'"))
+                .isEqualTo("0");
+    }
+
+    @Test
+    void gapsAcceptedByInterruptedRunAreInDescriptionOfTheRunThatFinishes() {
+        ArchiveImporter.Params p = params();
+        ArchiveImporter.Params lenient = new ArchiveImporter.Params(p.from(), p.to(), p.tickers(), p.label(), true);
+        server.skipDays.add("GAZP|2024-03-05");
+        server.broken.add("/SBER/candles");
+        assertThatThrownBy(() -> importer(0).run(lenient)).isInstanceOf(ImportException.class);
+
+        // докачка без флага: GAZP уже загружен с дырой, она всё равно попадает в description
+        server.broken.clear();
+        String description = importer.run(p).snapshot().description();
+
+        assertThat(description).contains("пробелы: GAZP: 1 дн. [2024-03-05]").doesNotContain("allow-gaps");
+    }
+
+    @Test
+    void stateOfOneRunDoesNotLeakIntoTheNext() {
+        ArchiveImporter.Params first = params();
+        ArchiveImporter.Params firstLenient =
+                new ArchiveImporter.Params(first.from(), first.to(), first.tickers(), first.label(), true);
+        server.truncateDays.add("SBER|2024-03-06");
+        importer.run(firstLenient);
+        server.truncateDays.clear();
+
+        // тот же импортёр, другой снапшот без проблем: чужие принятые пробелы в его description не попадают
+        ArchiveImporter.Params second = params();
+        String description = importer.run(second).snapshot().description();
+
+        assertThat(description).doesNotContain("пробел").doesNotContain("2024-03-06");
+    }
+
+    @Test
+    void listingIsNotRequestedWhenAllChunksAreAlreadyLoaded() {
+        ArchiveImporter.Params p = params();
+        server.broken.add("/SBER/candles");
+        assertThatThrownBy(() -> importer(0).run(p)).isInstanceOf(ImportException.class);
+        server.broken.clear();
+        server.requests.clear();
+
+        importer.run(p);
+
+        // GAZP загружен целиком: его листинг не запрашивался, SBER — запрошен
+        assertThat(server.requests).noneMatch(req -> req.contains("/securities/GAZP.json"));
+        assertThat(server.requests).anyMatch(req -> req.contains("/securities/SBER.json"));
     }
 
     @Test
@@ -385,7 +458,7 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         assertThat(server.requests)
                 .anyMatch(r -> r.contains("UniDbQuery.From=14.02.2024") && r.contains("UniDbQuery.To=12.03.2024"));
         assertThat(q("SELECT min(date), max(date) FROM ruonia WHERE snapshot_id = '" + p.snapshotId() + "'"))
-                .isEqualTo("2024-02-26\t2024-03-12");
+                .isEqualTo("2024-02-12\t2024-03-12");
     }
 
     @Test

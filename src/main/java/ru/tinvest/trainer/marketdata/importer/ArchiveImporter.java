@@ -3,6 +3,7 @@ package ru.tinvest.trainer.marketdata.importer;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -16,6 +17,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,6 +62,10 @@ public final class ArchiveImporter {
 
     /** Запас календаря и ставок до {@code from}: ядру нужен день перед первым днём шкалы. */
     private static final int LOOKBACK_DAYS = 14;
+
+    private static final int MIN_MONTH_SHARE_PERCENT = 50;
+    private static final int MIN_TOTAL_SHARE_PERCENT = 85;
+    private static final int EDGE_DAYS = 10;
 
     /**
      * {@code allowGaps} не входит в идентификатор снапшота: разрешает пометить снапшот готовым, если у бумаги нет свечей
@@ -129,6 +135,9 @@ public final class ArchiveImporter {
     }
 
     private Result runLocked(Params p, UUID id) {
+        acceptedProblems.clear();
+        listings.clear();
+        sessionEnds.clear();
         var existing = snapshots.findByKey(id.toString());
         if (existing.isPresent()) {
             log.info(
@@ -169,8 +178,51 @@ public final class ArchiveImporter {
                 continue;
             }
             List<Candle> candles = inRange(iss.indexDailyCandles(BENCHMARK, from, till), from, till);
+            checkCalendar(candles, from, till, LocalDate.now(clock));
             archive.insertCandles(id, BENCHMARK, DAY, candles);
             log.info("{} дневные {}…{}: {} свечей", BENCHMARK, from, till, candles.size());
+        }
+    }
+
+    /**
+     * Дневной ряд IMOEX — основа календаря и проверки покрытия, поэтому усечённый ответ принимать нельзя (иначе
+     * неизменяемый снапшот получит пустой календарь). Ошибка, если: ответ пуст; в каком-то месяце торговых дней меньше
+     * {@value #MIN_MONTH_SHARE_PERCENT} % будней; за весь кусок меньше {@value #MIN_TOTAL_SHARE_PERCENT} % будней; первый
+     * или последний день ряда дальше {@value #EDGE_DAYS} дней от границы куска (последний — только для прошедших
+     * дат). Праздники не страшны: в январе РФ торгуется около 74 % будней.
+     */
+    static void checkCalendar(List<Candle> candles, LocalDate from, LocalDate till, LocalDate today) {
+        TreeSet<LocalDate> days = new TreeSet<>();
+        candles.forEach(c -> days.add(IssParsers.mskDate(c)));
+        if (days.isEmpty()) {
+            throw new ImportException("IMOEX " + from + "…" + till + ": ISS отдал пустой дневной ряд");
+        }
+        int weekdaysTotal = 0;
+        Map<YearMonth, int[]> perMonth = new TreeMap<>();
+        for (LocalDate d = from; !d.isAfter(till); d = d.plusDays(1)) {
+            if (d.getDayOfWeek() != DayOfWeek.SATURDAY && d.getDayOfWeek() != DayOfWeek.SUNDAY) {
+                weekdaysTotal++;
+                int[] c = perMonth.computeIfAbsent(YearMonth.from(d), k -> new int[2]);
+                c[0]++;
+                c[1] += days.contains(d) ? 1 : 0;
+            }
+        }
+        for (Map.Entry<YearMonth, int[]> e : perMonth.entrySet()) {
+            if (e.getValue()[1] * 100 < e.getValue()[0] * MIN_MONTH_SHARE_PERCENT) {
+                throw new ImportException("IMOEX " + e.getKey() + ": торговых дней " + e.getValue()[1] + " из "
+                        + e.getValue()[0] + " будних, ряд усечён");
+            }
+        }
+        if (days.size() * 100 < weekdaysTotal * MIN_TOTAL_SHARE_PERCENT) {
+            throw new ImportException("IMOEX " + from + "…" + till + ": торговых дней " + days.size() + " из "
+                    + weekdaysTotal + " будних, ряд усечён");
+        }
+        if (days.first().isAfter(from.plusDays(EDGE_DAYS))) {
+            throw new ImportException("IMOEX: ряд начинается " + days.first() + ", ожидалось около " + from);
+        }
+        LocalDate last = days.last();
+        if (till.isBefore(today) && last.isBefore(till.minusDays(EDGE_DAYS))) {
+            throw new ImportException("IMOEX: ряд кончается " + last + ", ожидалось около " + till);
         }
     }
 
@@ -232,7 +284,6 @@ public final class ArchiveImporter {
 
     private void loadCandles(Params p, UUID id, String secid, Set<LocalDate> trading) {
         int total = 0;
-        Optional<IssClient.Listing> listing = listing(secid);
         for (YearMonth ym = YearMonth.from(p.from()); !ym.isAfter(YearMonth.from(p.to())); ym = ym.plusMonths(1)) {
             LocalDate from = max(p.from(), ym.atDay(1));
             LocalDate till = min(p.to(), ym.atEndOfMonth());
@@ -240,7 +291,8 @@ public final class ArchiveImporter {
                 continue;
             }
             List<Candle> candles = inRange(iss.shareCandles(secid, 1, from, till), from, till);
-            Map<LocalDate, String> problems = coverageProblems(from, till, candles, trading, listing);
+            // листинг нужен только для куска, который грузим; загруженные куски при докачке его не запрашивают
+            Map<LocalDate, String> problems = coverageProblems(from, till, candles, trading, listing(secid));
             if (!problems.isEmpty()) {
                 String report = report(secid + " " + ym, problems);
                 if (!p.allowGaps()) {
@@ -383,13 +435,17 @@ public final class ArchiveImporter {
 
     /** Пропущенные торговые дни, уже лежащие в снапшоте (включая принятые в прошлых запусках). */
     private Map<LocalDate, String> storedMissingDays(Params p, UUID id, String secid, Set<LocalDate> trading) {
-        Optional<IssClient.Listing> listing = listing(secid);
         Set<LocalDate> have = new HashSet<>(archive.candleDates(id, secid, MINUTE));
         Map<LocalDate, String> missing = new TreeMap<>();
         for (LocalDate d = p.from(); !d.isAfter(p.to()); d = d.plusDays(1)) {
-            if (trading.contains(d) && tradesOn(listing, d) && !have.contains(d)) {
+            if (trading.contains(d) && !have.contains(d)) {
                 missing.put(d, "нет свечей");
             }
+        }
+        if (!missing.isEmpty()) {
+            // период торгов уточняем только если есть кандидаты в пробелы: лишнего запроса к ISS при целом снапшоте нет
+            Optional<IssClient.Listing> listing = listing(secid);
+            missing.keySet().removeIf(d -> !tradesOn(listing, d));
         }
         return missing;
     }
@@ -399,9 +455,6 @@ public final class ArchiveImporter {
                 + String.join(",", secids) + "; интервал: 1 мин; период: " + p.from() + "…" + p.to()
                 + "; получен: " + Instant.now(clock) + "; версия схемы: " + SCHEMA_VERSION
                 + (p.label().isEmpty() ? "" : "; метка: " + p.label());
-        if (!p.allowGaps()) {
-            return base;
-        }
         Set<LocalDate> trading = new HashSet<>(archive.candleDates(id, BENCHMARK, DAY));
         StringBuilder gaps = new StringBuilder();
         for (String secid : secids) {
@@ -416,7 +469,8 @@ public final class ArchiveImporter {
                         .append(all.keySet());
             }
         }
-        return base + "; allow-gaps: " + (gaps.length() == 0 ? "пробелов нет" : "пробелы приняты (" + gaps + ")");
+        // пробелы пишем всегда, по данным ClickHouse; флаг лишь разрешает пометить снапшот готовым
+        return base + (gaps.length() == 0 ? "" : "; пробелы: " + gaps) + (p.allowGaps() ? "; allow-gaps: включён" : "");
     }
 
     /** Свечи с датой МСК внутри периода (ISS отдаёт даты включительно, но проверяем сами). */
