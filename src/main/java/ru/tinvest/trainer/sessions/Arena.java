@@ -85,11 +85,16 @@ class Arena {
 
     /** Снимок на текущем шаге; курсор не двигает. */
     Map<String, Object> snapshot(UUID sessionId) {
-        SessionRecord session = sessions.requireOwned(sessionId);
-        List<JournalRecord> journal = journals.records(session);
-        ReplayResult replay =
-                worker.replaySession(market(session), journal, session.currentStep(), true, session.blind());
-        return masking.snapshot(state(session, replay, journals.seenSteps(session.id())));
+        // под блокировкой сессии: состояние и номер последнего события согласованы (клиент открывает SSE с ним)
+        return commands.readLocked(sessionId, session -> {
+            long lastEventId = events.lastEventId(session.id());
+            List<JournalRecord> journal = journals.records(session);
+            ReplayResult replay =
+                    worker.replaySession(market(session), journal, session.currentStep(), true, session.blind());
+            Map<String, Object> out = masking.snapshot(state(session, replay, journals.seenSteps(session.id())));
+            out.put("lastEventId", lastEventId == 0 ? null : lastEventId);
+            return out;
+        });
     }
 
     // ---------- оценка ----------

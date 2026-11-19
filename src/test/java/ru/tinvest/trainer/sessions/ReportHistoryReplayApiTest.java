@@ -739,7 +739,7 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
     private static JsonNode withoutPlayerState(JsonNode snapshot) {
         // у воспроизведения нет плеера (null), `finished` означает «дошли до конца»: у арены идущей сессии иначе
         tools.jackson.databind.node.ObjectNode copy = (tools.jackson.databind.node.ObjectNode) snapshot.deepCopy();
-        copy.remove(List.of("playing", "speed", "finished"));
+        copy.remove(List.of("playing", "speed", "finished", "lastEventId"));
         return copy;
     }
 

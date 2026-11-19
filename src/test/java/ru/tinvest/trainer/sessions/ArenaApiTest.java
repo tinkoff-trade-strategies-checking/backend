@@ -149,6 +149,7 @@ class ArenaApiTest extends PostgresIntegrationTest {
             "totalDays",
             "finished",
             "playing",
+            "lastEventId",
             "speed",
             "mode",
             "papers",
