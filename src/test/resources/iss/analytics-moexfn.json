@@ -1,0 +1,26 @@
+{
+"analytics": {
+	"columns": ["indexid", "tradedate", "ticker", "shortnames", "secids", "weight", "tradingsession", "trade_session_date"], 
+	"data": [
+		["MOEXFN", "2024-12-30", "BSPB", "БСП ао", "BSPB", 6.84, 3, null],
+		["MOEXFN", "2024-12-30", "CBOM", "МКБ ао", "CBOM", 13.14, 3, null],
+		["MOEXFN", "2024-12-30", "LEAS", "Европлан", "LEAS", 2.8, 3, null],
+		["MOEXFN", "2024-12-30", "MBNK", "МТС Банк", "MBNK", 1.49, 3, null],
+		["MOEXFN", "2024-12-30", "MOEX", "МосБиржа", "MOEX", 14.02, 3, null],
+		["MOEXFN", "2024-12-30", "RENI", "Ренессанс", "RENI", 4.02, 3, null],
+		["MOEXFN", "2024-12-30", "SBER", "Сбербанк", "SBER", 13.03, 3, null],
+		["MOEXFN", "2024-12-30", "SBERP", "Сбербанк-п", "SBERP", 2.52, 3, null],
+		["MOEXFN", "2024-12-30", "SFIN", "ЭсЭфАй ао", "SFIN", 3.83, 3, null],
+		["MOEXFN", "2024-12-30", "SPBE", "СПБ Биржа", "SPBE", 0.63, 3, null],
+		["MOEXFN", "2024-12-30", "SVCB", "Совкомбанк", "SVCB", 7.39, 3, null],
+		["MOEXFN", "2024-12-30", "T", "Т-Техно ао", "T", 14.87, 3, null],
+		["MOEXFN", "2024-12-30", "VTBR", "ВТБ ао", "VTBR", 14.94, 3, null],
+		["MOEXFN", "2024-12-30", "ZAYM", "Займер ао", "ZAYM", 0.48, 3, null]
+	]
+},
+"analytics.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE", "PREV_DATE", "NEXT_DATE"], 
+	"data": [
+		[0, 14, 20, "2024-12-28", "2025-01-03"]
+	]
+}}

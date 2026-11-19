@@ -1,0 +1,278 @@
+package ru.tinvest.trainer.marketdata.importer;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.io.IOException;
+import java.net.http.HttpClient;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.LocalDate;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
+import ru.tinvest.trainer.PostgresIntegrationTest;
+import ru.tinvest.trainer.marketdata.Snapshots;
+
+/**
+ * Импорт целиком: поддельные ISS и ЦБ, настоящие ClickHouse (Testcontainers) и PostgreSQL. Данные читаются теми же
+ * запросами, что и {@code core}.
+ */
+class ArchiveImporterTest extends PostgresIntegrationTest {
+
+    private static final GenericContainer<?> clickhouse = new GenericContainer<>(
+                    "clickhouse/clickhouse-server:25.8-alpine")
+            .withEnv("CLICKHOUSE_USER", "ttsc")
+            .withEnv("CLICKHOUSE_PASSWORD", "secret")
+            .withEnv("CLICKHOUSE_DB", "ttsc")
+            .withEnv("CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1")
+            .withExposedPorts(8123)
+            .waitingFor(Wait.forHttp("/ping").forPort(8123));
+
+    private static final LocalDate FROM = LocalDate.of(2024, 2, 28);
+    private static final LocalDate TO = LocalDate.of(2024, 3, 12);
+
+    @Autowired
+    private Snapshots snapshots;
+
+    private FakeIssServer server;
+    private ClickHouse ch;
+    private ArchiveImporter importer;
+
+    @BeforeAll
+    static void startClickHouse() {
+        clickhouse.start();
+    }
+
+    @BeforeEach
+    void setUp() throws IOException {
+        server = new FakeIssServer();
+        importer = importer(3);
+        ch = new ClickHouse(
+                HttpClient.newHttpClient(),
+                "http://" + clickhouse.getHost() + ":" + clickhouse.getMappedPort(8123),
+                "ttsc",
+                "ttsc",
+                "secret");
+    }
+
+    @AfterEach
+    void tearDown() {
+        server.close();
+    }
+
+    private ArchiveImporter importer(int maxRetries) {
+        HttpClient http = HttpClient.newHttpClient();
+        HttpFetcher fetcher =
+                new HttpFetcher(http, Duration.ZERO, maxRetries, Duration.ofMillis(1), Duration.ofMillis(1), d -> {});
+        ClickHouse chClient = new ClickHouse(
+                http,
+                "http://" + clickhouse.getHost() + ":" + clickhouse.getMappedPort(8123),
+                "ttsc",
+                "ttsc",
+                "secret");
+        return new ArchiveImporter(
+                new IssClient(fetcher, server.issUrl(), 2, FakeIssServer.PAGE),
+                new CbrRuonia(fetcher, server.cbrUrl(), 2),
+                new ClickHouseArchive(chClient),
+                snapshots,
+                Clock.systemUTC());
+    }
+
+    private ArchiveImporter.Params params() {
+        return new ArchiveImporter.Params(FROM, TO, java.util.List.of("SBER", "GAZP"), "test-" + UUID.randomUUID());
+    }
+
+    private String q(String sql) {
+        return ch.execute(sql + " FORMAT TSV").trim();
+    }
+
+    @Test
+    void loadsSnapshotReadableByCoreQueries() {
+        ArchiveImporter.Params p = params();
+        UUID id = p.snapshotId();
+
+        ArchiveImporter.Result r = importer.run(p);
+
+        assertThat(r.alreadyLoaded()).isFalse();
+        assertThat(r.snapshot().snapshotKey()).isEqualTo(id.toString());
+        assertThat(snapshots.findByKey(id.toString())).isPresent();
+        assertThat(r.snapshot().description()).contains("MOEX ISS", "GAZP,SBER", "2024-02-28…2024-03-12");
+        assertThat(q("SELECT count() FROM snapshots_ready WHERE snapshot_id = '" + id + "'"))
+                .isEqualTo("1");
+
+        // торговые дни 28.02–12.03: 8 будней по 3 минутные свечи на бумагу
+        long days = FakeIssServer.tradingDays().stream()
+                .filter(d -> !d.isBefore(FROM) && !d.isAfter(TO))
+                .count();
+        assertThat(days).isEqualTo(10);
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + id + "' AND interval_sec = 60"))
+                .isEqualTo(String.valueOf(2 * days * 3));
+        // INV-1: бар доступен в ts_open + интервал
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + id
+                        + "' AND available_at != ts_open + INTERVAL interval_sec SECOND"))
+                .isEqualTo("0");
+        // 10:00 МСК = 07:00 UTC; цена из ISS без искажений
+        assertThat(q(
+                        "SELECT toString(ts_open), toString(open), volume, toString(value) FROM candles WHERE snapshot_id = '"
+                                + id + "' AND secid = 'SBER' AND interval_sec = 60 ORDER BY ts_open LIMIT 1"))
+                .isEqualTo("2024-02-28 07:00:00.000\t292.1\t1000\t40851055.7");
+        // дневной ряд IMOEX для бенчмарка: интервал 1 сутки, начало 00:00 МСК = 21:00 UTC предыдущих суток
+        assertThat(q("SELECT toString(ts_open), toString(available_at) FROM candles WHERE snapshot_id = '" + id
+                        + "' AND secid = 'IMOEX' AND interval_sec = 86400 AND ts_open >= '2024-02-27 00:00:00' "
+                        + "ORDER BY ts_open LIMIT 1"))
+                .isEqualTo("2024-02-27 21:00:00.000\t2024-02-28 21:00:00.000");
+        // бумаги: лот, шаг цены, сектор; SBER в двух отраслевых индексах — берётся первый по коду индекса (MOEXFN);
+        // TINY (шаг < 1e-6) и GONE (нет на TQBR) не попали
+        assertThat(q("SELECT secid, sector, lot_size, toString(price_step) FROM securities WHERE snapshot_id = '" + id
+                        + "' ORDER BY secid"))
+                .isEqualTo("GAZP\tНефть и газ\t10\t0.01\nSBER\tФинансы\t1\t0.01");
+    }
+
+    @Test
+    void calendarMarksWeekendsAsNonTrading() {
+        ArchiveImporter.Params p = params();
+        importer.run(p);
+        UUID id = p.snapshotId();
+
+        assertThat(q("SELECT is_trading FROM trading_calendar WHERE snapshot_id = '" + id
+                        + "' AND date = '2024-03-02'"))
+                .isEqualTo("0");
+        assertThat(q("SELECT is_trading FROM trading_calendar WHERE snapshot_id = '" + id
+                        + "' AND date = '2024-03-04'"))
+                .isEqualTo("1");
+        // запас до from: ядру нужен торговый день перед первым днём шкалы
+        assertThat(q("SELECT min(date) FROM trading_calendar WHERE snapshot_id = '" + id + "'"))
+                .isEqualTo(FROM.minusDays(14).toString());
+    }
+
+    @Test
+    void ruoniaAndCorporateActionsAreStored() {
+        ArchiveImporter.Params p = params();
+        importer.run(p);
+        UUID id = p.snapshotId();
+
+        assertThat(q("SELECT toString(rate) FROM ruonia WHERE snapshot_id = '" + id + "' AND date = '2024-03-04'"))
+                .isEqualTo("20.04");
+        // только бумаги снапшота; GAZP 5 -> 1 — консолидация
+        assertThat(q("SELECT secid, toString(date), kind, before, after FROM corporate_actions WHERE snapshot_id = '"
+                        + id + "' ORDER BY secid"))
+                .isEqualTo("GAZP\t2024-03-05\tconsolidation\t5\t1\nSBER\t2024-02-28\tsplit\t1\t10");
+    }
+
+    @Test
+    void repeatedRunLeavesExistingSnapshotUntouched() {
+        ArchiveImporter.Params p = params();
+        importer.run(p);
+        UUID id = p.snapshotId();
+        String rows = q("SELECT count() FROM candles WHERE snapshot_id = '" + id + "'");
+        int requests = server.requests.size();
+
+        ArchiveImporter.Result again = importer.run(p);
+
+        assertThat(again.alreadyLoaded()).isTrue();
+        assertThat(server.requests).hasSize(requests);
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + id + "'"))
+                .isEqualTo(rows);
+        assertThat(q("SELECT count() FROM snapshots_ready WHERE snapshot_id = '" + id + "'"))
+                .isEqualTo("1");
+    }
+
+    @Test
+    void newLabelMakesNewSnapshotAndKeepsTheOld() {
+        ArchiveImporter.Params p = params();
+        UUID first = importer.run(p).snapshotId();
+        ArchiveImporter.Params other = new ArchiveImporter.Params(FROM, TO, p.tickers(), p.label() + "-2");
+
+        ArchiveImporter.Result r = importer.run(other);
+
+        assertThat(r.snapshotId()).isNotEqualTo(first);
+        assertThat(r.alreadyLoaded()).isFalse();
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + first + "' AND secid = 'SBER'"))
+                .isEqualTo(q(
+                        "SELECT count() FROM candles WHERE snapshot_id = '" + r.snapshotId() + "' AND secid = 'SBER'"));
+    }
+
+    @Test
+    void interruptedImportResumesWithoutDuplicatesOrRefetch() {
+        ArchiveImporter.Params p = params();
+        UUID id = p.snapshotId();
+        server.broken.add("/SBER/candles");
+
+        assertThatThrownBy(() -> importer(1).run(p)).isInstanceOf(ImportException.class);
+
+        assertThat(snapshots.findByKey(id.toString())).isEmpty();
+        assertThat(q("SELECT count() FROM snapshots_ready WHERE snapshot_id = '" + id + "'"))
+                .isEqualTo("0");
+        // бумаги грузятся по алфавиту: GAZP успел загрузиться целиком, SBER — ни одного куска
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + id + "' AND secid = 'GAZP'"))
+                .isEqualTo("30");
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + id + "' AND secid = 'SBER'"))
+                .isEqualTo("0");
+
+        server.broken.clear();
+        server.requests.clear();
+        ArchiveImporter.Result r = importer.run(p);
+
+        assertThat(r.alreadyLoaded()).isFalse();
+        // GAZP, IMOEX и список бумаг не запрашивались заново
+        assertThat(server.requestsContaining("/GAZP/candles")).isZero();
+        assertThat(server.requestsContaining("/IMOEX/candles")).isZero();
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + id + "' AND secid = 'SBER'"))
+                .isEqualTo("30");
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + id + "' AND secid = 'GAZP'"))
+                .isEqualTo("30");
+        assertThat(q("SELECT count() FROM securities WHERE snapshot_id = '" + id + "'"))
+                .isEqualTo("2");
+        assertThat(snapshots.findByKey(id.toString())).isPresent();
+    }
+
+    @Test
+    void snapshotReadyInClickHouseButMissingInPostgresIsOnlyRegistered() {
+        ArchiveImporter.Params p = params();
+        UUID id = p.snapshotId();
+        // обрыв между snapshots_ready и регистрацией в PostgreSQL
+        ClickHouseArchive archive = new ClickHouseArchive(ch);
+        archive.createSchema();
+        archive.markReady(id);
+
+        ArchiveImporter.Result r = importer.run(p);
+
+        assertThat(r.alreadyLoaded()).isFalse();
+        assertThat(snapshots.findByKey(id.toString())).isPresent();
+        assertThat(server.requests).isEmpty();
+    }
+
+    @Test
+    void emptyIssResponsesAreRetried() {
+        ArchiveImporter.Params p = params();
+        server.empties.put("/SBER/candles", new AtomicInteger(2));
+        server.failures.put("/GAZP/candles", new AtomicInteger(2));
+
+        importer.run(p);
+
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + p.snapshotId() + "' AND secid = 'SBER'"))
+                .isEqualTo("30");
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + p.snapshotId() + "' AND secid = 'GAZP'"))
+                .isEqualTo("30");
+    }
+
+    @Test
+    void poolWithoutTickersIsTakenFromImoexAndFilteredByPriceStep() {
+        ArchiveImporter.Params p =
+                new ArchiveImporter.Params(FROM, TO, java.util.List.of(), "pool-" + UUID.randomUUID());
+
+        importer.run(p);
+
+        // IMOEX в поддельном ISS: SBER, GAZP, TINY (шаг 1e-7 — пропуск), GONE (нет на TQBR — пропуск)
+        assertThat(q("SELECT groupArray(secid) FROM (SELECT secid FROM securities WHERE snapshot_id = '"
+                        + p.snapshotId() + "' ORDER BY secid)"))
+                .isEqualTo("['GAZP','SBER']");
+    }
+}

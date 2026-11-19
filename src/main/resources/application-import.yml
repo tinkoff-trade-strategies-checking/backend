@@ -1,0 +1,15 @@
+# Профиль импорта архива ISS -> ClickHouse (marketdata.importer): без веб-сервера, PostgreSQL — как в local.
+spring:
+  main:
+    web-application-type: none
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/trainer}
+    username: ${SPRING_DATASOURCE_USERNAME:trainer}
+    password: ${SPRING_DATASOURCE_PASSWORD:trainer}
+
+import:
+  clickhouse:
+    url: ${IMPORT_CLICKHOUSE_URL:http://localhost:8123}
+    database: ${IMPORT_CLICKHOUSE_DATABASE:ttsc}
+    user: ${IMPORT_CLICKHOUSE_USER:ttsc}
+    password: ${IMPORT_CLICKHOUSE_PASSWORD:}
