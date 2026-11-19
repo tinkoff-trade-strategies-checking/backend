@@ -331,7 +331,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
     }
 
     private static PlannedPaper planned(ArchivePaper p) {
-        return new PlannedPaper(Papers.id(p.secid()), p.secid(), p.sector(), p.lotSize(), p.priceStep());
+        return new PlannedPaper(Papers.id(p.secid()), p.secid(), p.sector(), p.lotSize(), p.priceStep(), p.name());
     }
 
     private static Regime regime(PeriodCategory category) {

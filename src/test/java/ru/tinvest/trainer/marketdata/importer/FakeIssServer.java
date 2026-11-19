@@ -221,12 +221,12 @@ final class FakeIssServer implements AutoCloseable {
 
     private String security(String secid) {
         String data = switch (secid) {
-            case "SBER" -> "[\"SBER\", 1, 0.01]";
-            case "GAZP" -> "[\"GAZP\", 10, 0.01]";
-            case "TINY" -> "[\"TINY\", 1, 0.0000001]";
+            case "SBER" -> "[\"SBER\", 1, 0.01, \"Сбербанк\", \"Сбербанк России ПАО ао\"]";
+            case "GAZP" -> "[\"GAZP\", 10, 0.01, null, \"Газпром ПАО ао\"]";
+            case "TINY" -> "[\"TINY\", 1, 0.0000001, \"Tiny\", \"Tiny\"]";
             default -> null;
         };
-        return "{\"securities\": {\"columns\": [\"SECID\", \"LOTSIZE\", \"MINSTEP\"], \"data\": ["
+        return "{\"securities\": {\"columns\": [\"SECID\", \"LOTSIZE\", \"MINSTEP\", \"SHORTNAME\", \"SECNAME\"], \"data\": ["
                 + (data == null ? "" : data) + "]}}";
     }
 

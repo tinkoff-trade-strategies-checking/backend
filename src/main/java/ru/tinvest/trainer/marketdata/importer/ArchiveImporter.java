@@ -312,12 +312,23 @@ public final class ArchiveImporter {
                         index.map(SECTOR_INDEXES::get).orElse("пустая строка"));
             }
             rows.add(new ClickHouseArchive.SecurityRow(
-                    secid, index.map(SECTOR_INDEXES::get).orElse(""), lot, step));
+                    secid, index.map(SECTOR_INDEXES::get).orElse(""), lot, step, name(info, r)));
         }
         if (rows.isEmpty()) {
             throw new ImportException("Ни одна бумага не прошла проверку, снапшот пуст");
         }
         archive.insertSecurities(id, rows);
+    }
+
+    /** Название бумаги: {@code SHORTNAME} («Сбербанк»), нет — {@code SECNAME}, нет обоих — пустая строка. */
+    private static String name(IssTable info, List<tools.jackson.databind.JsonNode> row) {
+        for (String column : List.of("SHORTNAME", "SECNAME")) {
+            tools.jackson.databind.JsonNode v = info.get(row, column);
+            if (v != null && !v.isNull() && !v.asString().isBlank()) {
+                return v.asString().trim();
+            }
+        }
+        return "";
     }
 
     /**

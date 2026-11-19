@@ -81,9 +81,9 @@ final class ClickHouseArchiveCatalog implements ArchiveCatalog {
     @Override
     public List<ArchivePaper> securities(String snapshotKey) {
         List<ArchivePaper> list = new ArrayList<>();
-        for (String[] r : rows("SELECT secid, sector, lot_size, price_step FROM securities WHERE snapshot_id = '"
+        for (String[] r : rows("SELECT secid, sector, lot_size, price_step, name FROM securities WHERE snapshot_id = '"
                 + uuid(snapshotKey) + "' ORDER BY secid")) {
-            list.add(new ArchivePaper(r[0], r[1], Long.parseLong(r[2]), new BigDecimal(r[3])));
+            list.add(new ArchivePaper(r[0], r[1], Long.parseLong(r[2]), new BigDecimal(r[3]), r[4]));
         }
         return list;
     }

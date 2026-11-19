@@ -14,7 +14,12 @@ import java.util.Set;
  */
 interface ArchiveCatalog {
 
-    record ArchivePaper(String secid, String sector, long lotSize, BigDecimal priceStep) {}
+    record ArchivePaper(String secid, String sector, long lotSize, BigDecimal priceStep, String name) {
+
+        public ArchivePaper(String secid, String sector, long lotSize, BigDecimal priceStep) {
+            this(secid, sector, lotSize, priceStep, "");
+        }
+    }
 
     /** Снапшот целиком загружен ({@code snapshots_ready}). */
     boolean isReady(String snapshotKey);

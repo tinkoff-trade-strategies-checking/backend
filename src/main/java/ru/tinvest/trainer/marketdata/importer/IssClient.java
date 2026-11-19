@@ -123,11 +123,11 @@ final class IssClient {
 
     record Listing(LocalDate from, LocalDate till) {}
 
-    /** Параметры акции на TQBR: лот и шаг цены; пустая таблица — бумаги нет на доске. */
+    /** Параметры акции на TQBR: лот, шаг цены, названия; пустая таблица — бумаги нет на доске. */
     IssTable securityInfo(String secid) {
         return page(
                 "/engines/stock/markets/shares/boards/TQBR/securities/" + secid,
-                Map.of("securities.columns", "SECID,LOTSIZE,MINSTEP"),
+                Map.of("securities.columns", "SECID,LOTSIZE,MINSTEP,SHORTNAME,SECNAME"),
                 "securities");
     }
 

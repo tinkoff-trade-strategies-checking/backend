@@ -136,9 +136,9 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         // бумаги: лот, шаг цены, сектор; SBER в двух отраслевых индексах — берётся индекс с наибольшим весом (MOEXOG:
         // 30,25 против 10,5);
         // TINY (шаг < 1e-6) и GONE (нет на TQBR) не попали
-        assertThat(q("SELECT secid, sector, lot_size, toString(price_step) FROM securities WHERE snapshot_id = '" + id
-                        + "' ORDER BY secid"))
-                .isEqualTo("GAZP\tНефть и газ\t10\t0.01\nSBER\tНефть и газ\t1\t0.01");
+        assertThat(q("SELECT secid, sector, lot_size, toString(price_step), name FROM securities WHERE snapshot_id = '"
+                        + id + "' ORDER BY secid"))
+                .isEqualTo("GAZP\tНефть и газ\t10\t0.01\tГазпром ПАО ао\nSBER\tНефть и газ\t1\t0.01\tСбербанк");
     }
 
     @Test

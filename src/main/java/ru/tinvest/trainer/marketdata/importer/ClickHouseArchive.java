@@ -41,8 +41,13 @@ final class ClickHouseArchive {
         ch.execute("CREATE DATABASE IF NOT EXISTS " + ch.database());
         ch.execute("CREATE TABLE IF NOT EXISTS snapshots_ready (snapshot_id UUID) ENGINE = MergeTree() "
                 + "ORDER BY snapshot_id");
-        ch.execute("CREATE TABLE IF NOT EXISTS securities (snapshot_id UUID, secid String, sector String, "
-                + "lot_size Int64, price_step Decimal(18, 6)) ENGINE = MergeTree() ORDER BY (snapshot_id, secid)");
+        ch.execute(
+                "CREATE TABLE IF NOT EXISTS securities (snapshot_id UUID, secid String, sector String, "
+                        + "lot_size Int64, price_step Decimal(18, 6), name String DEFAULT '') ENGINE = MergeTree() ORDER BY (snapshot_id, secid)");
+        // название бумаги добавлено после контракта core (core читает столбцы по именам); старые таблицы — ALTER
+        ch.execute("ALTER TABLE securities ADD COLUMN IF NOT EXISTS name String DEFAULT ''");
+        // название бумаги добавлено после контракта core (core читает столбцы по именам); старые таблицы — ALTER
+        ch.execute("ALTER TABLE securities ADD COLUMN IF NOT EXISTS name String DEFAULT ''");
         // Кодеки не меняют типы столбцов (контракт core), но сжимают минутные свечи в 2,4 раза (замер 19.11.2026)
         ch.execute("CREATE TABLE IF NOT EXISTS candles (snapshot_id UUID CODEC(ZSTD), secid LowCardinality(String), "
                 + "interval_sec UInt32 CODEC(ZSTD), ts_open DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD), "
@@ -118,9 +123,9 @@ final class ClickHouseArchive {
     void insertSecurities(UUID snapshot, List<SecurityRow> rows) {
         String values = rows.stream()
                 .map(r -> "(" + str(snapshot.toString()) + "," + str(r.secid()) + "," + str(r.sector()) + ","
-                        + r.lotSize() + "," + num(r.priceStep()) + ")")
+                        + r.lotSize() + "," + num(r.priceStep()) + "," + str(r.name()) + ")")
                 .collect(Collectors.joining(","));
-        ch.execute("INSERT INTO securities (snapshot_id, secid, sector, lot_size, price_step) VALUES " + values);
+        ch.execute("INSERT INTO securities (snapshot_id, secid, sector, lot_size, price_step, name) VALUES " + values);
     }
 
     List<String> secids(UUID snapshot) {
@@ -180,7 +185,7 @@ final class ClickHouseArchive {
     private static final Map<String, String> HASHED = new java.util.LinkedHashMap<>();
 
     static {
-        HASHED.put("securities", "secid, sector, lot_size, price_step");
+        HASHED.put("securities", "secid, sector, lot_size, price_step, name");
         HASHED.put("candles", "secid, interval_sec, ts_open, available_at, open, high, low, close, volume, value");
         HASHED.put("trading_calendar", "date, is_trading");
         HASHED.put("ruonia", "date, rate");
@@ -237,7 +242,7 @@ final class ClickHouseArchive {
         return parts;
     }
 
-    record SecurityRow(String secid, String sector, long lotSize, BigDecimal priceStep) {}
+    record SecurityRow(String secid, String sector, long lotSize, BigDecimal priceStep, String name) {}
 
     record ActionRow(String secid, LocalDate date, String kind, long before, long after) {}
 }

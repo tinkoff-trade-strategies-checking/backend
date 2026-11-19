@@ -65,9 +65,10 @@ class LaunchCatalogController {
 
     @GetMapping("/papers")
     List<LaunchPaper> papers() {
-        // названия бумаг в архиве нет (ISS грузится по тикерам), пока name = тикер
+        // название — SHORTNAME из ISS; нет в снапшоте (загружен без названий) — тикер
         return planner.papers(null).stream()
-                .map(p -> new LaunchPaper(p.id(), p.sector(), p.secid(), p.secid()))
+                .map(p ->
+                        new LaunchPaper(p.id(), p.sector(), p.secid(), p.name().isBlank() ? p.secid() : p.name()))
                 .toList();
     }
 
