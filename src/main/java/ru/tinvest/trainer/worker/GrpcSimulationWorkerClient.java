@@ -130,7 +130,10 @@ class GrpcSimulationWorkerClient implements SimulationWorkerClient {
                 .setIncludeReport(true)
                 .setBlind(false)
                 .build();
-        return call(() -> stub().replaySession(request)).getReport().getMetrics().getTradingDays();
+        return call(() -> stub().replaySession(request))
+                .getReport()
+                .getMetrics()
+                .getTradingDays();
     }
 
     @Override

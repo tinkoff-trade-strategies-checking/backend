@@ -213,7 +213,8 @@ final class FakeWorker implements SimulationWorkerClient {
                 full.fills(),
                 full.commandResults(),
                 full.warmupSteps(),
-                view);
+                view,
+                null);
         return new StepReplay(trimmed, new StepBars(bars, blindBars));
     }
 

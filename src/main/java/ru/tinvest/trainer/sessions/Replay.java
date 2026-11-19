@@ -85,8 +85,15 @@ class Replay {
             out.put("snapshot", snapshot);
             out.put("increment", null);
         } else {
+            ViewFormat.StepIndex index = new ViewFormat.StepIndex();
+            replay.history().forEach(b -> index.add(b.step(), b.tradingDay()));
+            index.build();
+            Map<String, Object> increment =
+                    OpenViews.stepResult(state, from, replay.history(), index.positions(), index.at(effective)[0]);
+            // воспроизведение: «завершено» — дошли до итогового шага, а не статус сессии
+            increment.put("finished", finished);
             out.put("snapshot", null);
-            out.put("increment", ReplayViews.increment(state, from, finished));
+            out.put("increment", increment);
         }
         return out;
     }
@@ -111,7 +118,12 @@ class Replay {
         TreeSet<Long> ids = new TreeSet<>();
         replay.orders().forEach(o -> ids.add(o.id()));
         replay.fills().forEach(f -> ids.add(f.orderId()));
-        return new ArenaState(session, replay, orderRefs.ensure(session.id(), ids), journals.seenSteps(session.id()));
+        return new ArenaState(
+                session,
+                replay,
+                orderRefs.ensure(session.id(), ids),
+                journals.seenSteps(session.id()),
+                PlayerStates.Row.DEFAULT);
     }
 
     /** Та же сессия с курсором на шаге воспроизведения: ответы строятся от {@code currentStep}, как у арены. */

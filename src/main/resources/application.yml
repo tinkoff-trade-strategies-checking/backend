@@ -36,6 +36,11 @@ lab:
     max-concurrent-ticks: 8
     max-concurrent-sends: 256
 
+analysis:
+  report-build:
+    threads: ${REPORT_BUILD_THREADS:2}
+    queue: ${REPORT_BUILD_QUEUE:100}
+
 worker:
   address: ${WORKER_ADDRESS:localhost:50051}
   deadline: ${WORKER_DEADLINE:5s}

@@ -219,6 +219,11 @@ public final class ViewFormat {
             return index;
         }
 
+        /** Позиции шагов {@code шаг -> [день, свеча в дне]} для {@link #of}. */
+        Map<Long, int[]> positions() {
+            return java.util.Collections.unmodifiableMap(byStep);
+        }
+
         /** Добавляет шаг с бара; порядок добавления не важен, нумерацию считает {@link #build()}. */
         public void add(long step, int tradingDay) {
             days.put(step, tradingDay);

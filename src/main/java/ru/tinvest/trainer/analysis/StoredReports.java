@@ -49,14 +49,20 @@ class StoredReports {
         return out;
     }
 
-    /** Сохраняет отчёт; уже сохранённый не меняется (параллельная сборка, повтор события). */
-    void insert(UUID sessionId, Object report, int playedDays, String netReturnPct) {
-        jdbc.sql("INSERT INTO analysis.session_report (session_id, report, played_days, net_return_pct) "
-                        + "VALUES (:id, CAST(:report AS jsonb), :days, :net) ON CONFLICT (session_id) DO NOTHING")
-                .param("id", sessionId)
-                .param("report", json.writeValueAsString(report))
-                .param("days", playedDays)
-                .param("net", netReturnPct)
-                .update();
+    /**
+     * Сохраняет отчёт; уже сохранённый не меняется (параллельная сборка, повтор события).
+     *
+     * @return {@code true}, если отчёт записан сейчас, {@code false} — он уже был
+     */
+    boolean insert(UUID sessionId, Object report, int playedDays, String netReturnPct) {
+        return jdbc.sql(
+                                "INSERT INTO analysis.session_report (session_id, report, played_days, net_return_pct) "
+                                        + "VALUES (:id, CAST(:report AS jsonb), :days, :net) ON CONFLICT (session_id) DO NOTHING")
+                        .param("id", sessionId)
+                        .param("report", json.writeValueAsString(report))
+                        .param("days", playedDays)
+                        .param("net", netReturnPct)
+                        .update()
+                > 0;
     }
 }

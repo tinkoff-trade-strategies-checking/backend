@@ -483,6 +483,13 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
 
         assertThat(storedReports(id)).isEqualTo(1);
         assertThat(worker.reportRequests).hasSize(1);
+        // отчёт объявлен один раз: report_ready в потоке событий
+        assertThat(jdbc.sql(
+                                "SELECT count(*) FROM sessions.session_event WHERE session_id = :id AND type = 'report_ready'")
+                        .param("id", id)
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(1);
         // повтор сборки и события ничего не меняет: отчёт неизменяем (INV-5)
         assertThat(builder.buildAndStore(id)).isTrue();
         assertThat(worker.reportRequests).hasSize(1);
