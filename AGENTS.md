@@ -194,7 +194,7 @@ curl -i http://localhost:8080/api/v1/me     # 401 и cookie XSRF-TOKEN; вход
 bash deploy/dev-down.sh
 ```
 
-Фронтенд: в `frontend` пока нет `proxy.conf` и общей настройки базового URL API (frontend#8). Чтобы открыть UI на стенде, нужен прокси `ng serve` на backend: файл `proxy.conf.json` `{"/api": {"target": "http://localhost:8080", "secure": false}}` и `npx ng serve --proxy-config proxy.conf.json`; страницы идут с `http://localhost:4200`, запросы `/api/v1/...` — на тот же origin, поэтому CORS не нужен. Cookie сессии на стенде без `Secure` (`SERVER_SERVLET_SESSION_COOKIE_SECURE=false`). Профиль `create-user` после работы не завершает JVM, скрипт ждёт строку об успехе и останавливает процесс сам.
+Фронтенд: в `frontend` пока нет `proxy.conf` и общей настройки базового URL API (frontend#8). Чтобы открыть UI на стенде, нужен прокси `ng serve` на backend: файл `proxy.conf.json` `{"/api": {"target": "http://localhost:8080", "secure": false}}` и `npx ng serve --proxy-config proxy.conf.json`; страницы идут с `http://localhost:4200`, запросы `/api/v1/...` — на тот же origin, поэтому CORS не нужен. Cookie сессии на стенде без `Secure` (`SERVER_SERVLET_SESSION_COOKIE_SECURE=false`).
 
 ## Окружение
 Локальный стек в `deploy/`: `caddy` (HTTPS, единственный с опубликованными портами 80/443, INV-10) → `backend`; внутри сети `postgres` (17), `clickhouse` (25.8) и `worker` (образ `simulation-worker`, собирается из `../core` по его `Dockerfile`).

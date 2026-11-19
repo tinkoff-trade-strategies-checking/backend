@@ -114,17 +114,8 @@ export MARKETDATA_POOL=SBER,GAZP,LKOH
 export SERVER_SERVLET_SESSION_COOKIE_SECURE=false
 export SERVER_PORT="$PORT"
 
-# пользователь (профиль create-user заодно применяет миграции). JVM профиля после работы не завершается
-# (остаются потоки), поэтому ждём строку об успехе в логе и останавливаем процесс сами
-USER_PASSWORD="$DEV_USER_PASSWORD" "$JAVA" -jar "$JAR"   --spring.profiles.active=create-user --user.email="$DEV_USER_EMAIL" >"$DEV/create-user.log" 2>&1 &
-CU_PID=$!
-for _ in $(seq 1 90); do
-  grep -q 'Пользователь создан' "$DEV/create-user.log" 2>/dev/null && break
-  kill -0 "$CU_PID" 2>/dev/null || break
-  sleep 1
-done
-kill "$CU_PID" 2>/dev/null || true
-grep -q 'Пользователь создан' "$DEV/create-user.log" || { echo "create-user не удался, см. deploy/.dev/create-user.log" >&2; exit 1; }
+# пользователь (профиль create-user заодно применяет миграции); процесс завершается сам
+USER_PASSWORD="$DEV_USER_PASSWORD" "$JAVA" -jar "$JAR"   --spring.profiles.active=create-user --user.email="$DEV_USER_EMAIL" >"$DEV/create-user.log" 2>&1   || { echo "create-user не удался, см. deploy/.dev/create-user.log" >&2; exit 1; }
 
 # снапшот готов в ClickHouse; приложению он известен по строке в PostgreSQL
 docker exec "$PG" psql -U trainer -d trainer -q -c \
