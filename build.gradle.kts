@@ -40,7 +40,8 @@ dependencies {
     implementation(libs.grpc.protobuf)
     implementation(libs.grpc.stub)
     runtimeOnly(libs.grpc.netty.shaded)
-    compileOnly("org.apache.tomcat:annotations-api:6.0.53")
+    // javax.annotation.Generated для grpc-стабов (рекомендация grpc-java для Java 9+)
+    compileOnly(libs.tomcat.annotations.api)
 
     errorprone(libs.errorprone.core)
 
@@ -73,6 +74,7 @@ spotless {
         removeUnusedImports()
         trimTrailingWhitespace()
         endWithNewline()
+        targetExclude("build/**", "**/build/generated/**")
     }
 }
 
@@ -81,6 +83,8 @@ tasks.withType<JavaCompile>().configureEach {
     options.compilerArgs.add("-parameters")
     options.errorprone {
         disableWarningsInGeneratedCode.set(true)
+        // protoc не ставит @Generated на сообщения — исключаем по пути
+        excludedPaths.set(".*/build/generated/.*")
     }
 }
 

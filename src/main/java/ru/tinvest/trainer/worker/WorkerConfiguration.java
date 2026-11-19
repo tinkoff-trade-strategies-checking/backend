@@ -13,6 +13,7 @@ class WorkerConfiguration {
     @Bean(destroyMethod = "shutdownNow")
     ManagedChannel workerChannel(WorkerProperties properties) {
         return ManagedChannelBuilder.forTarget(properties.address())
+                // внутренняя сеть, TLS вне скоупа
                 .usePlaintext()
                 .build();
     }

@@ -6,6 +6,6 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /** Настройки подключения к Simulation Worker: адрес {@code host:port} и дедлайн одного вызова. */
 @ConfigurationProperties("worker")
-public record WorkerProperties(
+record WorkerProperties(
         @DefaultValue("localhost:50051") String address,
         @DefaultValue("5s") Duration deadline) {}
