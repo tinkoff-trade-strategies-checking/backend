@@ -39,6 +39,25 @@ jobs:
       - name: Сборка, ErrorProne и тесты
         run: ./gradlew build -x spotlessCheck --no-daemon
 
+  # Копия proto должна совпадать с core/proto на main (контракт gRPC, backend#9).
+  proto-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Сверка proto с core
+        run: |
+          base=https://raw.githubusercontent.com/tinkoff-trade-strategies-checking/core/main/proto
+          status=0
+          for f in simulation.proto common.proto; do
+            curl -fsSL "$base/$f" -o "/tmp/$f"
+            if ! diff -u "/tmp/$f" "proto/$f"; then
+              echo "::error file=proto/$f::копия отличается от core/proto/$f на main"
+              status=1
+            fi
+          done
+          exit $status
+
   # Размер PR в режиме наблюдения: не падает, только предупреждение (home#29).
   pr-size:
     if: github.event_name == 'pull_request'

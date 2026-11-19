@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.spring.dependency.management)
     alias(libs.plugins.spotless)
     alias(libs.plugins.errorprone)
+    alias(libs.plugins.protobuf)
 }
 
 group = "ru.tinvest.trainer"
@@ -35,9 +36,16 @@ dependencies {
     implementation(libs.spring.modulith.starter.core)
     implementation(libs.flyway.database.postgresql)
     runtimeOnly(libs.postgresql)
+    implementation(libs.protobuf.java)
+    implementation(libs.grpc.protobuf)
+    implementation(libs.grpc.stub)
+    runtimeOnly(libs.grpc.netty.shaded)
+    // javax.annotation.Generated для grpc-стабов (рекомендация grpc-java для Java 9+)
+    compileOnly(libs.tomcat.annotations.api)
 
     errorprone(libs.errorprone.core)
 
+    testImplementation(libs.grpc.inprocess)
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.spring.boot.starter.webmvc.test)
     testImplementation(libs.spring.boot.testcontainers)
@@ -47,12 +55,26 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
+protobuf {
+    protoc { artifact = libs.protobuf.protoc.get().toString() }
+    plugins {
+        create("grpc") { artifact = "${libs.grpc.protoc.gen.get()}:${osdetector.classifier}@exe" }
+    }
+}
+
+sourceSets {
+    main {
+        proto { srcDir("proto") }
+    }
+}
+
 spotless {
     java {
         palantirJavaFormat(libs.versions.palantirJavaFormat.get())
         removeUnusedImports()
         trimTrailingWhitespace()
         endWithNewline()
+        targetExclude("build/**", "**/build/generated/**")
     }
 }
 
@@ -61,6 +83,8 @@ tasks.withType<JavaCompile>().configureEach {
     options.compilerArgs.add("-parameters")
     options.errorprone {
         disableWarningsInGeneratedCode.set(true)
+        // protoc не ставит @Generated на сообщения — исключаем по пути
+        excludedPaths.set(".*/build/generated/.*")
     }
 }
 

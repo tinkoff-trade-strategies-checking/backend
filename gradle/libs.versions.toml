@@ -6,6 +6,10 @@ spotless = "8.9.0"
 palantirJavaFormat = "2.103.0"
 errorpronePlugin = "5.2.0"
 errorproneCore = "2.53.0"
+protobuf = "4.36.2"
+protobufPlugin = "0.10.1"
+grpc = "1.85.1"
+tomcatAnnotations = "6.0.53"
 
 [libraries]
 spring-boot-starter-webmvc = { module = "org.springframework.boot:spring-boot-starter-webmvc" }
@@ -24,6 +28,15 @@ testcontainers-junit-jupiter = { module = "org.testcontainers:testcontainers-jun
 testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+protobuf-protoc = { module = "com.google.protobuf:protoc", version.ref = "protobuf" }
+grpc-protobuf = { module = "io.grpc:grpc-protobuf", version.ref = "grpc" }
+grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpc" }
+grpc-netty-shaded = { module = "io.grpc:grpc-netty-shaded", version.ref = "grpc" }
+grpc-inprocess = { module = "io.grpc:grpc-inprocess", version.ref = "grpc" }
+grpc-protoc-gen = { module = "io.grpc:protoc-gen-grpc-java", version.ref = "grpc" }
+tomcat-annotations-api = { module = "org.apache.tomcat:annotations-api", version.ref = "tomcatAnnotations" }
+
 errorprone-core = { module = "com.google.errorprone:error_prone_core", version.ref = "errorproneCore" }
 
 [plugins]
@@ -31,3 +44,4 @@ spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }
 spring-dependency-management = { id = "io.spring.dependency-management", version.ref = "springDependencyManagement" }
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
 errorprone = { id = "net.ltgt.errorprone", version.ref = "errorpronePlugin" }
+protobuf = { id = "com.google.protobuf", version.ref = "protobufPlugin" }
