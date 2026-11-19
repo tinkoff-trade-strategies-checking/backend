@@ -1,0 +1,247 @@
+package ru.tinvest.trainer.worker;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+import org.jspecify.annotations.Nullable;
+
+/**
+ * Типы обмена с Simulation Worker: Java-записи вместо protobuf-сообщений ({@code proto/simulation.proto}). Деньги, цены и
+ * проценты — {@link BigDecimal} из {@code Decimal} ядра (INV-6). Слепые (Blind*) данные уже без реальных меток и тикеров
+ * (INV-7); их к клиенту отдаёт только {@code sessions.BlindMasking}.
+ */
+public final class WorkerTypes {
+
+    private WorkerTypes() {}
+
+    public enum TradeSide {
+        BUY,
+        SELL
+    }
+
+    public enum OrderKind {
+        MARKET,
+        LIMIT,
+        STOP,
+        STOP_LIMIT,
+        TAKE_PROFIT,
+        TRAILING_STOP
+    }
+
+    public enum Tif {
+        DAY,
+        GTC
+    }
+
+    public enum OrderPhase {
+        ACTIVE,
+        PARTIALLY_FILLED,
+        FILLED,
+        CANCELLED,
+        EXPIRED,
+        REJECTED
+    }
+
+    /** Причина отказа или снятия заявки ({@code enum Reason}). */
+    public enum RejectCode {
+        INVALID_PARAMS,
+        INSUFFICIENT_CASH,
+        INSUFFICIENT_POSITION,
+        SESSION_NOT_ACTIVE,
+        ORDER_NOT_ACTIVE,
+        LIQUIDITY_LIMIT,
+        OCO_SIBLING_FILLED,
+        REPLACED,
+        SESSION_END,
+        CANCELLED_BY_USER,
+        DAY_EXPIRED
+    }
+
+    public enum RunState {
+        RUNNING,
+        FINISHED_END,
+        BANKRUPT
+    }
+
+    public enum BarInterval {
+        M1,
+        M5,
+        M10,
+        M15,
+        H1,
+        D1
+    }
+
+    /** Бумага сессии ({@code Instrument}); {@code key} — ключ в сессии. */
+    public record Paper(String key, String ticker, long lotSize, BigDecimal priceStep) {}
+
+    /** Издержки исполнения ({@code CostConfig}). */
+    public record Costs(
+            BigDecimal commissionRate,
+            BigDecimal exchangeFeeRate,
+            BigDecimal spread,
+            BigDecimal slippageKappa,
+            BigDecimal liquidityShare) {}
+
+    /** Условия сессии ({@code MarketSpec}). */
+    public record Market(
+            String snapshotId,
+            List<Paper> papers,
+            BarInterval interval,
+            LocalDate fromDate,
+            LocalDate toDate,
+            Costs costs,
+            BigDecimal initialCash,
+            String benchmarkTicker,
+            int warmupBars) {}
+
+    /**
+     * Заявка ({@code OrderSpec}). {@code blindPrice} — цены заданы в слепой шкале; допустимо только в оценке, журнал
+     * хранит рубли.
+     */
+    public record OrderParams(
+            String paperKey,
+            TradeSide side,
+            OrderKind kind,
+            long lots,
+            @Nullable BigDecimal limitPrice,
+            @Nullable BigDecimal stopPrice,
+            @Nullable BigDecimal trailingPercent,
+            Tif tif,
+            boolean blindPrice) {}
+
+    /** Команда журнала ({@code JournalEntry.command}). */
+    public sealed interface Command {
+
+        /** Подача; {@code ocoWith} — вторая нога OCO или {@code null}. */
+        record Place(OrderParams order, @Nullable OrderParams ocoWith) implements Command {}
+
+        record Cancel(long orderId) implements Command {}
+
+        record Replace(long orderId, Place replacement) implements Command {}
+    }
+
+    /** Запись журнала: {@code step} — шаг курсора на момент приёма, действует с {@code step + 1} (INV-2). */
+    public record JournalRecord(long seq, long step, Command command) {}
+
+    public record OrderState(
+            long id,
+            OrderParams spec,
+            long placedStep,
+            OrderPhase phase,
+            @Nullable RejectCode reason,
+            String invalidField,
+            long filledLots,
+            long ocoSiblingId,
+            @Nullable BigDecimal trailingStopLevel,
+            long closedStep) {}
+
+    public record FillState(
+            long orderId,
+            long step,
+            String paperKey,
+            TradeSide side,
+            long lots,
+            BigDecimal price,
+            BigDecimal value,
+            BigDecimal commission,
+            BigDecimal exchangeFee,
+            BigDecimal spreadCost,
+            BigDecimal slippageCost,
+            boolean stopAndTakeSameBar) {}
+
+    public record PositionState(String paperKey, long lots, BigDecimal avgPrice, BigDecimal marketValue) {}
+
+    public record PortfolioState(BigDecimal cash, BigDecimal equity, List<PositionState> positions) {}
+
+    public record BarData(
+            long step,
+            String paperKey,
+            long timeUnixMs,
+            int tradingDay,
+            BigDecimal open,
+            BigDecimal high,
+            BigDecimal low,
+            BigDecimal close,
+            long volumeLots,
+            boolean afterHalt) {}
+
+    public record CommandOutcome(
+            long seq, boolean accepted, @Nullable RejectCode reason, String invalidField, List<Long> orderIds) {}
+
+    public record BlindPaperData(int index, @Nullable BigDecimal lotValueAtStart) {}
+
+    public record BlindBarData(
+            long step,
+            int index,
+            int tradingDay,
+            BigDecimal open,
+            BigDecimal high,
+            BigDecimal low,
+            BigDecimal close,
+            BigDecimal volumeRel,
+            boolean afterHalt) {}
+
+    public record BlindPositionData(int index, long lots, BigDecimal avgPrice, BigDecimal marketValuePct) {}
+
+    public record BlindPortfolioData(
+            BigDecimal cashPct, BigDecimal equityPct, BigDecimal pnlPct, List<BlindPositionData> positions) {}
+
+    public record BlindOrderData(
+            long id,
+            int index,
+            @Nullable BigDecimal limitPrice,
+            @Nullable BigDecimal stopPrice,
+            @Nullable BigDecimal trailingStopLevel) {}
+
+    public record BlindFillData(
+            long orderId,
+            long step,
+            int index,
+            TradeSide side,
+            long lots,
+            BigDecimal price,
+            BigDecimal valuePct,
+            BigDecimal commissionPct,
+            BigDecimal exchangeFeePct,
+            BigDecimal spreadCostPct,
+            BigDecimal slippageCostPct,
+            boolean stopAndTakeSameBar) {}
+
+    /** Слепой вид сессии ({@code BlindSessionView}): индексы бумаг вместо ключей, проценты вместо рублей. */
+    public record BlindViewData(
+            List<BlindPaperData> papers,
+            List<BlindBarData> history,
+            BlindPortfolioData portfolio,
+            List<BlindOrderData> orders,
+            List<BlindFillData> fills) {}
+
+    /** Результат воспроизведения журнала ({@code ReplaySessionResponse}). */
+    public record ReplayResult(
+            long totalSteps,
+            RunState state,
+            long lastStep,
+            List<BarData> history,
+            PortfolioState portfolio,
+            List<OrderState> orders,
+            List<FillState> fills,
+            List<CommandOutcome> commandResults,
+            long warmupSteps,
+            @Nullable BlindViewData blindView) {}
+
+    /** Оценка заявки ({@code EstimateOrderResponse}); {@code resolvedOrder} — рублёвая заявка для журнала. */
+    public record EstimateResult(
+            boolean canPlace,
+            @Nullable RejectCode reason,
+            String invalidField,
+            BigDecimal referencePrice,
+            BigDecimal amount,
+            BigDecimal commission,
+            BigDecimal exchangeFee,
+            BigDecimal requiredCash,
+            BigDecimal amountPct,
+            BigDecimal commissionPct,
+            BigDecimal exchangeFeePct,
+            BigDecimal requiredCashPct,
+            @Nullable OrderParams resolvedOrder) {}
+}

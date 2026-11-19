@@ -12,9 +12,16 @@ import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 import pac.simulation.v1.ClassifyPeriodsRequest;
 import pac.simulation.v1.ClassifyPeriodsResponse;
+import pac.simulation.v1.EstimateOrderRequest;
 import pac.simulation.v1.PingRequest;
+import pac.simulation.v1.ReplaySessionRequest;
 import pac.simulation.v1.SimulationWorkerGrpc;
 import ru.tinvest.trainer.api.DependencyUnavailableException;
+import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
+import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
+import ru.tinvest.trainer.worker.WorkerTypes.Market;
+import ru.tinvest.trainer.worker.WorkerTypes.OrderParams;
+import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
 
 /** Реализация {@link SimulationWorkerClient} на {@link ManagedChannel}. */
 class GrpcSimulationWorkerClient implements SimulationWorkerClient {
@@ -63,6 +70,33 @@ class GrpcSimulationWorkerClient implements SimulationWorkerClient {
                     category(w.getCategory())));
         }
         return new PeriodClassification(windows, response.getP33(), response.getP80());
+    }
+
+    @Override
+    public ReplayResult replaySession(
+            Market market, List<JournalRecord> journal, long upToStep, boolean includeHistory, boolean blind) {
+        ReplaySessionRequest request = ReplaySessionRequest.newBuilder()
+                .setMarket(WorkerMapper.market(market))
+                .addAllJournal(WorkerMapper.journal(journal))
+                .setUpToStep(upToStep)
+                // события шагов не нужны: снимок собирается из истории и состояния на курсоре
+                .setEventsFromStep(-1)
+                .setIncludeHistory(includeHistory)
+                .setIncludeReport(false)
+                .setBlind(blind)
+                .build();
+        return WorkerMapper.replay(call(() -> stub().replaySession(request)));
+    }
+
+    @Override
+    public EstimateResult estimateOrder(Market market, List<JournalRecord> journal, long upToStep, OrderParams order) {
+        EstimateOrderRequest request = EstimateOrderRequest.newBuilder()
+                .setMarket(WorkerMapper.market(market))
+                .addAllJournal(WorkerMapper.journal(journal))
+                .setUpToStep(upToStep)
+                .setOrder(WorkerMapper.spec(order))
+                .build();
+        return WorkerMapper.estimate(call(() -> stub().estimateOrder(request)));
     }
 
     private static PeriodCategory category(pac.simulation.v1.PeriodCategory c) {

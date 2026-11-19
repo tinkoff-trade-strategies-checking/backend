@@ -34,6 +34,7 @@ public record SessionRecord(
         double p80,
         BigDecimal initialCapital,
         OffsetDateTime createdAt,
+        long currentStep,
         List<PaperRecord> papers) {
 
     public SessionRecord {

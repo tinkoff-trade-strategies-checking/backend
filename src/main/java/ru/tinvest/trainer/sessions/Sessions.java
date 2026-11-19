@@ -103,14 +103,26 @@ public class Sessions {
      * @throws NotFoundException сессии нет или она чужая (не различаются)
      */
     public SessionRecord requireOwned(UUID sessionId) {
+        return requireOwned(sessionId, false);
+    }
+
+    /**
+     * Сессия текущего пользователя с блокировкой строки до конца транзакции: команды одной сессии (запись в журнал)
+     * выполняются по очереди. Вызывать внутри транзакции.
+     */
+    SessionRecord requireOwnedForUpdate(UUID sessionId) {
+        return requireOwned(sessionId, true);
+    }
+
+    private SessionRecord requireOwned(UUID sessionId, boolean lock) {
         UUID userId = currentUser.requireId();
-        return find(sessionId)
+        return find(sessionId, lock)
                 .filter(s -> s.userId().equals(userId))
                 .orElseThrow(() -> new NotFoundException("Session not found"));
     }
 
-    private Optional<SessionRecord> find(UUID sessionId) {
-        return jdbc.sql("SELECT * FROM sessions.session WHERE id = :id")
+    private Optional<SessionRecord> find(UUID sessionId, boolean lock) {
+        return jdbc.sql("SELECT * FROM sessions.session WHERE id = :id" + (lock ? " FOR UPDATE" : ""))
                 .param("id", sessionId)
                 .query((rs, n) -> new SessionRecord(
                         rs.getObject("id", UUID.class),
@@ -132,6 +144,7 @@ public class Sessions {
                         rs.getDouble("p80"),
                         rs.getObject("initial_capital", BigDecimal.class),
                         rs.getObject("created_at", OffsetDateTime.class),
+                        rs.getLong("current_step"),
                         papers(sessionId)))
                 .optional();
     }

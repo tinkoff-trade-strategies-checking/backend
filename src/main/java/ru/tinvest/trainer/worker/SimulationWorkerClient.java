@@ -1,7 +1,13 @@
 package ru.tinvest.trainer.worker;
 
 import java.time.LocalDate;
+import java.util.List;
 import org.jspecify.annotations.Nullable;
+import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
+import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
+import ru.tinvest.trainer.worker.WorkerTypes.Market;
+import ru.tinvest.trainer.worker.WorkerTypes.OrderParams;
+import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
 
 /** Клиент Simulation Worker по gRPC. Единственная точка обращения других модулей к воркеру. */
 public interface SimulationWorkerClient {
@@ -28,4 +34,26 @@ public interface SimulationWorkerClient {
      */
     PeriodClassification classifyPeriods(
             String snapshotKey, int windowLength, LocalDate from, LocalDate to, @Nullable LocalDate startDate);
+
+    /**
+     * Воспроизводит журнал команд до курсора (INV-8): воркер без состояния, журнал передаётся целиком на каждый вызов.
+     *
+     * @param includeHistory вернуть все бары шагов от прогрева до {@code upToStep}
+     * @param blind добавить слепой вид ({@code blindView}); рублёвые поля остаются в ответе и клиенту не уходят
+     * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
+     */
+    default ReplayResult replaySession(
+            Market market, List<JournalRecord> journal, long upToStep, boolean includeHistory, boolean blind) {
+        throw new UnsupportedOperationException("replaySession не поддержан этой реализацией");
+    }
+
+    /**
+     * Оценивает заявку по {@code close} последнего бара до курсора, журнал не меняет (INV-8). Для слепых цен
+     * ({@code OrderParams.blindPrice}) возвращает рублёвую заявку {@code resolvedOrder}.
+     *
+     * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
+     */
+    default EstimateResult estimateOrder(Market market, List<JournalRecord> journal, long upToStep, OrderParams order) {
+        throw new UnsupportedOperationException("estimateOrder не поддержан этой реализацией");
+    }
 }
