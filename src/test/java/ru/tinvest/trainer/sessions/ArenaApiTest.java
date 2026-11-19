@@ -255,6 +255,13 @@ class ArenaApiTest extends PostgresIntegrationTest {
         jdbc.sql("UPDATE sessions.session SET status = 'completed' WHERE id = :id")
                 .param("id", blind)
                 .update();
+        // снимок арены завершённой слепой сессии раскрыт, как воспроизведение и отчёт
+        JsonNode arenaSnapshot = body(httpGet(blind, ""));
+        assertThat(arenaSnapshot.get("mode").asString()).isEqualTo("OPEN");
+        for (JsonNode paper : arenaSnapshot.get("papers")) {
+            assertThat(paper.get("name").asString())
+                    .isEqualTo(expected.get(paper.get("ticker").asString()));
+        }
         JsonNode revealed = body(httpGet(blind, "/replay?step=1")).get("snapshot");
         assertThat(revealed.get("mode").asString()).isEqualTo("OPEN");
         for (JsonNode paper : revealed.get("papers")) {
