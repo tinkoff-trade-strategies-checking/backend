@@ -62,6 +62,14 @@ final class ClickHouseArchive {
                 + "kind String, before Int64, after Int64) ENGINE = MergeTree() ORDER BY (snapshot_id, secid, date)");
     }
 
+    /** Удаляет строки снапшота из всех таблиц архива строго по его идентификатору. */
+    void deleteSnapshot(UUID snapshot) {
+        for (String table : List.of(
+                "snapshots_ready", "securities", "candles", "trading_calendar", "ruonia", "corporate_actions")) {
+            ch.execute("DELETE FROM " + table + " WHERE snapshot_id = '" + snapshot + "'");
+        }
+    }
+
     boolean isReady(UUID snapshot) {
         return ch.count("SELECT count() FROM snapshots_ready WHERE snapshot_id = '" + snapshot + "'") > 0;
     }

@@ -78,10 +78,15 @@ public final class ArchiveImporter {
      * в какие-то торговые дни (например, торги бумагой приостанавливали) или календарь IMOEX подозрительно редок
      * (остановка торгов на бирже); и то и другое попадёт в лог и {@code description}.
      */
-    public record Params(LocalDate from, LocalDate to, List<String> tickers, String label, boolean allowGaps) {
+    public record Params(
+            LocalDate from, LocalDate to, List<String> tickers, String label, boolean allowGaps, boolean dropLegacy) {
 
         public Params(LocalDate from, LocalDate to, List<String> tickers, String label) {
-            this(from, to, tickers, label, false);
+            this(from, to, tickers, label, false, false);
+        }
+
+        public Params(LocalDate from, LocalDate to, List<String> tickers, String label, boolean allowGaps) {
+            this(from, to, tickers, label, allowGaps, false);
         }
 
         public Params {
@@ -172,15 +177,24 @@ public final class ArchiveImporter {
     /**
      * Загрузка с теми же параметрами по схеме версии {@value #LEGACY_SCHEMA_VERSION} (сектор «первый по коду», нет
      * названий) имеет другой идентификатор, поэтому новый код начал бы новую загрузку с нуля, а недокачанные данные
-     * старой остались бы в ClickHouse. Чтобы это не прошло молча, запуск прекращается: старую загрузку нужно удалить.
+     * старой остались бы в ClickHouse. Чтобы это не прошло молча, запуск прекращается; с {@code dropLegacy}
+     * ({@code --import.drop-legacy=true}) строки недогруженного снапшота старой версии удаляются строго по его id и
+     * загрузка идёт заново.
      */
     private void rejectLegacyLoad(Params p) {
         UUID legacy = p.snapshotId(LEGACY_SCHEMA_VERSION);
         if (snapshots.findByKey(legacy.toString()).isEmpty() && archive.countRows("securities", legacy) > 0) {
-            throw new ImportException("В ClickHouse есть недогруженный снапшот " + legacy + " по схеме версии "
-                    + LEGACY_SCHEMA_VERSION + ": сектор и названия там считаются по старым правилам, докачать его"
-                    + " нельзя. Удалите его строки (DELETE … WHERE snapshot_id = '" + legacy + "' во всех таблицах"
-                    + " архива) и запустите импорт заново: новый снапшот грузится с нуля");
+            if (!p.dropLegacy()) {
+                throw new ImportException("В ClickHouse есть недогруженный снапшот " + legacy + " по схеме версии "
+                        + LEGACY_SCHEMA_VERSION + ": сектор и названия там считаются по старым правилам, докачать"
+                        + " его нельзя. Перезапустите с --import.drop-legacy=true: строки этого снапшота (и только"
+                        + " его) будут удалены из всех таблиц архива, загрузка пойдёт с нуля");
+            }
+            log.warn(
+                    "--import.drop-legacy: удаляю недогруженный снапшот {} схемы версии {}",
+                    legacy,
+                    LEGACY_SCHEMA_VERSION);
+            archive.deleteSnapshot(legacy);
         }
     }
 

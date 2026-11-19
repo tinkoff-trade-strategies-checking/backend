@@ -256,9 +256,41 @@ class ArchiveImporterTest extends PostgresIntegrationTest {
         assertThatThrownBy(() -> importer.run(p))
                 .isInstanceOf(ImportException.class)
                 .hasMessageContaining("недогруженный снапшот")
+                .hasMessageContaining("--import.drop-legacy=true")
                 .hasMessageContaining(
                         p.snapshotId(ArchiveImporter.LEGACY_SCHEMA_VERSION).toString());
         assertThat(snapshots.findByKey(p.snapshotId().toString())).isEmpty();
+    }
+
+    @Test
+    void dropLegacyRemovesOnlyTheLegacySnapshotAndLoadsAnew() {
+        ArchiveImporter.Params p = params();
+        ClickHouseArchive archive = new ClickHouseArchive(ch);
+        archive.createSchema();
+        UUID legacy = p.snapshotId(ArchiveImporter.LEGACY_SCHEMA_VERSION);
+        UUID bystander = UUID.randomUUID();
+        for (UUID id : java.util.List.of(legacy, bystander)) {
+            archive.insertSecurities(
+                    id,
+                    java.util.List.of(
+                            new ClickHouseArchive.SecurityRow("SBER", "", 1, new java.math.BigDecimal("0.01"), "")));
+            archive.insertCandles(id, "SBER", 60, java.util.List.of(candle("2024-03-04T07:00:00Z", "10")));
+        }
+        ArchiveImporter.Params drop = new ArchiveImporter.Params(p.from(), p.to(), p.tickers(), p.label(), false, true);
+
+        ArchiveImporter.Result r = importer.run(drop);
+
+        assertThat(r.alreadyLoaded()).isFalse();
+        assertThat(q("SELECT count() FROM securities WHERE snapshot_id = '" + legacy + "'"))
+                .isEqualTo("0");
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + legacy + "'"))
+                .isEqualTo("0");
+        // чужой снапшот не тронут
+        assertThat(q("SELECT count() FROM securities WHERE snapshot_id = '" + bystander + "'"))
+                .isEqualTo("1");
+        assertThat(q("SELECT count() FROM candles WHERE snapshot_id = '" + bystander + "'"))
+                .isEqualTo("1");
+        assertThat(r.snapshot().dataHash()).matches("[0-9a-f]{64}");
     }
 
     private static Candle candle(String time, String close) {
