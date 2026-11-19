@@ -4,28 +4,31 @@ import java.net.http.HttpClient;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Set;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import ru.tinvest.trainer.worker.SimulationWorkerClient;
 
-/** Подбор запуска создаётся, когда задан {@code marketdata.clickhouse.url} ({@code MARKETDATA_CLICKHOUSE_URL}). */
+/**
+ * Подбор запуска обязателен: без {@code marketdata.clickhouse.url} ({@code MARKETDATA_CLICKHOUSE_URL}) приложение не
+ * стартует. Профиль {@code import} (без веба, импорт архива) подбор не использует.
+ */
 @Configuration(proxyBeanMethods = false)
+@Profile("!import")
 @EnableConfigurationProperties(MarketdataProperties.class)
 class MarketdataConfiguration {
 
     @Bean
-    @ConditionalOnProperty("marketdata.clickhouse.url")
     ArchiveCatalog archiveCatalog(MarketdataProperties props) {
-        MarketdataProperties.ClickHouseProperties c = props.clickhouse();
+        MarketdataProperties.ClickHouseProperties c = props.requiredClickhouse();
         HttpClient http =
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
-        return new ClickHouseArchiveCatalog(http, c.url(), c.database(), c.user(), c.password(), c.timeout());
+        return new CachingArchiveCatalog(
+                new ClickHouseArchiveCatalog(http, c.url(), c.database(), c.user(), c.password(), c.timeout()));
     }
 
     @Bean
-    @ConditionalOnProperty("marketdata.clickhouse.url")
     LaunchPlanner launchPlanner(
             Snapshots snapshots, ArchiveCatalog archive, SimulationWorkerClient worker, MarketdataProperties props) {
         SecureRandom random = new SecureRandom();

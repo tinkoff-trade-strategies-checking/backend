@@ -8,13 +8,13 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
+import ru.tinvest.trainer.api.DependencyUnavailableException;
 import ru.tinvest.trainer.api.NotFoundException;
 import ru.tinvest.trainer.marketdata.ArchiveCatalog.ArchivePaper;
 import ru.tinvest.trainer.worker.PeriodCategory;
@@ -25,8 +25,8 @@ import ru.tinvest.trainer.worker.SimulationWorkerClient;
 /**
  * Подбор периода и бумаг для запуска ручной сессии (backend#23, decisions.md: «Запуск сессии и прогона»,
  * «Стресс-сценарии»). Не создаёт сессию и ничего не пишет: возвращает {@link LaunchPlan} или {@link LaunchRejection}.
- * Категорию окна считает core ({@code ClassifyPeriods}); недоступность воркера или ClickHouse — исключение
- * {@link ru.tinvest.trainer.api.DependencyUnavailableException} (503).
+ * Категорию окна считает core ({@code ClassifyPeriods}); недоступность воркера или ClickHouse и отсутствие готового
+ * снапшота — {@link DependencyUnavailableException} (503).
  *
  * <p>Случайный выбор (слепая сессия) детерминирован по {@code seed}: окна категории перемешиваются, берётся первое,
  * где набирается нужное число подходящих бумаг, то есть окно равномерно среди допустимых. В сессии сохраняется
@@ -37,6 +37,15 @@ public class LaunchPlanner {
     static final Set<Integer> DURATIONS = Set.of(20, 60, 120, 250);
     static final int MIN_PAPERS = 1;
     static final int MAX_PAPERS = 5;
+    /** Пресеты начального капитала, ₽ (решение владельца продукта, 19.11.2026); по умолчанию — {@link #DEFAULT_CAPITAL}. */
+    public static final List<BigDecimal> CAPITAL_PRESETS = List.of(
+            new BigDecimal("100000"), new BigDecimal("500000"), new BigDecimal("1000000"), new BigDecimal("5000000"));
+
+    public static final BigDecimal DEFAULT_CAPITAL = new BigDecimal("1000000");
+    /** Своё значение капитала — от 10 000 до 100 000 000 ₽, до 2 знаков. */
+    public static final BigDecimal MIN_CAPITAL = new BigDecimal("10000");
+
+    public static final BigDecimal MAX_CAPITAL = new BigDecimal("100000000");
     /** Свечи с этим интервалом core агрегирует в любой шаг (core/AGENTS.md, {@code ClickHouseBarSource}). */
     private static final int BASE_INTERVAL_SEC = 60;
 
@@ -71,21 +80,19 @@ public class LaunchPlanner {
      * @param snapshotId снапшот или {@code null} — последний готовый
      * @param seed зерно случайного выбора окна и бумаг слепой сессии
      * @throws NotFoundException снапшот с этим id не найден или не готов
+     * @throws DependencyUnavailableException нет ни одного готового снапшота
      */
     public LaunchResult plan(LaunchRequest request, @Nullable UUID snapshotId, long seed) {
         LaunchRejection invalid = validate(request);
         if (invalid != null) {
             return invalid;
         }
-        int barsCount = request.durationDays() * request.timeframe().candlesPerDay();
-        if (barsCount > maxBars) {
-            return new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", barsCount, maxBars);
+        // ранний отсев по нижней границе числа свечей; точное число шагов — по архиву после выбора окна и бумаг
+        int minBars = request.durationDays() * request.timeframe().minCandlesPerDay();
+        if (minBars > maxBars) {
+            return new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", minBars, maxBars);
         }
-        Optional<Snapshot> found = resolveSnapshot(snapshotId);
-        if (found.isEmpty()) {
-            return LaunchRejection.of(LaunchRejectReason.NO_MATCHING_PERIOD, "regime");
-        }
-        Snapshot snapshot = found.get();
+        Snapshot snapshot = resolveSnapshot(snapshotId);
         String key = snapshot.snapshotKey();
 
         Set<Integer> intervals = archive.intervals(key);
@@ -104,25 +111,20 @@ public class LaunchPlanner {
             return LaunchRejection.of(LaunchRejectReason.NO_MATCHING_PERIOD, "durationDays");
         }
         List<ArchivePaper> papers = poolPapers(key);
-        Context ctx = new Context(request, snapshot, source, barsCount, length, days);
+        Context ctx = new Context(request, snapshot, source, length, days);
         return request.startMode() == StartMode.CUSTOM ? planCustom(ctx, papers) : planRandom(ctx, papers, seed);
     }
 
     /** Бумаги пула в снапшоте (для экрана выбора бумаг при своей дате); {@code null} — последний готовый. */
     public List<PlannedPaper> papers(@Nullable UUID snapshotId) {
-        Snapshot snapshot = resolveSnapshot(snapshotId).orElseThrow(() -> new NotFoundException("Нет данных"));
+        Snapshot snapshot = resolveSnapshot(snapshotId);
         return poolPapers(snapshot.snapshotKey()).stream()
                 .map(LaunchPlanner::planned)
                 .toList();
     }
 
     private record Context(
-            LaunchRequest request,
-            Snapshot snapshot,
-            int sourceInterval,
-            int barsCount,
-            int length,
-            List<LocalDate> days) {}
+            LaunchRequest request, Snapshot snapshot, int sourceInterval, int length, List<LocalDate> days) {}
 
     private LaunchResult planCustom(Context ctx, List<ArchivePaper> pool) {
         LaunchRequest request = ctx.request();
@@ -150,15 +152,16 @@ public class LaunchPlanner {
         if (window == null || regime(window.category()) != request.regime()) {
             return LaunchRejection.of(LaunchRejectReason.NO_MATCHING_PERIOD, "customStartDate");
         }
-        Set<String> splits = archive.withCorporateActions(key, window.startDate(), window.endDate());
-        if (chosen.stream().anyMatch(p -> splits.contains(p.secid()))) {
+        List<LocalDate> windowDays = windowDays(ctx, window);
+        Map<String, List<LocalDate>> actions = archive.corporateActions(key);
+        if (chosen.stream().anyMatch(p -> hasAction(actions, p.secid(), window))) {
             return LaunchRejection.of(LaunchRejectReason.CORPORATE_ACTION_ON_PERIOD, "paperIds");
         }
-        Set<String> covered = covered(ctx, window);
-        if (!covered.containsAll(chosen.stream().map(ArchivePaper::secid).toList())) {
+        Map<String, Set<LocalDate>> candleDays = archive.candleDays(key, ctx.sourceInterval());
+        if (!chosen.stream().allMatch(p -> covers(candleDays, p.secid(), windowDays))) {
             return LaunchRejection.of(LaunchRejectReason.NO_MATCHING_PERIOD, "paperIds");
         }
-        return plan(ctx, window, classification, chosen, false);
+        return finish(ctx, window, classification, chosen, false);
     }
 
     private LaunchResult planRandom(Context ctx, List<ArchivePaper> pool, long seed) {
@@ -177,30 +180,60 @@ public class LaunchPlanner {
                 .filter(p -> !p.sector().isBlank())
                 .sorted(Comparator.comparing(ArchivePaper::secid))
                 .toList();
+        Map<String, List<LocalDate>> actions = archive.corporateActions(key);
+        Map<String, Set<LocalDate>> candleDays = archive.candleDays(key, ctx.sourceInterval());
         for (PeriodWindow window : windows) {
-            Set<String> covered = covered(ctx, window);
-            Set<String> splits = archive.withCorporateActions(key, window.startDate(), window.endDate());
+            List<LocalDate> windowDays = windowDays(ctx, window);
             List<ArchivePaper> eligible = withSector.stream()
-                    .filter(p -> covered.contains(p.secid()) && !splits.contains(p.secid()))
+                    .filter(p -> !hasAction(actions, p.secid(), window) && covers(candleDays, p.secid(), windowDays))
                     .collect(Collectors.toCollection(ArrayList::new));
             if (eligible.size() >= count) {
                 Collections.shuffle(eligible, random);
-                return plan(ctx, window, classification, eligible.subList(0, count), true);
+                return finish(ctx, window, classification, eligible.subList(0, count), true);
             }
         }
         return LaunchRejection.of(LaunchRejectReason.NO_MATCHING_PERIOD, "regime");
     }
 
-    private Set<String> covered(Context ctx, PeriodWindow window) {
-        Map<String, Integer> days = archive.daysWithCandles(
-                ctx.snapshot().snapshotKey(), ctx.sourceInterval(), window.startDate(), window.endDate());
-        Set<String> covered = new HashSet<>();
-        days.forEach((secid, n) -> {
-            if (n >= ctx.length()) {
-                covered.add(secid);
-            }
-        });
-        return covered;
+    /** Торговые дни окна по календарю (граничные даты окна — торговые дни календаря). */
+    private static List<LocalDate> windowDays(Context ctx, PeriodWindow window) {
+        int from = Collections.binarySearch(ctx.days(), window.startDate());
+        int to = Collections.binarySearch(ctx.days(), window.endDate());
+        if (from < 0 || to < from) {
+            throw new IllegalStateException("Окно core не совпало с торговым календарём снапшота");
+        }
+        return ctx.days().subList(from, to + 1);
+    }
+
+    /** Бумага покрывает окно, если свечи есть в каждый торговый день окна (а не просто N дней со свечами). */
+    private static boolean covers(Map<String, Set<LocalDate>> candleDays, String secid, List<LocalDate> windowDays) {
+        Set<LocalDate> dates = candleDays.get(secid);
+        return dates != null && dates.containsAll(windowDays);
+    }
+
+    private static boolean hasAction(Map<String, List<LocalDate>> actions, String secid, PeriodWindow window) {
+        return actions.getOrDefault(secid, List.of()).stream()
+                .anyMatch(d -> !d.isBefore(window.startDate()) && !d.isAfter(window.endDate()));
+    }
+
+    /** Точное число шагов шкалы сессии по архиву и сравнение с лимитом ручной сессии (на одну бумагу). */
+    private LaunchResult finish(
+            Context ctx,
+            PeriodWindow window,
+            PeriodClassification classification,
+            List<ArchivePaper> chosen,
+            boolean blind) {
+        int steps = archive.sessionSteps(
+                ctx.snapshot().snapshotKey(),
+                ctx.sourceInterval(),
+                ctx.request().timeframe().seconds(),
+                chosen.stream().map(ArchivePaper::secid).toList(),
+                window.startDate(),
+                window.endDate());
+        if (steps > maxBars) {
+            return new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", steps, maxBars);
+        }
+        return plan(ctx, window, classification, chosen, blind, steps);
     }
 
     private static LaunchPlan plan(
@@ -208,7 +241,8 @@ public class LaunchPlanner {
             PeriodWindow window,
             PeriodClassification classification,
             List<ArchivePaper> chosen,
-            boolean blind) {
+            boolean blind,
+            int barsCount) {
         return new LaunchPlan(
                 ctx.snapshot(),
                 blind,
@@ -221,7 +255,7 @@ public class LaunchPlanner {
                 classification.p33(),
                 classification.p80(),
                 ctx.request().timeframe(),
-                ctx.barsCount(),
+                barsCount,
                 chosen.stream().map(LaunchPlanner::planned).toList(),
                 ctx.request().initialCapital());
     }
@@ -243,15 +277,26 @@ public class LaunchPlanner {
             return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "durationDays");
         }
         BigDecimal capital = r.initialCapital();
-        if (capital.signum() <= 0 || capital.stripTrailingZeros().scale() > 2) {
+        if (capital.compareTo(MIN_CAPITAL) < 0
+                || capital.compareTo(MAX_CAPITAL) > 0
+                || capital.stripTrailingZeros().scale() > 2) {
             return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "initialCapital");
         }
         if (r.startMode() == StartMode.RANDOM) {
+            if (r.paperIds() != null) {
+                return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "paperIds");
+            }
+            if (r.customStartDate() != null) {
+                return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "customStartDate");
+            }
             Integer count = r.paperCount();
             if (count == null || count < MIN_PAPERS || count > MAX_PAPERS) {
                 return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "paperCount");
             }
         } else {
+            if (r.paperCount() != null) {
+                return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "paperCount");
+            }
             if (r.customStartDate() == null) {
                 return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "customStartDate");
             }
@@ -266,17 +311,20 @@ public class LaunchPlanner {
         return null;
     }
 
-    private Optional<Snapshot> resolveSnapshot(@Nullable UUID snapshotId) {
+    private Snapshot resolveSnapshot(@Nullable UUID snapshotId) {
         if (snapshotId != null) {
             Snapshot snapshot = snapshots.find(snapshotId).orElseThrow(() -> new NotFoundException("Нет данных"));
             if (!archive.isReady(snapshot.snapshotKey())) {
                 throw new NotFoundException("Нет данных");
             }
-            return Optional.of(snapshot);
+            return snapshot;
         }
+        // в контракте нет подходящей причины отказа, а пользователь ничего не может изменить: 503
         return snapshots.findAllNewestFirst().stream()
                 .filter(s -> archive.isReady(s.snapshotKey()))
-                .findFirst();
+                .findFirst()
+                .orElseThrow(() -> new DependencyUnavailableException(
+                        "Архив данных не готов: нет ни одного готового снапшота", null));
     }
 
     private List<ArchivePaper> poolPapers(String key) {

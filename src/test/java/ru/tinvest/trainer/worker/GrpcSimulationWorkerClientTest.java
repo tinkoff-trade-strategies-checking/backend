@@ -166,17 +166,43 @@ class GrpcSimulationWorkerClientTest {
                 .isInstanceOf(DependencyUnavailableException.class);
     }
 
-    @Test
-    void classifyPeriodsOtherErrorsAreNotMasked() throws Exception {
-        var client = start(
+    private SimulationWorkerClient failingWith(Status status) throws Exception {
+        return start(
                 new SimulationWorkerGrpc.SimulationWorkerImplBase() {
                     @Override
                     public void classifyPeriods(
                             ClassifyPeriodsRequest request, StreamObserver<ClassifyPeriodsResponse> observer) {
-                        observer.onError(Status.FAILED_PRECONDITION.asRuntimeException());
+                        observer.onError(status.asRuntimeException());
                     }
                 },
                 Duration.ofSeconds(5));
+    }
+
+    @Test
+    void classifyPeriodsWorkerWithoutSnapshotDataIsDependencyUnavailable() throws Exception {
+        for (Status status : new Status[] {Status.FAILED_PRECONDITION, Status.NOT_FOUND}) {
+            var client = failingWith(status);
+            assertThatThrownBy(() ->
+                            client.classifyPeriods("s", 20, LocalDate.of(2024, 1, 1), LocalDate.of(2024, 2, 1), null))
+                    .isInstanceOf(DependencyUnavailableException.class);
+            channel.shutdownNow();
+            server.shutdownNow();
+        }
+    }
+
+    @Test
+    void classifyPeriodsInvalidArgumentOnOwnDateMeansNoWindow() throws Exception {
+        var client = failingWith(Status.INVALID_ARGUMENT);
+
+        var result = client.classifyPeriods(
+                "s", 20, LocalDate.of(2024, 1, 1), LocalDate.of(2024, 12, 31), LocalDate.of(2024, 12, 30));
+
+        assertThat(result.windows()).isEmpty();
+    }
+
+    @Test
+    void classifyPeriodsInvalidArgumentWithoutOwnDateIsOurBug() throws Exception {
+        var client = failingWith(Status.INVALID_ARGUMENT);
 
         assertThatThrownBy(
                         () -> client.classifyPeriods("s", 20, LocalDate.of(2024, 1, 1), LocalDate.of(2024, 2, 1), null))

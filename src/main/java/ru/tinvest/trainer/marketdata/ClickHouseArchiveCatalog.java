@@ -10,13 +10,19 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import ru.tinvest.trainer.api.DependencyUnavailableException;
 
 /**
@@ -26,6 +32,8 @@ import ru.tinvest.trainer.api.DependencyUnavailableException;
 final class ClickHouseArchiveCatalog implements ArchiveCatalog {
 
     private static final String MSK = "'Europe/Moscow'";
+    private static final ZoneId ZONE = ZoneId.of("Europe/Moscow");
+    private static final DateTimeFormatter UTC_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final HttpClient http;
     private final String url;
@@ -81,25 +89,55 @@ final class ClickHouseArchiveCatalog implements ArchiveCatalog {
     }
 
     @Override
-    public Map<String, Integer> daysWithCandles(String snapshotKey, int intervalSec, LocalDate from, LocalDate to) {
-        Map<String, Integer> map = new HashMap<>();
-        for (String[] r : rows("SELECT secid, uniqExact(toDate(ts_open, " + MSK + ")) FROM candles "
-                + "WHERE snapshot_id = '" + uuid(snapshotKey) + "' AND interval_sec = " + intervalSec
-                + " AND secid != 'IMOEX' AND toDate(ts_open, " + MSK + ") BETWEEN '" + from + "' AND '" + to
-                + "' GROUP BY secid")) {
-            map.put(r[0], Integer.parseInt(r[1]));
+    public Map<String, Set<LocalDate>> candleDays(String snapshotKey, int intervalSec) {
+        Map<String, Set<LocalDate>> map = new HashMap<>();
+        for (String[] r : rows("SELECT secid, toDate(ts_open, " + MSK + ") AS d FROM candles WHERE snapshot_id = '"
+                + uuid(snapshotKey) + "' AND interval_sec = " + intervalSec
+                + " AND secid != 'IMOEX' GROUP BY secid, d")) {
+            map.computeIfAbsent(r[0], k -> new HashSet<>()).add(LocalDate.parse(r[1]));
         }
         return map;
     }
 
     @Override
-    public Set<String> withCorporateActions(String snapshotKey, LocalDate from, LocalDate to) {
-        Set<String> set = new HashSet<>();
-        for (String[] r : rows("SELECT DISTINCT secid FROM corporate_actions WHERE snapshot_id = '" + uuid(snapshotKey)
-                + "' AND date BETWEEN '" + from + "' AND '" + to + "'")) {
-            set.add(r[0]);
+    public Map<String, List<LocalDate>> corporateActions(String snapshotKey) {
+        Map<String, List<LocalDate>> map = new HashMap<>();
+        for (String[] r : rows("SELECT secid, date FROM corporate_actions WHERE snapshot_id = '" + uuid(snapshotKey)
+                + "' ORDER BY secid, date")) {
+            map.computeIfAbsent(r[0], k -> new ArrayList<>()).add(LocalDate.parse(r[1]));
         }
-        return set;
+        return map;
+    }
+
+    @Override
+    public int sessionSteps(
+            String snapshotKey,
+            int sourceIntervalSec,
+            int stepSec,
+            Collection<String> secids,
+            LocalDate from,
+            LocalDate to) {
+        if (secids.isEmpty()) {
+            return 0;
+        }
+        // Торговый день — дата МСК: границы по ts_open (первичный ключ), все сессии дня внутри.
+        String bucket = stepSec >= 86400
+                ? "toDate(ts_open, " + MSK + ")"
+                : "toStartOfInterval(ts_open, INTERVAL " + stepSec + " SECOND)";
+        String list = secids.stream().map(ClickHouseArchiveCatalog::quote).collect(Collectors.joining(", "));
+        List<String[]> r = rows("SELECT uniqExact(" + bucket + ") FROM candles WHERE snapshot_id = '"
+                + uuid(snapshotKey) + "' AND secid IN (" + list + ") AND interval_sec = " + sourceIntervalSec
+                + " AND ts_open >= toDateTime64('" + utc(from.atStartOfDay(ZONE)) + "', 3, 'UTC')"
+                + " AND ts_open < toDateTime64('" + utc(to.plusDays(1).atStartOfDay(ZONE)) + "', 3, 'UTC')");
+        return Integer.parseInt(r.getFirst()[0]);
+    }
+
+    private static String utc(ZonedDateTime t) {
+        return UTC_FORMAT.format(t.withZoneSameInstant(ZoneOffset.UTC));
+    }
+
+    private static String quote(String s) {
+        return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'";
     }
 
     private static UUID uuid(String snapshotKey) {
@@ -116,8 +154,13 @@ final class ClickHouseArchiveCatalog implements ArchiveCatalog {
         }
         try {
             HttpResponse<String> r = http.send(b.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (r.statusCode() != 200) {
+            // 516 — аутентификация: ошибка настройки, а не временный сбой
+            if (r.statusCode() >= 500 && r.statusCode() != 516) {
                 throw new DependencyUnavailableException("ClickHouse ответил HTTP " + r.statusCode(), null);
+            }
+            if (r.statusCode() != 200) {
+                // 4xx — неверные учётные данные или запрос: ошибка настройки или кода, не временный сбой
+                throw new IllegalStateException("ClickHouse отклонил запрос: HTTP " + r.statusCode());
             }
             List<String[]> rows = new ArrayList<>();
             for (String line : r.body().split("\n")) {

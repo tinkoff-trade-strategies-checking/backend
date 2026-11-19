@@ -8,6 +8,7 @@ import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -16,6 +17,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import ru.tinvest.trainer.api.DependencyUnavailableException;
 import ru.tinvest.trainer.api.NotFoundException;
 import ru.tinvest.trainer.marketdata.ArchiveCatalog.ArchivePaper;
 import ru.tinvest.trainer.worker.PeriodCategory;
@@ -133,30 +135,53 @@ class LaunchPlannerTest {
     }
 
     @Test
-    void tooManyBarsIsRejectedWithCounts() {
+    void impossiblePairsAreRejectedEarlyByLowerBound() {
         var r = new LaunchRequest(60, Timeframe.M5, Regime.CALM, StartMode.RANDOM, null, 2, null, CAPITAL);
         LaunchRejection rej = rejection(planner.plan(r));
         assertThat(rej.reason()).isEqualTo(LaunchRejectReason.TOO_MANY_BARS);
-        assertThat(rej.barsCount()).isEqualTo(60 * 163);
+        assertThat(rej.barsCount()).isEqualTo(60 * 106);
         assertThat(rej.maxBars()).isEqualTo(5000);
         assertThat(rej.field()).isEqualTo("durationDays");
-        // воркер не дёргали
+        // воркер и архив не дёргали
         assertThat(worker.calls).isZero();
-
-        var ok = new LaunchRequest(250, Timeframe.H1, Regime.CALM, StartMode.RANDOM, null, 2, null, CAPITAL);
-        assertThat(plan(planner.plan(ok, null, 1L)).barsCount()).isEqualTo(250 * 14);
-        var okD1 = new LaunchRequest(250, Timeframe.D1, Regime.CALM, StartMode.RANDOM, null, 2, null, CAPITAL);
-        assertThat(plan(planner.plan(okD1, null, 1L)).barsCount()).isEqualTo(250);
     }
 
     @Test
-    void boundaryOfBarsLimitIsInclusive() {
-        // 20 × 55 = 1100 ≤ 1100 проходит, 20 × 82 = 1640 — нет
-        LaunchPlanner tight = new LaunchPlanner(snapshots, archive, worker, Set.of(), 1100, () -> 1L);
-        var m15 = new LaunchRequest(20, Timeframe.M15, Regime.CALM, StartMode.RANDOM, null, 1, null, CAPITAL);
-        assertThat(tight.plan(m15, null, 1L)).isInstanceOf(LaunchPlan.class);
-        var m10 = new LaunchRequest(20, Timeframe.M10, Regime.CALM, StartMode.RANDOM, null, 1, null, CAPITAL);
-        assertThat(rejection(tight.plan(m10, null, 1L)).barsCount()).isEqualTo(1640);
+    void barsLimitIsDecidedByExactStepsFromArchive() {
+        // M10 × 60 дней: нижняя граница 3180 проходит ранний отсев, решает точное число шагов по архиву
+        var m10 = new LaunchRequest(60, Timeframe.M10, Regime.CALM, StartMode.RANDOM, null, 2, null, CAPITAL);
+        archive.steps = 5000;
+        LaunchPlan ok = plan(planner.plan(m10, null, 1L));
+        assertThat(ok.barsCount()).isEqualTo(5000);
+        assertThat(archive.lastStepSec).isEqualTo(600);
+        assertThat(archive.lastStepPapers).hasSize(2);
+
+        archive.steps = 5001;
+        LaunchRejection rej = rejection(planner.plan(m10, null, 1L));
+        assertThat(rej.reason()).isEqualTo(LaunchRejectReason.TOO_MANY_BARS);
+        assertThat(rej.barsCount()).isEqualTo(5001);
+        assertThat(rej.maxBars()).isEqualTo(5000);
+        assertThat(rej.field()).isEqualTo("durationDays");
+    }
+
+    @Test
+    void exactStepsAreCountedOnCustomDateToo() {
+        int i = 30;
+        var request = new LaunchRequest(
+                20,
+                Timeframe.H1,
+                regimeAt(i),
+                StartMode.CUSTOM,
+                calendar.get(i),
+                null,
+                List.of(Papers.id("A")),
+                CAPITAL);
+        archive.steps = 5001;
+        assertThat(rejection(planner.plan(request)).barsCount()).isEqualTo(5001);
+        archive.steps = 280;
+        assertThat(plan(planner.plan(request)).barsCount()).isEqualTo(280);
+        assertThat(archive.lastStepFrom).isEqualTo(calendar.get(i));
+        assertThat(archive.lastStepTo).isEqualTo(calendar.get(i + 19));
     }
 
     @Test
@@ -222,6 +247,13 @@ class LaunchPlannerTest {
         assertThat(late.reason()).isEqualTo(LaunchRejectReason.NO_MATCHING_PERIOD);
         assertThat(late.field()).isEqualTo("paperIds");
 
+        // у HOLE нет свечей в торговый день 50, зато есть свеча в выходной: по числу дней покрытие сошлось бы
+        LaunchRejection hole = rejection(planner.plan(custom(regimeAt(40), calendar.get(40), "A", "HOLE")));
+        assertThat(hole.reason()).isEqualTo(LaunchRejectReason.NO_MATCHING_PERIOD);
+        assertThat(hole.field()).isEqualTo("paperIds");
+        assertThat(planner.plan(custom(regimeAt(60), calendar.get(60), "A", "HOLE")))
+                .isInstanceOf(LaunchPlan.class);
+
         int s = FakeArchive.SPLIT_AT - 5;
         LaunchRejection split = rejection(planner.plan(custom(regimeAt(s), calendar.get(s), "A", "SPLIT")));
         assertThat(split.reason()).isEqualTo(LaunchRejectReason.CORPORATE_ACTION_ON_PERIOD);
@@ -235,9 +267,27 @@ class LaunchPlannerTest {
         assertThat(rejection(planner.plan(random(Regime.CALM, 6))).field()).isEqualTo("paperCount");
         var noCount = new LaunchRequest(20, Timeframe.D1, Regime.CALM, StartMode.RANDOM, null, null, null, CAPITAL);
         assertThat(rejection(planner.plan(noCount)).field()).isEqualTo("paperCount");
-        var capital =
-                new LaunchRequest(20, Timeframe.D1, Regime.CALM, StartMode.RANDOM, null, 2, null, BigDecimal.ZERO);
-        assertThat(rejection(planner.plan(capital)).field()).isEqualTo("initialCapital");
+        for (String bad : List.of("0", "9999.99", "100000000.01", "-5", "500000.001")) {
+            var capital = new LaunchRequest(
+                    20, Timeframe.D1, Regime.CALM, StartMode.RANDOM, null, 2, null, new BigDecimal(bad));
+            assertThat(rejection(planner.plan(capital)).field()).as(bad).isEqualTo("initialCapital");
+        }
+        for (String good : List.of("10000", "10000.50", "100000", "500000", "1000000", "5000000", "100000000")) {
+            var capital = new LaunchRequest(
+                    20, Timeframe.D1, Regime.CALM, StartMode.RANDOM, null, 2, null, new BigDecimal(good));
+            assertThat(planner.plan(capital, null, 1L)).as(good).isInstanceOf(LaunchPlan.class);
+        }
+        assertThat(LaunchPlanner.CAPITAL_PRESETS).hasSize(4).contains(LaunchPlanner.DEFAULT_CAPITAL);
+        // лишние поля не игнорируются молча
+        var randomWithIds = new LaunchRequest(
+                20, Timeframe.D1, Regime.CALM, StartMode.RANDOM, null, 2, List.of(Papers.id("A")), CAPITAL);
+        assertThat(rejection(planner.plan(randomWithIds)).field()).isEqualTo("paperIds");
+        var randomWithDate =
+                new LaunchRequest(20, Timeframe.D1, Regime.CALM, StartMode.RANDOM, calendar.get(3), 2, null, CAPITAL);
+        assertThat(rejection(planner.plan(randomWithDate)).field()).isEqualTo("customStartDate");
+        var customWithCount = new LaunchRequest(
+                20, Timeframe.D1, Regime.CALM, StartMode.CUSTOM, calendar.get(3), 2, List.of(Papers.id("A")), CAPITAL);
+        assertThat(rejection(planner.plan(customWithCount)).field()).isEqualTo("paperCount");
         var fraction = new LaunchRequest(
                 20, Timeframe.D1, Regime.CALM, StartMode.RANDOM, null, 2, null, new BigDecimal("100.001"));
         assertThat(rejection(planner.plan(fraction)).field()).isEqualTo("initialCapital");
@@ -288,10 +338,11 @@ class LaunchPlannerTest {
     }
 
     @Test
-    void noReadySnapshotIsNoMatchingPeriodAndUnknownSnapshotIsNotFound() {
+    void noReadySnapshotIsDependencyUnavailableAndUnknownSnapshotIsNotFound() {
         archive.ready = false;
-        assertThat(rejection(planner.plan(random(Regime.CALM, 2))).reason())
-                .isEqualTo(LaunchRejectReason.NO_MATCHING_PERIOD);
+        assertThatThrownBy(() -> planner.plan(random(Regime.CALM, 2)))
+                .isInstanceOf(DependencyUnavailableException.class);
+        assertThatThrownBy(() -> planner.papers(null)).isInstanceOf(DependencyUnavailableException.class);
         assertThatThrownBy(() -> planner.plan(random(Regime.CALM, 2), snapshot.id(), 1L))
                 .isInstanceOf(NotFoundException.class);
         archive.ready = true;
@@ -372,6 +423,11 @@ class LaunchPlannerTest {
         boolean ready = true;
         Set<Integer> intervals = Set.of(60);
         int lastCandleInterval;
+        int steps = 100;
+        int lastStepSec;
+        List<String> lastStepPapers;
+        LocalDate lastStepFrom;
+        LocalDate lastStepTo;
 
         private final Map<String, ArchivePaper> papers = new HashMap<>();
         private final Map<String, Integer> firstDay = new HashMap<>();
@@ -386,6 +442,7 @@ class LaunchPlannerTest {
             add("SPLIT", "Потребсектор", 0);
             add("LATE", "Телекоммуникации", LATE_FROM);
             add("NOSECTOR", "", 0);
+            add("HOLE", "Банки", 0);
         }
 
         private void add(String secid, String sector, int first) {
@@ -414,26 +471,42 @@ class LaunchPlannerTest {
         }
 
         @Override
-        public Map<String, Integer> daysWithCandles(String snapshotKey, int intervalSec, LocalDate from, LocalDate to) {
+        public Map<String, Set<LocalDate>> candleDays(String snapshotKey, int intervalSec) {
             lastCandleInterval = intervalSec;
-            Map<String, Integer> result = new HashMap<>();
+            Map<String, Set<LocalDate>> result = new HashMap<>();
             for (var e : firstDay.entrySet()) {
-                int n = 0;
+                Set<LocalDate> dates = new HashSet<>();
                 for (int i = e.getValue(); i < calendar.size(); i++) {
-                    LocalDate d = calendar.get(i);
-                    if (!d.isBefore(from) && !d.isAfter(to)) {
-                        n++;
+                    if (!(e.getKey().equals("HOLE") && i == 50)) {
+                        dates.add(calendar.get(i));
                     }
                 }
-                result.put(e.getKey(), n);
+                if (e.getKey().equals("HOLE")) {
+                    dates.add(LocalDate.of(2023, 1, 7)); // суббота: торги в выходной
+                }
+                result.put(e.getKey(), dates);
             }
             return result;
         }
 
         @Override
-        public Set<String> withCorporateActions(String snapshotKey, LocalDate from, LocalDate to) {
-            LocalDate d = calendar.get(SPLIT_AT);
-            return !d.isBefore(from) && !d.isAfter(to) ? Set.of("SPLIT") : Set.of();
+        public Map<String, List<LocalDate>> corporateActions(String snapshotKey) {
+            return Map.of("SPLIT", List.of(calendar.get(SPLIT_AT)));
+        }
+
+        @Override
+        public int sessionSteps(
+                String snapshotKey,
+                int sourceIntervalSec,
+                int stepSec,
+                Collection<String> secids,
+                LocalDate from,
+                LocalDate to) {
+            lastStepSec = stepSec;
+            lastStepPapers = new ArrayList<>(secids);
+            lastStepFrom = from;
+            lastStepTo = to;
+            return steps;
         }
     }
 }

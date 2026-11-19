@@ -2,11 +2,16 @@ package ru.tinvest.trainer.marketdata;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** Чтение каталога архива снапшота (ClickHouse). Все даты — московские. */
+/**
+ * Чтение каталога архива снапшота (ClickHouse). Все даты — московские: торговый день — дата календаря IMOEX, все
+ * сессии дня (утренняя, основная, вечерняя) входят в него. Снапшот неизменяем (INV-5), поэтому всё, кроме
+ * {@link #sessionSteps}, можно кэшировать по ключу снапшота.
+ */
 interface ArchiveCatalog {
 
     record ArchivePaper(String secid, String sector, long lotSize, BigDecimal priceStep) {}
@@ -22,9 +27,21 @@ interface ArchiveCatalog {
 
     List<ArchivePaper> securities(String snapshotKey);
 
-    /** Для каждой бумаги — число разных дней со свечами интервала {@code intervalSec} в [from, to]. */
-    Map<String, Integer> daysWithCandles(String snapshotKey, int intervalSec, LocalDate from, LocalDate to);
+    /** Для каждой бумаги — даты (МСК), в которые есть свечи интервала {@code intervalSec}. */
+    Map<String, Set<LocalDate>> candleDays(String snapshotKey, int intervalSec);
 
-    /** Бумаги со сплитом или консолидацией в [from, to]. */
-    Set<String> withCorporateActions(String snapshotKey, LocalDate from, LocalDate to);
+    /** Для каждой бумаги — даты сплитов и консолидаций. */
+    Map<String, List<LocalDate>> corporateActions(String snapshotKey);
+
+    /**
+     * Точное число шагов шкалы сессии в окне [from, to] (включительно, торговые дни): разных начал свечей шага
+     * {@code stepSec}, собранных из свечей {@code sourceIntervalSec}, по объединению выбранных бумаг.
+     */
+    int sessionSteps(
+            String snapshotKey,
+            int sourceIntervalSec,
+            int stepSec,
+            Collection<String> secids,
+            LocalDate from,
+            LocalDate to);
 }

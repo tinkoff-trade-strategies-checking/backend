@@ -43,7 +43,16 @@ class GrpcSimulationWorkerClient implements SimulationWorkerClient {
         if (startDate != null) {
             request.setStartDate(startDate.toString());
         }
-        ClassifyPeriodsResponse response = call(() -> stub().classifyPeriods(request.build()));
+        ClassifyPeriodsResponse response;
+        try {
+            response = call(() -> stub().classifyPeriods(request.build()));
+        } catch (StatusRuntimeException e) {
+            // «своя дата»: core отвечает INVALID_ARGUMENT, когда окна с таким началом нет (штатный ответ)
+            if (startDate != null && e.getStatus().getCode() == Status.Code.INVALID_ARGUMENT) {
+                return new PeriodClassification(List.of(), 0, 0);
+            }
+            throw e;
+        }
         List<PeriodWindow> windows = new ArrayList<>(response.getWindowsCount());
         for (pac.simulation.v1.PeriodWindow w : response.getWindowsList()) {
             windows.add(new PeriodWindow(
@@ -76,6 +85,10 @@ class GrpcSimulationWorkerClient implements SimulationWorkerClient {
             Status.Code code = e.getStatus().getCode();
             if (code == Status.Code.UNAVAILABLE || code == Status.Code.DEADLINE_EXCEEDED) {
                 throw new DependencyUnavailableException("Simulation Worker недоступен: " + code, e);
+            }
+            if (code == Status.Code.FAILED_PRECONDITION || code == Status.Code.NOT_FOUND) {
+                // нет данных снапшота у воркера: для клиента это недоступная зависимость, не ошибка запроса
+                throw new DependencyUnavailableException("Simulation Worker не может выполнить запрос: " + code, e);
             }
             throw e;
         }

@@ -9,6 +9,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -123,26 +125,55 @@ class ClickHouseArchiveCatalogTest {
     }
 
     @Test
-    void daysWithCandlesCountsMoscowDates() {
+    void candleDaysAreMoscowDatesPerPaper() {
         var c = catalog(url());
-        // SBER: 04.03 (две свечи, одна дата) и 05.03 (00:00 МСК); свеча 10.03 вне периода
-        assertThat(c.daysWithCandles(SNAP, 60, LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 5)))
-                .containsEntry("SBER", 2)
-                .containsEntry("GAZP", 1)
-                .doesNotContainKey("IMOEX");
-        assertThat(c.daysWithCandles(SNAP, 60, LocalDate.of(2024, 3, 5), LocalDate.of(2024, 3, 5)))
-                .containsOnlyKeys("SBER");
-        assertThat(c.daysWithCandles(SNAP, 300, LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 5)))
-                .isEmpty();
+        // SBER: 04.03, 05.03 (00:00 МСК = 21:00 UTC предыдущего дня) и 10.03; бенчмарк IMOEX исключён
+        assertThat(c.candleDays(SNAP, 60))
+                .containsOnlyKeys("SBER", "GAZP")
+                .containsEntry(
+                        "SBER", Set.of(LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 5), LocalDate.of(2024, 3, 10)))
+                .containsEntry("GAZP", Set.of(LocalDate.of(2024, 3, 4)));
+        assertThat(c.candleDays(SNAP, 300)).isEmpty();
     }
 
     @Test
-    void corporateActionsInPeriod() {
+    void corporateActionsPerPaper() {
+        assertThat(catalog(url()).corporateActions(SNAP))
+                .containsEntry("SBER", List.of(LocalDate.of(2024, 3, 4)))
+                .containsEntry("GAZP", List.of(LocalDate.of(2024, 4, 1)));
+    }
+
+    @Test
+    void sessionStepsAreExactUnionOfStepStartsInWindow() {
         var c = catalog(url());
-        assertThat(c.withCorporateActions(SNAP, LocalDate.of(2024, 3, 1), LocalDate.of(2024, 3, 31)))
-                .containsExactly("SBER");
-        assertThat(c.withCorporateActions(SNAP, LocalDate.of(2024, 3, 5), LocalDate.of(2024, 3, 31)))
-                .isEmpty();
+        var both = List.of("SBER", "GAZP");
+        // часовые шаги, окно 04–05.03: SBER 07:00, 20:00 (20:49) и 21:00 UTC, GAZP 07:00 совпадает с SBER
+        assertThat(c.sessionSteps(SNAP, 60, 3600, both, LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 5)))
+                .isEqualTo(3);
+        // граница дня по МСК: свеча 00:00 МСК 05.03 не входит в 04.03 и входит в 05.03
+        assertThat(c.sessionSteps(SNAP, 60, 3600, both, LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 4)))
+                .isEqualTo(2);
+        assertThat(c.sessionSteps(SNAP, 60, 3600, both, LocalDate.of(2024, 3, 5), LocalDate.of(2024, 3, 5)))
+                .isEqualTo(1);
+        // шаг 1 день — даты МСК
+        assertThat(c.sessionSteps(SNAP, 60, 86400, both, LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 5)))
+                .isEqualTo(2);
+        // минутные свечи: 07:00 общая у обеих бумаг
+        assertThat(c.sessionSteps(SNAP, 60, 60, both, LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 4)))
+                .isEqualTo(2);
+        assertThat(c.sessionSteps(SNAP, 60, 60, List.of("GAZP"), LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 4)))
+                .isEqualTo(1);
+        assertThat(c.sessionSteps(SNAP, 60, 60, List.of(), LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 4)))
+                .isZero();
+        // кавычка в тикере не ломает запрос
+        assertThat(c.sessionSteps(SNAP, 60, 60, List.of("O'NEIL"), LocalDate.of(2024, 3, 4), LocalDate.of(2024, 3, 4)))
+                .isZero();
+    }
+
+    @Test
+    void clientErrorFromClickHouseIsNotReportedAsUnavailable() {
+        var c = new ClickHouseArchiveCatalog(HTTP, url(), "no_such_db", "ttsc", "secret", Duration.ofSeconds(10));
+        assertThatThrownBy(() -> c.isReady(SNAP)).isInstanceOf(IllegalStateException.class);
     }
 
     @Test

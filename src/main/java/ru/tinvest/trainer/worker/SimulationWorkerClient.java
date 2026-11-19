@@ -21,8 +21,10 @@ public interface SimulationWorkerClient {
      * @param snapshotKey ключ снапшота в ClickHouse ({@code snapshot_id})
      * @param from начало фильтра окон в ответе, включительно; пороги всегда по всему снапшоту
      * @param to конец фильтра окон в ответе, включительно
-     * @param startDate «своя дата»: вернуть одно окно с этим началом; {@code null} — все окна
-     * @throws ru.tinvest.trainer.api.DependencyUnavailableException если воркер недоступен или не ответил в срок
+     * @param startDate «своя дата»: вернуть одно окно с этим началом; {@code null} — все окна. Окна с таким началом
+     *     нет (core: {@code INVALID_ARGUMENT}) — пустой список
+     * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен, не ответил в срок или у него
+     *     нет данных снапшота ({@code FAILED_PRECONDITION}, {@code NOT_FOUND})
      */
     PeriodClassification classifyPeriods(
             String snapshotKey, int windowLength, LocalDate from, LocalDate to, @Nullable LocalDate startDate);
