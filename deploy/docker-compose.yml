@@ -1,0 +1,113 @@
+# Локальное окружение: Caddy (HTTPS) -> backend -> PostgreSQL, ClickHouse, Simulation Worker.
+# Запуск: docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build
+# Наружу публикует порты только caddy (INV-10); остальное — во внутренней сети.
+
+name: trainer
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: trainer
+      POSTGRES_USER: trainer
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в deploy/.env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trainer -d trainer"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8-alpine
+    environment:
+      CLICKHOUSE_DB: ttsc
+      CLICKHOUSE_USER: ttsc
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?задайте CLICKHOUSE_PASSWORD в deploy/.env}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    networks: [internal]
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    image: simulation-worker
+    build:
+      context: ../../core
+    environment:
+      WORKER_ADDRESS: 0.0.0.0:50051
+      CLICKHOUSE_URL: http://ttsc:${CLICKHOUSE_PASSWORD}@clickhouse:8123/ttsc
+    networks: [internal]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/50051"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/backend.Dockerfile
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/trainer
+      SPRING_DATASOURCE_USERNAME: trainer
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      WORKER_ADDRESS: worker:50051
+      CLICKHOUSE_URL: jdbc:clickhouse://clickhouse:8123/ttsc
+      CLICKHOUSE_USER: ttsc
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Сборка frontend (`npm run build`); по умолчанию — заглушка.
+      - ${FRONTEND_DIST:-./frontend-stub}:/srv/frontend:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [internal, edge]
+    depends_on:
+      backend:
+        condition: service_healthy
+
+networks:
+  # internal: без выхода наружу и без публикации портов.
+  internal:
+    internal: true
+  edge:
+
+volumes:
+  postgres-data:
+  clickhouse-data:
+  caddy-data:
+  caddy-config:

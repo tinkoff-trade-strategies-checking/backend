@@ -82,6 +82,20 @@ docker stop trainer-pg
 
 CI (`.github/workflows/ci.yml`): джоба `format` (`./gradlew spotlessCheck --no-daemon`), джоба `build-test` (`./gradlew build -x spotlessCheck --no-daemon`), джоба `proto-sync` (сверка `proto/` с `core/main`), джоба `pr-size` (наблюдение размера PR).
 
+## Окружение
+Локальный стек в `deploy/`: `caddy` (HTTPS, единственный с опубликованными портами 80/443, INV-10) → `backend`; внутри сети `postgres` (17), `clickhouse` (25.8) и `worker` (образ `simulation-worker`, собирается из `../core` по его `Dockerfile`).
+Соседние репозитории лежат рядом с `backend` (`../core`, `../frontend`); нет локально — `home/scripts/clone-repos.sh`.
+
+```bash
+cp deploy/.env.example deploy/.env      # задать POSTGRES_PASSWORD и CLICKHOUSE_PASSWORD
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build -d
+curl -k https://localhost/api/health    # 200 (-k: сертификат внутреннего CA Caddy)
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env ps   # порты только у caddy
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env down -v
+```
+
+Frontend: `FRONTEND_DIST` в `deploy/.env` — каталог сборки (`../../frontend/dist/<имя>/browser`); не задан — Caddy отдаёт заглушку `deploy/frontend-stub`. Сборка образа worker тяжёлая (C++, gRPC).
+
 ## Когда обновлять документы
 Общая таблица — `home/workflow.md`, раздел «Когда обновлять документы». Для этого репозитория:
 - новая команда Gradle, профиль запуска или джоба CI → «Команды» выше;

@@ -1,0 +1,14 @@
+# Для локального запуска localhost получает сертификат внутреннего CA Caddy (tls internal).
+{$SITE_ADDRESS:localhost} {
+	tls internal
+
+	handle /api/* {
+		reverse_proxy backend:8080
+	}
+
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
+	}
+}
