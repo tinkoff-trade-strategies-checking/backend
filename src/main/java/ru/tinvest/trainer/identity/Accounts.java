@@ -15,6 +15,8 @@ class Accounts {
 
     /** Предел bcrypt: пароль длиннее 72 байт в UTF-8 не принимается. */
     static final int MAX_PASSWORD_BYTES = 72;
+    /** Предел длины адреса по RFC 5321 (254 символа). */
+    static final int MAX_EMAIL_LENGTH = 254;
 
     private final JdbcClient jdbc;
     private final PasswordEncoder passwordEncoder;
@@ -44,6 +46,9 @@ class Accounts {
     UUID create(String email, String password) {
         if (passwordTooLong(password)) {
             throw new IllegalArgumentException("Password is longer than " + MAX_PASSWORD_BYTES + " bytes");
+        }
+        if (normalizeEmail(email).length() > MAX_EMAIL_LENGTH) {
+            throw new IllegalArgumentException("Email is longer than " + MAX_EMAIL_LENGTH + " characters");
         }
         UUID id = Uuid7.next();
         jdbc.sql("INSERT INTO identity.user_account (id, email, password_hash) VALUES (:id, :email, :hash)")

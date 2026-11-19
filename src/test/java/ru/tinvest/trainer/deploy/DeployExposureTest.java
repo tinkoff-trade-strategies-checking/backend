@@ -39,6 +39,35 @@ class DeployExposureTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void backendPublishesNoPorts() throws IOException {
+        Map<String, Object> backend =
+                (Map<String, Object>) services(loadCompose(read(COMPOSE))).get("backend");
+        assertThat(backend).isNotNull().doesNotContainKey("ports");
+    }
+
+    /** Подсеть internal закреплена в частном диапазоне и совпадает с доверенными прокси Tomcat (X-Forwarded-For). */
+    @Test
+    @SuppressWarnings("unchecked")
+    void internalSubnetIsPinnedAndTrustedByTomcat() throws IOException {
+        String subnet = internalSubnet(loadCompose(read(COMPOSE)));
+        assertThat(subnet).isEqualTo("172.28.0.0/24");
+        // частный диапазон RFC 1918: 172.16.0.0/12
+        int second = Integer.parseInt(subnet.split("[.]")[1]);
+        assertThat(subnet).startsWith("172.");
+        assertThat(second).isBetween(16, 31);
+
+        Map<String, Object> application = loadCompose(read(Path.of("src/main/resources/application.yml")));
+        Map<String, Object> server = (Map<String, Object>) application.get("server");
+        Map<String, Object> tomcat = (Map<String, Object>) server.get("tomcat");
+        Map<String, Object> remoteip = (Map<String, Object>) tomcat.get("remoteip");
+        String proxies = String.valueOf(remoteip.get("internal-proxies"));
+        assertThat("172.28.0.5").matches(proxies);
+        assertThat("172.28.1.5").doesNotMatch(proxies);
+        assertThat("127.0.0.1").doesNotMatch(proxies);
+    }
+
+    @Test
     void caddyfileServesOnlyHttps() throws IOException {
         assertThat(caddyfileViolations(read(CADDYFILE))).isEmpty();
     }
@@ -116,6 +145,15 @@ class DeployExposureTest {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> services(Map<String, Object> compose) {
         return (Map<String, Object>) compose.get("services");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String internalSubnet(Map<String, Object> compose) {
+        Map<String, Object> networks = (Map<String, Object>) compose.get("networks");
+        Map<String, Object> internal = (Map<String, Object>) networks.get("internal");
+        Map<String, Object> ipam = (Map<String, Object>) internal.get("ipam");
+        List<Map<String, Object>> config = (List<Map<String, Object>>) ipam.get("config");
+        return String.valueOf(config.get(0).get("subnet"));
     }
 
     @SuppressWarnings("unchecked")

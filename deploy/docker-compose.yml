@@ -106,8 +106,13 @@ services:
 
 networks:
   # internal: без выхода наружу и без публикации портов.
+  # Подсеть закреплена в частном диапазоне 172.16.0.0/12: Tomcat RemoteIpValve доверяет X-Forwarded-For от Caddy только
+  # из частных адресов, иначе лимит входа по IP станет общим (backend#28).
   internal:
     internal: true
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
   edge:
 
 volumes:

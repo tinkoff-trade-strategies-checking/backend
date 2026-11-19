@@ -72,8 +72,11 @@ class AuthController {
         }
 
         String email = Accounts.normalizeEmail(body.email());
+        if (email.length() > Accounts.MAX_EMAIL_LENGTH) {
+            throw new InvalidRequestException("email is longer than " + Accounts.MAX_EMAIL_LENGTH + " characters");
+        }
         String ip = request.getRemoteAddr();
-        Duration blocked = limiter.blockedFor(ip, email).orElse(null);
+        Duration blocked = limiter.tryAcquire(ip, email).orElse(null);
         if (blocked != null) {
             // bcrypt не вычисляется
             log.warn("Вход заблокирован ограничителем попыток, ip={}", ip);
@@ -81,7 +84,7 @@ class AuthController {
                     ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS, "Too many login attempts");
             problem.setTitle("Too Many Requests");
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
-                    .header(HttpHeaders.RETRY_AFTER, String.valueOf(blocked.toSeconds()))
+                    .header(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds(blocked)))
                     .body(problem);
         }
 
@@ -91,12 +94,12 @@ class AuthController {
                     UsernamePasswordAuthenticationToken.unauthenticated(email, body.password()));
         } catch (InternalAuthenticationServiceException e) {
             // Сбой при загрузке пользователя (БД и т. п.) — не «неверный пароль»: причина уходит в ApiExceptionHandler.
+            limiter.release(ip, email);
             if (e.getCause() instanceof RuntimeException cause) {
                 throw cause;
             }
             throw e;
         } catch (AuthenticationException e) {
-            limiter.recordFailure(ip, email);
             log.warn("Неудачная попытка входа, ip={}", ip);
             // Неизвестная почта и неверный пароль неразличимы.
             ProblemDetail problem =
@@ -111,13 +114,19 @@ class AuthController {
         } else {
             request.getSession(true);
         }
-        limiter.clearEmail(email);
+        limiter.recordSuccess(ip, email);
         SecurityContext context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(authentication);
         SecurityContextHolder.setContext(context);
         contextRepository.saveContext(context, request, response);
         csrfTokenRepository.saveToken(csrfTokenRepository.generateToken(request), request, response);
         return ResponseEntity.noContent().build();
+    }
+
+    /** Секунды вверх, не меньше 1: нулевое или усечённое значение даёт повторный 429. */
+    static long retryAfterSeconds(Duration blocked) {
+        long seconds = blocked.toSeconds() + (blocked.toNanosPart() > 0 ? 1 : 0);
+        return Math.max(1, seconds);
     }
 
     @PostMapping("/auth/logout")
