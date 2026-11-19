@@ -2,6 +2,9 @@ spring:
   application:
     name: trainer-backend
   datasource:
+    hikari:
+      # такты плеера (lab.session.max-concurrent-ticks) держат соединения; запас оставляет их HTTP-запросам
+      maximum-pool-size: 20
     url: ${SPRING_DATASOURCE_URL}
     username: ${SPRING_DATASOURCE_USERNAME}
     password: ${SPRING_DATASOURCE_PASSWORD}
@@ -22,6 +25,16 @@ identity:
     max-failures-per-email: 5
     max-failures-per-ip: 20
     window: 5m
+
+lab:
+  session:
+    # ручная сессия без подписчиков SSE дольше этого срока встаёт на паузу (decisions.md)
+    disconnect-pause-after: 5s
+    min-tick: 200ms
+    heartbeat: 2s
+    event-retention: 24h
+    max-concurrent-ticks: 8
+    max-concurrent-sends: 256
 
 worker:
   address: ${WORKER_ADDRESS:localhost:50051}

@@ -161,7 +161,7 @@ final class ViewFormat {
         return out;
     }
 
-    /** Общие поля снимка ({@code SnapshotBase}). Состояние плеера задаёт backend#25, пока — пауза на скорости ×1. */
+    /** Общие поля снимка ({@code SnapshotBase}); {@code playing} и {@code speed} — состояние плеера сессии. */
     static Map<String, Object> snapshotBase(ArenaState state, int day) {
         SessionRecord session = state.session();
         Map<String, Object> out = new LinkedHashMap<>();
@@ -173,9 +173,25 @@ final class ViewFormat {
         out.put("day", day);
         out.put("totalDays", session.tradingDays());
         out.put("finished", isFinished(state));
-        out.put("playing", false);
-        out.put("speed", 1);
+        out.put("playing", state.player().playing() && !isFinished(state));
+        out.put("speed", state.player().speed());
         return out;
+    }
+
+    /** Общие поля результата шага ({@code StepResultBase}). */
+    static Map<String, Object> stepBase(ArenaState state, int day) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("step", state.step());
+        out.put("day", day);
+        out.put("finished", isFinished(state));
+        return out;
+    }
+
+    /** Заявки, закрытые после шага {@code fromStep} (исключительно) и не дальше курсора: исполнены, отменены, истекли. */
+    static List<OrderState> changedOrders(ArenaState state, long fromStep) {
+        return state.replay().orders().stream()
+                .filter(o -> o.closedStep() > fromStep && o.closedStep() <= state.step())
+                .toList();
     }
 
     static boolean isFinished(ArenaState state) {
@@ -195,6 +211,13 @@ final class ViewFormat {
         private final TreeMap<Long, int[]> byStep = new TreeMap<>();
 
         private final TreeMap<Long, Integer> days = new TreeMap<>();
+
+        /** Индекс по готовым позициям шагов: {@code шаг -> [день, свеча в дне]} (шаги пачки плеера). */
+        static StepIndex of(Map<Long, int[]> positions) {
+            StepIndex index = new StepIndex();
+            index.byStep.putAll(positions);
+            return index;
+        }
 
         /** Добавляет шаг с бара; порядок добавления не важен, нумерацию считает {@link #build()}. */
         void add(long step, int tradingDay) {

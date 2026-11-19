@@ -3,14 +3,11 @@ package ru.tinvest.trainer.sessions;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
 import ru.tinvest.trainer.api.NotFoundException;
 import ru.tinvest.trainer.worker.SimulationWorkerClient;
 import ru.tinvest.trainer.worker.WorkerTypes.BarInterval;
@@ -25,7 +22,6 @@ import ru.tinvest.trainer.worker.WorkerTypes.OrderState;
 import ru.tinvest.trainer.worker.WorkerTypes.Paper;
 import ru.tinvest.trainer.worker.WorkerTypes.RejectCode;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
-import tools.jackson.databind.JsonNode;
 
 /**
  * Арена: снимок сессии на курсоре, подача, отмена и замена заявок, оценка заявки. Состояние сессии — проигрывание
@@ -42,26 +38,29 @@ class Arena {
     private final Sessions sessions;
     private final ArenaJournal journals;
     private final OrderRefs orderRefs;
-    private final Idempotency idempotency;
+    private final CommandRunner commands;
+    private final SessionEvents events;
     private final SimulationWorkerClient worker;
     private final BlindMasking masking;
-    private final TransactionTemplate transaction;
+    private final PlayerStates players;
 
     Arena(
             Sessions sessions,
             ArenaJournal journals,
             OrderRefs orderRefs,
-            Idempotency idempotency,
+            CommandRunner commands,
+            SessionEvents events,
             SimulationWorkerClient worker,
             BlindMasking masking,
-            PlatformTransactionManager transactionManager) {
+            PlayerStates players) {
         this.sessions = sessions;
         this.journals = journals;
         this.orderRefs = orderRefs;
-        this.idempotency = idempotency;
+        this.commands = commands;
+        this.events = events;
         this.worker = worker;
         this.masking = masking;
-        this.transaction = new TransactionTemplate(transactionManager);
+        this.players = players;
     }
 
     /** Условия сессии для воркера: бумаги в порядке {@code paper_index} (индекс = {@code instrument_index} ядра). */
@@ -194,48 +193,13 @@ class Arena {
         });
     }
 
-    /**
-     * Выполняет команду под блокировкой сессии. Ключ идемпотентности занимается до транзакции, ответ пишется вместе с
-     * журналом; при ошибке ключ освобождается, и повтор выполнится заново.
-     */
     private Object runCommand(
             UUID sessionId,
             @Nullable UUID key,
             String operation,
             String requestHash,
             Function<SessionRecord, Map<String, Object>> body) {
-        // чужая и несуществующая сессия — 404 до любой записи
-        sessions.requireOwned(sessionId);
-        Idempotency.Claim claim = null;
-        if (key != null) {
-            claim = idempotency.claim(sessionId, key, operation, requestHash);
-            if (!claim.owned()) {
-                return claim.previous().get();
-            }
-        }
-        Idempotency.Claim owned = claim;
-        try {
-            return transaction.execute(status -> {
-                SessionRecord session = sessions.requireOwnedForUpdate(sessionId);
-                if (owned != null) {
-                    // под блокировкой сессии: ответ по ключу мог быть записан, пока ждали очередь
-                    Optional<JsonNode> done = idempotency.recheck(sessionId, key, owned.token());
-                    if (done.isPresent()) {
-                        return done.get();
-                    }
-                }
-                Map<String, Object> response = body.apply(session);
-                if (owned != null) {
-                    idempotency.complete(sessionId, key, owned.token(), response);
-                }
-                return response;
-            });
-        } catch (RuntimeException e) {
-            if (owned != null) {
-                idempotency.release(sessionId, key, owned.token());
-            }
-            throw e;
-        }
+        return commands.run(sessionId, key, operation, requestHash, body);
     }
 
     /** Пишет команду в журнал вместе с итогом воркера; отказ воркера тоже записывается (accepted = false). */
@@ -266,14 +230,23 @@ class Arena {
         }
         if (command instanceof Command.Cancel cancel) {
             List<Long> shown = legIds(replay, cancel.orderId());
+            orderUpdated(session, state, shown);
             return masking.commandResult(state, new ArenaState.CommandReply(true, null, null, List.of(), shown));
         }
         if (outcome.orderIds().isEmpty()) {
             throw new IllegalStateException("Воркер принял команду " + seq + " без номеров созданных заявок");
         }
         List<Long> created = outcome.orderIds();
+        orderUpdated(session, state, created);
 
         return masking.commandResult(state, new ArenaState.CommandReply(true, null, null, created, created));
+    }
+
+    /** Событие {@code order_updated} по каждой заявке принятой команды; пишется в транзакции команды. */
+    private void orderUpdated(SessionRecord session, ArenaState state, List<Long> coreOrderIds) {
+        for (long id : coreOrderIds) {
+            events.append(session.id(), "order_updated", masking.orderUpdatedEvent(state, id));
+        }
     }
 
     /** Отказ до воркера: в журнал не пишется, ответ — 200 с {@code accepted: false}. */
@@ -351,11 +324,12 @@ class Arena {
 
     // ---------- состояние ----------
 
-    private ArenaState state(SessionRecord session, ReplayResult replay, Map<Long, Long> seenSteps) {
+    ArenaState state(SessionRecord session, ReplayResult replay, Map<Long, Long> seenSteps) {
         TreeSet<Long> ids = new TreeSet<>();
         replay.orders().forEach(o -> ids.add(o.id()));
         replay.fills().forEach(f -> ids.add(f.orderId()));
-        return new ArenaState(session, replay, orderRefs.ensure(session.id(), ids), seenSteps);
+        return new ArenaState(
+                session, replay, orderRefs.ensure(session.id(), ids), seenSteps, players.get(session.id()));
     }
 
     private static List<OrderKind> commandKinds(Command command) {

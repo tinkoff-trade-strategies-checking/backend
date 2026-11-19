@@ -16,8 +16,14 @@ import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
  *
  * @param orderIds идентификаторы заявок наружу (UUID v7) по номеру в ядре
  * @param seenSteps {@code seen_step} из журнала по номеру команды {@code seq}
+ * @param player состояние плеера: играет ли время и скорость
  */
-record ArenaState(SessionRecord session, ReplayResult replay, Map<Long, UUID> orderIds, Map<Long, Long> seenSteps) {
+record ArenaState(
+        SessionRecord session,
+        ReplayResult replay,
+        Map<Long, UUID> orderIds,
+        Map<Long, Long> seenSteps,
+        PlayerStates.Row player) {
 
     /** Номер команды, создавшей заявку: {@code id = seq * 2 + нога}. */
     static long seqOf(long coreOrderId) {

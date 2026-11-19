@@ -31,6 +31,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.PositionState;
 import ru.tinvest.trainer.worker.WorkerTypes.RejectCode;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
 import ru.tinvest.trainer.worker.WorkerTypes.RunState;
+import ru.tinvest.trainer.worker.WorkerTypes.StepBars;
 import ru.tinvest.trainer.worker.WorkerTypes.Tif;
 import ru.tinvest.trainer.worker.WorkerTypes.TradeSide;
 
@@ -163,17 +164,7 @@ final class WorkerMapper {
     static ReplayResult replay(pac.simulation.v1.ReplaySessionResponse r) {
         List<BarData> history = new ArrayList<>(r.getHistoryCount());
         for (pac.simulation.v1.Bar b : r.getHistoryList()) {
-            history.add(new BarData(
-                    b.getStep(),
-                    b.getInstrumentKey(),
-                    b.getTimeUnixMs(),
-                    b.getTradingDay(),
-                    decimal(b.getOpen()),
-                    decimal(b.getHigh()),
-                    decimal(b.getLow()),
-                    decimal(b.getClose()),
-                    b.getVolumeLots(),
-                    b.getAfterHalt()));
+            history.add(bar(b));
         }
         List<OrderState> orders = new ArrayList<>(r.getOrdersCount());
         for (pac.simulation.v1.Order o : r.getOrdersList()) {
@@ -211,6 +202,56 @@ final class WorkerMapper {
                 results,
                 r.getWarmupSteps(),
                 r.hasBlindView() ? blindView(r.getBlindView()) : null);
+    }
+
+    /** Свечи событий шагов после {@code fromStep}: рублёвые и (если запрошен слепой вид) слепые. */
+    static StepBars stepBars(pac.simulation.v1.ReplaySessionResponse r, long fromStep) {
+        List<BarData> bars = new ArrayList<>();
+        for (pac.simulation.v1.StepEvents e : r.getEventsList()) {
+            for (pac.simulation.v1.Bar b : e.getBarsList()) {
+                if (b.getStep() > fromStep) {
+                    bars.add(bar(b));
+                }
+            }
+        }
+        List<BlindBarData> blindBars = new ArrayList<>();
+        if (r.hasBlindView()) {
+            for (pac.simulation.v1.BlindStepEvents e : r.getBlindView().getEventsList()) {
+                for (pac.simulation.v1.BlindBar b : e.getBarsList()) {
+                    if (b.getStep() > fromStep) {
+                        blindBars.add(blindBar(b));
+                    }
+                }
+            }
+        }
+        return new StepBars(bars, blindBars);
+    }
+
+    private static BarData bar(pac.simulation.v1.Bar b) {
+        return new BarData(
+                b.getStep(),
+                b.getInstrumentKey(),
+                b.getTimeUnixMs(),
+                b.getTradingDay(),
+                decimal(b.getOpen()),
+                decimal(b.getHigh()),
+                decimal(b.getLow()),
+                decimal(b.getClose()),
+                b.getVolumeLots(),
+                b.getAfterHalt());
+    }
+
+    private static BlindBarData blindBar(pac.simulation.v1.BlindBar b) {
+        return new BlindBarData(
+                b.getStep(),
+                b.getInstrumentIndex(),
+                b.getTradingDay(),
+                decimal(b.getOpen()),
+                decimal(b.getHigh()),
+                decimal(b.getLow()),
+                decimal(b.getClose()),
+                decimal(b.getVolumeRel()),
+                b.getAfterHalt());
     }
 
     private static PortfolioState portfolio(pac.simulation.v1.Portfolio p) {
@@ -274,16 +315,7 @@ final class WorkerMapper {
         }
         List<BlindBarData> history = new ArrayList<>(v.getHistoryCount());
         for (pac.simulation.v1.BlindBar b : v.getHistoryList()) {
-            history.add(new BlindBarData(
-                    b.getStep(),
-                    b.getInstrumentIndex(),
-                    b.getTradingDay(),
-                    decimal(b.getOpen()),
-                    decimal(b.getHigh()),
-                    decimal(b.getLow()),
-                    decimal(b.getClose()),
-                    decimal(b.getVolumeRel()),
-                    b.getAfterHalt()));
+            history.add(blindBar(b));
         }
         List<BlindOrderData> orders = new ArrayList<>(v.getOrdersCount());
         for (pac.simulation.v1.BlindOrder o : v.getOrdersList()) {

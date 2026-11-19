@@ -216,6 +216,15 @@ public final class WorkerTypes {
             List<BlindOrderData> orders,
             List<BlindFillData> fills) {}
 
+    /**
+     * Свечи шагов пачки {@code (fromStep; upToStep]} из событий шагов ядра: рублёвые и слепые. История до курсора не
+     * нужна — по ним строится событие шага плеера.
+     */
+    public record StepBars(List<BarData> bars, List<BlindBarData> blindBars) {}
+
+    /** Состояние на курсоре без истории и свечи пройденной пачки шагов. */
+    public record StepReplay(ReplayResult replay, StepBars steps) {}
+
     /** Результат воспроизведения журнала ({@code ReplaySessionResponse}). */
     public record ReplayResult(
             long totalSteps,

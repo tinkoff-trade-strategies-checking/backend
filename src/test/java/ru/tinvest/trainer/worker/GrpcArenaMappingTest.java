@@ -105,6 +105,54 @@ class GrpcArenaMappingTest {
     }
 
     @Test
+    void replayStepsAsksForEventsAfterFromStepWithoutHistoryAndMapsTheirBars() throws Exception {
+        AtomicReference<ReplaySessionRequest> seen = new AtomicReference<>();
+        var client = start(new SimulationWorkerGrpc.SimulationWorkerImplBase() {
+            @Override
+            public void replaySession(ReplaySessionRequest request, StreamObserver<ReplaySessionResponse> observer) {
+                seen.set(request);
+                observer.onNext(ReplaySessionResponse.newBuilder()
+                        .setTotalSteps(100)
+                        .setStatus(pac.simulation.v1.SessionStatus.RUNNING)
+                        .setLastStep(7)
+                        .addEvents(events(6))
+                        .addEvents(events(7))
+                        .setPortfolio(pac.simulation.v1.Portfolio.newBuilder()
+                                .setCash(dec(500_000, 0))
+                                .setEquity(dec(500_000, 0)))
+                        .build());
+                observer.onCompleted();
+            }
+        });
+
+        var result = client.replaySteps(market(), List.of(), 7, 5, false);
+
+        // интервал событий ядра (events_from_step; up_to_step]: левая граница не входит, поэтому передаём сам fromStep
+        assertThat(seen.get().getEventsFromStep()).isEqualTo(5);
+        assertThat(seen.get().getUpToStep()).isEqualTo(7);
+        assertThat(seen.get().getIncludeHistory()).isFalse();
+        assertThat(result.steps().bars()).extracting(b -> b.step()).containsExactly(6L, 7L);
+        assertThat(result.steps().bars().get(0).tradingDay()).isEqualTo(2);
+        assertThat(result.replay().history()).isEmpty();
+    }
+
+    private static pac.simulation.v1.StepEvents events(long step) {
+        return pac.simulation.v1.StepEvents.newBuilder()
+                .setStep(step)
+                .addBars(pac.simulation.v1.Bar.newBuilder()
+                        .setStep(step)
+                        .setInstrumentKey("SBER")
+                        .setTimeUnixMs(1_647_241_200_000L + step)
+                        .setTradingDay(2)
+                        .setOpen(dec(250, 0))
+                        .setHigh(dec(251, 0))
+                        .setLow(dec(249, 0))
+                        .setClose(dec(250, 0))
+                        .setVolumeLots(10))
+                .build();
+    }
+
+    @Test
     void replaySessionMapsJournalAndState() throws Exception {
         AtomicReference<ReplaySessionRequest> seen = new AtomicReference<>();
         var client = start(new SimulationWorkerGrpc.SimulationWorkerImplBase() {

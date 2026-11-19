@@ -34,10 +34,13 @@ class ArenaJournal {
         this.json = json;
     }
 
-    /** Записи журнала по порядку для воркера. */
+    /** Записи журнала по порядку для воркера, не дальше курсора переданной сессии. */
     List<JournalRecord> records(SessionRecord session) {
-        return jdbc.sql("SELECT seq, step, command FROM sessions.command_journal WHERE session_id = :id ORDER BY seq")
+        // записи дальше курсора сессии (курсор мог уйти вперёд после чтения сессии) воркер отвергает: берём до курсора
+        return jdbc.sql("SELECT seq, step, command FROM sessions.command_journal "
+                        + "WHERE session_id = :id AND step <= :step ORDER BY seq")
                 .param("id", session.id())
+                .param("step", session.currentStep())
                 .query((rs, n) -> new JournalRecord(
                         rs.getLong("seq"), rs.getLong("step"), decode(rs.getString("command"), session)))
                 .list();

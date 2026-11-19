@@ -4,7 +4,6 @@ import java.util.Map;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -77,20 +76,10 @@ class ArenaController {
 
     @ExceptionHandler(IdempotencyException.class)
     ProblemDetail idempotencyConflict(IdempotencyException e) {
-        ProblemDetail problem = ProblemDetail.forStatusAndDetail(e.status(), e.getMessage());
-        problem.setTitle(e.status() == HttpStatus.CONFLICT ? "Conflict" : "Unprocessable Content");
-        problem.setProperty("code", e.code());
-        return problem;
+        return SessionProblems.idempotency(e);
     }
 
     private static @Nullable UUID key(@Nullable String header) {
-        if (header == null) {
-            return null;
-        }
-        try {
-            return UUID.fromString(header);
-        } catch (IllegalArgumentException e) {
-            throw new InvalidRequestException("Idempotency-Key must be a UUID");
-        }
+        return SessionProblems.key(header);
     }
 }

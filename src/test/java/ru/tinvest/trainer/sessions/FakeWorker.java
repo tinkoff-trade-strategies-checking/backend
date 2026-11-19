@@ -10,6 +10,7 @@ import java.util.TreeMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import ru.tinvest.trainer.api.DependencyUnavailableException;
 import ru.tinvest.trainer.worker.PeriodClassification;
 import ru.tinvest.trainer.worker.SimulationWorkerClient;
@@ -34,6 +35,8 @@ import ru.tinvest.trainer.worker.WorkerTypes.PortfolioState;
 import ru.tinvest.trainer.worker.WorkerTypes.RejectCode;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
 import ru.tinvest.trainer.worker.WorkerTypes.RunState;
+import ru.tinvest.trainer.worker.WorkerTypes.StepBars;
+import ru.tinvest.trainer.worker.WorkerTypes.StepReplay;
 
 /**
  * Воркер для тестов арены: без состояния, как настоящий (журнал приходит целиком). Отвечает заранее заданными
@@ -51,6 +54,8 @@ final class FakeWorker implements SimulationWorkerClient {
     static final long BASE_TIME_MS = 1_647_241_200_000L; // 2022-03-14T07:00:00Z
 
     volatile boolean down;
+    /** Шаг банкротства: курсор дальше него останавливается на нём, статус {@code BANKRUPT}; {@code -1} — нет. */
+    volatile long bankruptAt = -1;
     /** Бумаги без баров до курсора (в раскрытом виде их свечей нет). */
     volatile Set<String> noBars = Set.of();
     /** Если задан, {@code replaySession} сообщает о входе в {@code entered} и ждёт {@code gate}. */
@@ -65,6 +70,12 @@ final class FakeWorker implements SimulationWorkerClient {
 
     void reset() {
         down = false;
+        bankruptAt = -1;
+        historyCalls.set(0);
+        stepCalls.set(0);
+        slowSnapshot = null;
+        slowEntered = null;
+        slowGate = null;
         noBars = Set.of();
         entered = null;
         gate = null;
@@ -141,13 +152,73 @@ final class FakeWorker implements SimulationWorkerClient {
         return price == null ? null : price.divide(BLIND_TO_RUBLES);
     }
 
+    /** Сколько раз воркера просили полную историю ({@code replaySession} с историей). */
+    final AtomicInteger historyCalls = new AtomicInteger();
+    /** Сколько раз просили свечи пачки шагов ({@code replaySteps}). */
+    final AtomicInteger stepCalls = new AtomicInteger();
+    /** Если задан, воспроизведение сессии с этим {@code snapshotId} сообщает о входе и ждёт {@link #slowGate}. */
+    volatile String slowSnapshot;
+
+    volatile CountDownLatch slowEntered;
+    volatile CountDownLatch slowGate;
+
     @Override
     public ReplayResult replaySession(
             Market market, List<JournalRecord> journal, long upToStep, boolean includeHistory, boolean blind) {
+        if (includeHistory) {
+            historyCalls.incrementAndGet();
+        }
+        return replay(market, journal, upToStep, includeHistory, blind);
+    }
+
+    @Override
+    public StepReplay replaySteps(
+            Market market, List<JournalRecord> journal, long upToStep, long fromStep, boolean blind) {
+        stepCalls.incrementAndGet();
+        ReplayResult full = replay(market, journal, upToStep, true, blind);
+        List<BarData> bars =
+                full.history().stream().filter(b -> b.step() > fromStep).toList();
+        List<BlindBarData> blindBars = full.blindView() == null
+                ? List.of()
+                : full.blindView().history().stream()
+                        .filter(b -> b.step() > fromStep)
+                        .toList();
+        BlindViewData view = full.blindView() == null
+                ? null
+                : new BlindViewData(
+                        full.blindView().papers(),
+                        List.of(),
+                        full.blindView().portfolio(),
+                        full.blindView().orders(),
+                        full.blindView().fills());
+        ReplayResult trimmed = new ReplayResult(
+                full.totalSteps(),
+                full.state(),
+                full.lastStep(),
+                List.of(),
+                full.portfolio(),
+                full.orders(),
+                full.fills(),
+                full.commandResults(),
+                full.warmupSteps(),
+                view);
+        return new StepReplay(trimmed, new StepBars(bars, blindBars));
+    }
+
+    private ReplayResult replay(
+            Market market, List<JournalRecord> journal, long upToStep, boolean includeHistory, boolean blind) {
         checkUp();
+        waitAtSlowGate(market);
         lastMarket = market;
         waitAtGate();
         replayJournals.add(List.copyOf(journal));
+        // конец периода — последний шаг шкалы; банкротство останавливает раньше
+        long lastStep = Math.min(upToStep, TOTAL_STEPS - 1);
+        RunState runState = lastStep >= TOTAL_STEPS - 1 ? RunState.FINISHED_END : RunState.RUNNING;
+        if (bankruptAt >= 0 && lastStep >= bankruptAt) {
+            lastStep = bankruptAt;
+            runState = RunState.BANKRUPT;
+        }
         Map<Long, OrderState> orders = new TreeMap<>();
         List<CommandOutcome> outcomes = new ArrayList<>();
         for (JournalRecord entry : journal) {
@@ -230,7 +301,7 @@ final class FakeWorker implements SimulationWorkerClient {
         List<BarData> history = new ArrayList<>();
         List<BlindBarData> blindHistory = new ArrayList<>();
         if (includeHistory) {
-            for (long step = -WARMUP; step <= upToStep; step++) {
+            for (long step = -WARMUP; step <= lastStep; step++) {
                 for (int i = 0; i < market.papers().size(); i++) {
                     if (noBars.contains(market.papers().get(i).key())) {
                         continue;
@@ -285,16 +356,7 @@ final class FakeWorker implements SimulationWorkerClient {
                     blindFills);
         }
         return new ReplayResult(
-                TOTAL_STEPS,
-                RunState.RUNNING,
-                upToStep,
-                history,
-                portfolio,
-                visible,
-                fills,
-                outcomes,
-                WARMUP,
-                blindView);
+                TOTAL_STEPS, runState, lastStep, history, portfolio, visible, fills, outcomes, WARMUP, blindView);
     }
 
     private static BigDecimal rubles(int paperIndex, long step) {
@@ -380,6 +442,22 @@ final class FakeWorker implements SimulationWorkerClient {
                             o.ocoSiblingId(),
                             null,
                             step));
+        }
+    }
+
+    private void waitAtSlowGate(Market market) {
+        CountDownLatch g = slowGate;
+        if (g == null || !market.snapshotId().equals(slowSnapshot)) {
+            return;
+        }
+        slowEntered.countDown();
+        try {
+            if (!g.await(30, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("slowGate не открыт");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
         }
     }
 
