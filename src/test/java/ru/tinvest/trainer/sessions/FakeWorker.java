@@ -73,6 +73,7 @@ final class FakeWorker implements SimulationWorkerClient {
     final List<List<JournalRecord>> replayJournals = new CopyOnWriteArrayList<>();
     final List<List<JournalRecord>> estimateJournals = new CopyOnWriteArrayList<>();
     final List<OrderParams> estimated = new CopyOnWriteArrayList<>();
+    final java.util.concurrent.atomic.AtomicInteger reportAttempts = new java.util.concurrent.atomic.AtomicInteger();
     final List<Long> dayRequests = new CopyOnWriteArrayList<>();
     final List<Long> replayUpToSteps = new CopyOnWriteArrayList<>();
     final List<ReportRequest> reportRequests = new CopyOnWriteArrayList<>();
@@ -96,6 +97,7 @@ final class FakeWorker implements SimulationWorkerClient {
         reportRequests.clear();
         replayUpToSteps.clear();
         dayRequests.clear();
+        reportAttempts.set(0);
     }
 
     @Override
@@ -376,6 +378,7 @@ final class FakeWorker implements SimulationWorkerClient {
     /** Отчёт по заранее заданным значениям: капитал растёт на {@link #EQUITY_PER_STEP} за шаг, бенчмарк — на концах дней. */
     @Override
     public ReplayResult replayWithReport(Market market, List<JournalRecord> journal, long upToStep) {
+        reportAttempts.incrementAndGet();
         ReplayResult base = replaySession(market, journal, upToStep, true, false);
         reportRequests.add(new ReportRequest(List.copyOf(journal), upToStep));
         List<EquityPointData> equity = new ArrayList<>();

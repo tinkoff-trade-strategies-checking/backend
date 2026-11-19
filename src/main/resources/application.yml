@@ -40,6 +40,7 @@ analysis:
   report-build:
     threads: ${REPORT_BUILD_THREADS:2}
     queue: ${REPORT_BUILD_QUEUE:100}
+    retry-interval: ${REPORT_BUILD_RETRY_INTERVAL:1m}
 
 worker:
   address: ${WORKER_ADDRESS:localhost:50051}

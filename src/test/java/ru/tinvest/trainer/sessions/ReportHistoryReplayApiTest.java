@@ -99,6 +99,9 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
     private ReportBuilder builder;
 
     @Autowired
+    private PlayerStates players;
+
+    @Autowired
     private ApplicationEventPublisher events;
 
     @Autowired
@@ -502,7 +505,46 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         assertThat(builder.buildAndStore(newSession(false))).isFalse();
     }
 
+    @Test
+    void failingReportBuildIsRetriedNoMoreOftenThanTheInterval() throws Exception {
+        UUID id = newSession(false);
+        finish(id, "completed");
+        worker.down = true;
+
+        httpGet("/api/v1/sessions/" + id + "/report");
+        awaitIdle();
+        assertThat(worker.reportAttempts.get()).isEqualTo(1);
+        // повторные запросы в течение интервала журнал заново не гоняют
+        for (int i = 0; i < 3; i++) {
+            assertThat(body(httpGet("/api/v1/sessions/" + id + "/report"))
+                            .get("status")
+                            .asString())
+                    .isEqualTo("BUILDING");
+        }
+        awaitIdle();
+        assertThat(worker.reportAttempts.get()).isEqualTo(1);
+        // интервал прошёл: следующий запрос пробует снова
+        Thread.sleep(1_000);
+        httpGet("/api/v1/sessions/" + id + "/report");
+        awaitIdle();
+        assertThat(worker.reportAttempts.get()).isEqualTo(2);
+    }
+
     // ---------- история ----------
+
+    @Test
+    void historyTakesTheDayFromThePlayerAndDoesNotNeedTheWorker() throws Exception {
+        UUID id = newSession(false);
+        setStep(id, 4);
+        players.setCursor(id, 4, 2, 2);
+        worker.down = true;
+
+        JsonNode page = body(httpGet("/api/v1/history"));
+
+        assertThat(page.get("items")).hasSize(1);
+        assertThat(page.get("items").get(0).get("playedDays").asInt()).isEqualTo(2);
+        assertThat(worker.dayRequests).isEmpty();
+    }
 
     @Test
     void historyIsPagedNewestFirst() throws Exception {
@@ -579,6 +621,8 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         UUID blindRunning = newSession(true);
         UUID openRunning = newSession(false);
         setStep(openRunning, 3);
+        // плеер запомнил день на шаге курсора: воркер для него не нужен
+        players.setCursor(openRunning, 3, 2, 1);
         UUID blindDone = newSession(true);
         setStep(blindDone, LAST_STEP);
         finish(blindDone, "completed");
@@ -596,8 +640,9 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         builder.buildAndStore(blindDone);
         worker.dayRequests.clear();
         JsonNode page = body(httpGet("/api/v1/history"));
-        // лёгкий вызов только для идущих сессий (две), завершённая — из хранилища
-        assertThat(worker.dayRequests).hasSize(2);
+        // лёгкий вызов только для идущей сессии без строки плеера; открытая — из player_state, завершённая — из
+        // хранилища
+        assertThat(worker.dayRequests).hasSize(1);
         assertThat(worker.reportRequests).hasSize(1);
 
         Map<String, JsonNode> byId = new HashMap<>();

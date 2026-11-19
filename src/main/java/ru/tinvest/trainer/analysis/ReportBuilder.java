@@ -1,14 +1,15 @@
 package ru.tinvest.trainer.analysis;
 
+import jakarta.annotation.PreDestroy;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
@@ -33,29 +34,44 @@ public class ReportBuilder {
     private final SessionArchive archive;
     private final StoredReports store;
     private final SessionEvents events;
-    private final Executor executor;
+    private final ThreadPoolTaskExecutor executor;
+    private final Duration retryInterval;
     private final Set<UUID> inFlight = ConcurrentHashMap.newKeySet();
+    /** Когда сборка сессии упала в последний раз (монотонные наносекунды); в памяти, теряется при рестарте. */
+    private final Map<UUID, Long> failedAt = new ConcurrentHashMap<>();
 
-    ReportBuilder(
-            SessionArchive archive,
-            StoredReports store,
-            SessionEvents events,
-            @Qualifier("reportBuildExecutor") Executor executor) {
+    ReportBuilder(SessionArchive archive, StoredReports store, SessionEvents events, ReportBuildProperties properties) {
         this.archive = archive;
         this.store = store;
         this.events = events;
-        this.executor = executor;
+        this.retryInterval = properties.retryInterval();
+        // свой пул, не бин: бин Executor отключил бы стандартный пул Spring Boot для остальных асинхронных задач
+        this.executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(properties.threads());
+        executor.setMaxPoolSize(properties.threads());
+        executor.setQueueCapacity(properties.queue());
+        executor.setThreadNamePrefix("report-build-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.initialize();
     }
 
-    /** Завершение зафиксировано: строим отчёт в пуле, не задерживая поток завершения. */
-    @Async("reportBuildExecutor")
+    /** Завершение зафиксировано: сборка уходит в пул, поток завершения не ждёт. */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-    public void onFinished(SessionFinished event) {
-        buildGuarded(event.sessionId());
+    void onFinished(SessionFinished event) {
+        failedAt.remove(event.sessionId());
+        executor.execute(() -> buildGuarded(event.sessionId()));
     }
 
-    /** Ставит сборку в пул, если для сессии она ещё не идёт (подстраховка из {@code GET report}). */
+    /**
+     * Подстраховка из {@code GET report}: ставит сборку в пул, если она не падала недавно. Постоянно падающая сборка не
+     * гоняет журнал на каждый запрос: повтор не чаще {@code retry-interval} на сессию.
+     */
     void buildInBackground(UUID sessionId) {
+        Long failed = failedAt.get(sessionId);
+        if (failed != null && System.nanoTime() - failed < retryInterval.toNanos()) {
+            return;
+        }
         executor.execute(() -> buildGuarded(sessionId));
     }
 
@@ -65,7 +81,9 @@ public class ReportBuilder {
         }
         try {
             buildAndStore(sessionId);
+            failedAt.remove(sessionId);
         } catch (RuntimeException e) {
+            failedAt.put(sessionId, System.nanoTime());
             // в логе только идентификатор и тип ошибки (данные слепой сессии не пишем); повтор — следующим запросом
             log.warn("Отчёт сессии {} не построен: {}", sessionId, e.getClass().getSimpleName());
         } finally {
@@ -97,6 +115,11 @@ public class ReportBuilder {
             announce(sessionId);
         }
         return stored || store.find(sessionId).isPresent();
+    }
+
+    @PreDestroy
+    void shutdown() {
+        executor.shutdown();
     }
 
     /** Отчёт уже сохранён; не вышло объявить — клиент увидит его при следующем чтении, события не повторяем. */

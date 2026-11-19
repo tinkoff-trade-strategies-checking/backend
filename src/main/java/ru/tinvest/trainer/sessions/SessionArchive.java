@@ -23,6 +23,7 @@ public class SessionArchive {
     private final Sessions sessions;
     private final ArenaJournal journals;
     private final SimulationWorkerClient worker;
+    private final PlayerStates players;
     private final JdbcClient jdbc;
     private final CurrentUser currentUser;
 
@@ -30,11 +31,13 @@ public class SessionArchive {
             Sessions sessions,
             ArenaJournal journals,
             SimulationWorkerClient worker,
+            PlayerStates players,
             JdbcClient jdbc,
             CurrentUser currentUser) {
         this.sessions = sessions;
         this.journals = journals;
         this.worker = worker;
+        this.players = players;
         this.jdbc = jdbc;
         this.currentUser = currentUser;
     }
@@ -116,10 +119,15 @@ public class SessionArchive {
     }
 
     /**
-     * Номер торгового дня на курсоре: {@code Metrics.trading_days} ядра при {@code include_history = false}; журнал не
-     * нужен, день от команд не зависит. Для завершённой сессии без сохранённого отчёта (он ещё строится).
+     * Номер торгового дня на курсоре. Основной путь — день, который плеер запомнил в {@code player_state.cursor_day} на
+     * шаге курсора, без воркера (история не зависит от доступности ядра и данных снапшота). Запасной — строки нет или
+     * она на другом шаге: {@code Metrics.trading_days} ядра при {@code include_history = false}, журнал не нужен.
      */
     public int playedDays(SessionRecord session) {
+        PlayerStates.Row row = players.get(session.id());
+        if (row.cursorStep().isPresent() && row.cursorStep().getAsLong() == session.currentStep()) {
+            return row.cursorDay();
+        }
         return worker.tradingDaysAt(Arena.market(session), session.currentStep());
     }
 
