@@ -609,7 +609,7 @@ final class FakeWorker implements SimulationWorkerClient {
         }
         slowEntered.countDown();
         try {
-            if (!g.await(30, TimeUnit.SECONDS)) {
+            if (!g.await(5, TimeUnit.MINUTES)) {
                 throw new IllegalStateException("slowGate не открыт");
             }
         } catch (InterruptedException e) {

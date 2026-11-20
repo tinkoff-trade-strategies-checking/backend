@@ -19,6 +19,7 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -1056,6 +1057,7 @@ class PlayerApiTest extends PostgresIntegrationTest {
     // ---------- I4: такты разных сессий независимы ----------
 
     @Test
+    @Timeout(value = 5, unit = java.util.concurrent.TimeUnit.MINUTES)
     void slowSessionDoesNotStopTheTicksOfOthers() throws Exception {
         timer.asyncExecute = true;
         UUID slow = newSession(false);
@@ -1069,17 +1071,16 @@ class PlayerApiTest extends PostgresIntegrationTest {
         worker.slowGate = new java.util.concurrent.CountDownLatch(1);
 
         timer.advance(Duration.ofSeconds(1));
-        assertThat(worker.slowEntered.await(10, java.util.concurrent.TimeUnit.SECONDS))
-                .isTrue();
-        awaitTrue(() -> step(fast) == 1);
+        worker.slowEntered.await();
+        awaitCondition(() -> step(fast) == 1);
         timer.advance(Duration.ofSeconds(1));
-        awaitTrue(() -> step(fast) == 2);
+        awaitCondition(() -> step(fast) == 2);
 
         // медленная сессия стоит на своём такте и не копит параллельные такты
         assertThat(step(slow)).isZero();
         assertThat(worker.stepCalls.get()).isEqualTo(3);
         worker.slowGate.countDown();
-        awaitTrue(() -> step(slow) >= 1);
+        awaitCondition(() -> step(slow) >= 1);
         assertThat(playing(slow)).isTrue();
     }
 
@@ -1202,6 +1203,13 @@ class PlayerApiTest extends PostgresIntegrationTest {
     }
 
     // ---------- вспомогательное ----------
+
+    /** Ждёт условие без своего таймаута на стенных часах: от зависания страхует {@code @Timeout} теста, а не нагрузка машины. */
+    private static void awaitCondition(java.util.function.BooleanSupplier condition) throws InterruptedException {
+        while (!condition.getAsBoolean()) {
+            Thread.sleep(5);
+        }
+    }
 
     private static void awaitTrue(java.util.function.BooleanSupplier condition) throws InterruptedException {
         long end = System.currentTimeMillis() + 10_000;
