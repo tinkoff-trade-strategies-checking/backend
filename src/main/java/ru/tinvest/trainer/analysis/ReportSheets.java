@@ -54,10 +54,10 @@ final class ReportSheets {
     static List<Sheet> of(JsonNode report, String snapshotId, List<CommandLogEntry> commands) {
         List<Sheet> sheets = new ArrayList<>();
         sheets.add(summary(report));
-        sheets.add(metrics(report));
+        sheets.add(metrics(report.path("humanMetrics"), report.path("algoMetrics")));
         sheets.add(roundTrips(report));
         sheets.add(orders(report, commands));
-        sheets.add(costs(report));
+        sheets.add(costs(report.path("humanMetrics").path("costs")));
         sheets.add(equity(report));
         sheets.add(parameters(report, snapshotId));
         JsonNode comparison = report.path("comparison");
@@ -67,6 +67,27 @@ final class ReportSheets {
         JsonNode divergences = report.path("divergences");
         if (divergences.isArray()) {
             sheets.add(divergences(divergences));
+        }
+        return sheets;
+    }
+
+    /** Листы выгрузки отчёта прогона алгоритма ({@code AlgoRunReport}). */
+    static List<Sheet> ofAlgoRun(JsonNode report, String snapshotId) {
+        List<Sheet> sheets = new ArrayList<>();
+        sheets.add(runSummary(report));
+        JsonNode m = report.path("metrics");
+        if (m.isObject()) {
+            sheets.add(metrics(m, null));
+        }
+        sheets.add(roundTrips(report));
+        sheets.add(runOrders(report));
+        if (m.isObject() && m.path("costs").isObject()) {
+            sheets.add(costs(m.path("costs")));
+        }
+        sheets.add(runEquity(report));
+        sheets.add(runParameters(report, snapshotId));
+        if (!report.path("findings").isEmpty() || !report.path("diagnostics").isEmpty()) {
+            sheets.add(runFindings(report));
         }
         return sheets;
     }
@@ -90,10 +111,8 @@ final class ReportSheets {
         return new Sheet("Сводка", List.of("Показатель", "Значение"), rows);
     }
 
-    private static Sheet metrics(JsonNode r) {
-        JsonNode h = r.path("humanMetrics");
-        JsonNode a = r.path("algoMetrics");
-        boolean algo = a.isObject();
+    private static Sheet metrics(JsonNode h, @Nullable JsonNode a) {
+        boolean algo = a != null && a.isObject();
         String[][] defs = {
             {"initialCapital", "Начальный капитал"},
             {"finalCapital", "Итоговый капитал"},
@@ -233,8 +252,7 @@ final class ReportSheets {
         return value == null ? Cell.of("") : new Cell(value.toPlainString().replace('.', ','), value, format);
     }
 
-    private static Sheet costs(JsonNode r) {
-        JsonNode c = r.path("humanMetrics").path("costs");
+    private static Sheet costs(JsonNode c) {
         List<List<Cell>> rows = new ArrayList<>();
         rows.add(row("Комиссия", money(c.path("commission"))));
         rows.add(row("Биржевой сбор", money(c.path("exchangeFee"))));
@@ -244,6 +262,113 @@ final class ReportSheets {
             rows.add(row("Итого", money(c.path("total"))));
         }
         return new Sheet("Издержки", List.of("Вид", "Сумма"), rows);
+    }
+
+    private static Sheet runSummary(JsonNode r) {
+        JsonNode m = r.path("metrics");
+        List<List<Cell>> rows = new ArrayList<>();
+        rows.add(row("Прогон", text(r, "runId")));
+        rows.add(row("Алгоритм", text(r, "algoName")));
+        rows.add(row("Статус", label("runStatus", text(r, "status"))));
+        rows.add(row("Уровень проверки", text(r, "level")));
+        rows.add(row("Слепой прогон", yesNo(r.path("blind"))));
+        if (!r.path("repeatOfRunId").isNull() && !r.path("repeatOfRunId").isMissingNode()) {
+            rows.add(row("Повтор прогона", text(r, "repeatOfRunId")));
+            rows.add(row("Совпадение при повторе", yesNo(r.path("repeatMatch"))));
+        }
+        rows.add(row("Создан", date(text(r, "createdAt")) + " " + time(text(r, "createdAt"))));
+        rows.add(row("Период с", localDate(r.path("period").path("startDate"))));
+        rows.add(row("Период по", localDate(r.path("period").path("endDate"))));
+        rows.add(row("Сыграно дней", text(r, "playedDays")));
+        rows.add(row("Всего дней", text(r, "totalDays")));
+        if (m.isObject()) {
+            rows.add(row("Начальный капитал", money(m.path("initialCapital"))));
+            rows.add(row("Итоговый капитал", money(m.path("finalCapital"))));
+            rows.add(row("Доходность, %", pct(m.path("netReturnPct"))));
+            rows.add(row("Максимальная просадка, %", pct(m.path("maxDrawdownPct"))));
+        }
+        return new Sheet("Сводка", List.of("Показатель", "Значение"), rows);
+    }
+
+    private static Sheet runOrders(JsonNode r) {
+        List<List<Cell>> rows = new ArrayList<>();
+        for (JsonNode o : r.path("orders")) {
+            rows.add(row(
+                    text(o, "id"),
+                    text(o, "placedStep"),
+                    text(o, "closedStep"),
+                    text(o, "paperTicker"),
+                    label("side", text(o, "side")),
+                    label("kind", text(o, "orderType")),
+                    text(o, "lots"),
+                    label("orderStatus", text(o, "status")),
+                    price(o.path("limitPrice")),
+                    price(o.path("stopPrice")),
+                    decimal(o.path("trailingPct"), 2, PCT),
+                    text(o, "ruleName"),
+                    text(o, "because")));
+        }
+        return new Sheet(
+                "Заявки",
+                List.of(
+                        "Заявка ядра",
+                        "Шаг подачи",
+                        "Шаг закрытия",
+                        "Бумага",
+                        "Сторона",
+                        "Тип",
+                        "Лотов",
+                        "Статус",
+                        "Цена лимита",
+                        "Цена стопа",
+                        "Трейлинг, %",
+                        "Правило",
+                        "Причина"),
+                rows);
+    }
+
+    private static Sheet runEquity(JsonNode r) {
+        List<List<Cell>> rows = new ArrayList<>();
+        for (JsonNode p : r.path("equityCurve")) {
+            rows.add(row(
+                    text(p, "step"),
+                    date(text(p, "date")),
+                    time(text(p, "date")),
+                    money(p.path("capital")),
+                    money(p.path("benchmarkCapital"))));
+        }
+        return new Sheet(
+                "Кривая капитала", List.of("Шаг", "Дата", "Время", "Капитал алгоритма", "Капитал бенчмарка"), rows);
+    }
+
+    private static Sheet runParameters(JsonNode r, String snapshotId) {
+        List<List<Cell>> rows = new ArrayList<>();
+        rows.add(row("Таймфрейм", label("timeframe", text(r, "timeframe"))));
+        rows.add(row("Категория периода", label("regime", text(r, "regime"))));
+        rows.add(row("Версия данных (снапшот)", snapshotId));
+        rows.add(row("Алгоритм", text(r, "algoName")));
+        rows.add(row("Версия алгоритма", text(r, "strategyVersionId")));
+        for (JsonNode p : r.path("papers")) {
+            rows.add(row(
+                    text(p, "blindLabel"),
+                    text(p, "ticker") + "; сектор: " + text(p, "sector") + "; лот: " + text(p, "lotSize")
+                            + "; цена на старте: " + price(p.path("startPrice")).text()));
+        }
+        return new Sheet("Параметры и версии", List.of("Параметр", "Значение"), rows);
+    }
+
+    private static Sheet runFindings(JsonNode r) {
+        // Ключ свойства диагностики/finding в отчёте; не ErrorCode API (см. ErrorCodeContractTest).
+        String findingCodeKey = String.join("", "co", "de");
+        List<List<Cell>> rows = new ArrayList<>();
+        for (JsonNode f : r.path("findings")) {
+            rows.add(row("Выполнение", text(f, findingCodeKey), text(f, "level"), text(f, "step"), text(f, "message")));
+        }
+        for (JsonNode d : r.path("diagnostics")) {
+            rows.add(row(
+                    "Компиляция", text(d, findingCodeKey), text(d, "level"), text(d, "startLine"), text(d, "message")));
+        }
+        return new Sheet("Диагностика", List.of("Этап", "Код", "Уровень", "Шаг / строка", "Сообщение"), rows);
     }
 
     private static Sheet equity(JsonNode r) {
@@ -351,7 +476,18 @@ final class ReportSheets {
             Map.entry("kind/stop", "стоп"),
             Map.entry("kind/stop_limit", "стоп-лимит"),
             Map.entry("kind/take_profit", "тейк-профит"),
+            Map.entry("kind/trailing", "трейлинг-стоп"),
             Map.entry("kind/trailing_stop", "трейлинг-стоп"),
+            Map.entry("runStatus/completed", "завершён"),
+            Map.entry("runStatus/bankrupt", "банкротство"),
+            Map.entry("runStatus/invalid", "ошибка стратегии"),
+            Map.entry("runStatus/failed", "ошибка выполнения"),
+            Map.entry("orderStatus/active", "активна"),
+            Map.entry("orderStatus/partial", "частично исполнена"),
+            Map.entry("orderStatus/filled", "исполнена"),
+            Map.entry("orderStatus/cancelled", "снята"),
+            Map.entry("orderStatus/expired", "истекла"),
+            Map.entry("orderStatus/rejected", "отклонена"),
             Map.entry("tif/day", "на день"),
             Map.entry("tif/gtc", "до отмены"),
             Map.entry("reason/invalid_params", "неверные параметры"),

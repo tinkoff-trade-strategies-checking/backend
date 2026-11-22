@@ -123,7 +123,11 @@ public final class WorkerTypes {
     }
 
     /** Запись журнала: {@code step} — шаг курсора на момент приёма, действует с {@code step + 1} (INV-2). */
-    public record JournalRecord(long seq, long step, Command command) {}
+    public record JournalRecord(long seq, long step, Command command, String ruleName, String because) {
+        public JournalRecord(long seq, long step, Command command) {
+            this(seq, step, command, "", "");
+        }
+    }
 
     public record OrderState(
             long id,
@@ -135,7 +139,35 @@ public final class WorkerTypes {
             long filledLots,
             long ocoSiblingId,
             @Nullable BigDecimal trailingStopLevel,
-            long closedStep) {}
+            long closedStep,
+            String ruleName,
+            String because) {
+        public OrderState(
+                long id,
+                OrderParams spec,
+                long placedStep,
+                OrderPhase phase,
+                @Nullable RejectCode reason,
+                String invalidField,
+                long filledLots,
+                long ocoSiblingId,
+                @Nullable BigDecimal trailingStopLevel,
+                long closedStep) {
+            this(
+                    id,
+                    spec,
+                    placedStep,
+                    phase,
+                    reason,
+                    invalidField,
+                    filledLots,
+                    ocoSiblingId,
+                    trailingStopLevel,
+                    closedStep,
+                    "",
+                    "");
+        }
+    }
 
     public record FillState(
             long orderId,
@@ -340,7 +372,85 @@ public final class WorkerTypes {
             BigDecimal finalEquity,
             List<EquityPointData> benchmarkEquity,
             List<RoundTripData> roundTrips,
-            List<UnderwaterPointData> underwater) {}
+            List<UnderwaterPointData> underwater,
+            List<StrategyFinding> findings,
+            CheckLevel level) {
+        public ReportData(
+                MetricsData metrics,
+                CostTotalsData costs,
+                List<EquityPointData> equity,
+                BigDecimal finalEquity,
+                List<EquityPointData> benchmarkEquity,
+                List<RoundTripData> roundTrips,
+                List<UnderwaterPointData> underwater) {
+            this(
+                    metrics,
+                    costs,
+                    equity,
+                    finalEquity,
+                    benchmarkEquity,
+                    roundTrips,
+                    underwater,
+                    List.of(),
+                    CheckLevel.OK);
+        }
+    }
+
+    /** Уровень статической и рантайм-диагностики стратегии ({@code enum Level}). */
+    public enum CheckLevel {
+        OK,
+        WARNING,
+        ERROR
+    }
+
+    /** Итог прогона стратегии ({@code enum RunStatus}). */
+    public enum StrategyRunStatus {
+        COMPLETED,
+        BANKRUPT_STOP,
+        INVALID
+    }
+
+    public record TextEdit(int startLine, int startColumn, int endLine, int endColumn, String replacement) {}
+
+    public record DiagnosticFix(String description, List<TextEdit> edits) {}
+
+    public record StrategyDiagnostic(
+            String code,
+            CheckLevel level,
+            int startLine,
+            int startColumn,
+            int endLine,
+            int endColumn,
+            String message,
+            List<DiagnosticFix> fixes) {}
+
+    public record StrategyParamDecl(
+            String name,
+            double defaultValue,
+            @Nullable Double rangeMin,
+            @Nullable Double rangeMax,
+            @Nullable String step,
+            boolean integer) {}
+
+    public record StrategyCheck(
+            CheckLevel lookaheadLevel, List<StrategyDiagnostic> diagnostics, List<StrategyParamDecl> params) {}
+
+    public record RunProgressData(long doneSteps, long totalSteps) {}
+
+    public record StrategyFinding(String code, CheckLevel level, String message, long step) {}
+
+    public record StrategyRunOutput(
+            StrategyRunStatus status,
+            CheckLevel level,
+            List<StrategyDiagnostic> diagnostics,
+            @Nullable ReportData report,
+            List<FillState> fills,
+            List<OrderState> orders,
+            List<JournalRecord> journal,
+            long digest,
+            long lastStep,
+            long totalSteps,
+            List<BarData> history) {}
 
     /** Оценка заявки ({@code EstimateOrderResponse}); {@code resolvedOrder} — рублёвая заявка для журнала. */
     public record EstimateResult(

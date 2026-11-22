@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.jspecify.annotations.Nullable;
 import pac.simulation.v1.Decimal;
 import ru.tinvest.trainer.worker.WorkerTypes.BarData;
@@ -15,9 +16,11 @@ import ru.tinvest.trainer.worker.WorkerTypes.BlindPaperData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindPortfolioData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindPositionData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindViewData;
+import ru.tinvest.trainer.worker.WorkerTypes.CheckLevel;
 import ru.tinvest.trainer.worker.WorkerTypes.Command;
 import ru.tinvest.trainer.worker.WorkerTypes.CommandOutcome;
 import ru.tinvest.trainer.worker.WorkerTypes.CostTotalsData;
+import ru.tinvest.trainer.worker.WorkerTypes.DiagnosticFix;
 import ru.tinvest.trainer.worker.WorkerTypes.EquityPointData;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.FillState;
@@ -38,6 +41,13 @@ import ru.tinvest.trainer.worker.WorkerTypes.ReportData;
 import ru.tinvest.trainer.worker.WorkerTypes.RoundTripData;
 import ru.tinvest.trainer.worker.WorkerTypes.RunState;
 import ru.tinvest.trainer.worker.WorkerTypes.StepBars;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyCheck;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyDiagnostic;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyFinding;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyParamDecl;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyRunOutput;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyRunStatus;
+import ru.tinvest.trainer.worker.WorkerTypes.TextEdit;
 import ru.tinvest.trainer.worker.WorkerTypes.Tif;
 import ru.tinvest.trainer.worker.WorkerTypes.TradeSide;
 import ru.tinvest.trainer.worker.WorkerTypes.UnderwaterPointData;
@@ -144,8 +154,11 @@ final class WorkerMapper {
     }
 
     static pac.simulation.v1.JournalEntry entry(JournalRecord record) {
-        pac.simulation.v1.JournalEntry.Builder b =
-                pac.simulation.v1.JournalEntry.newBuilder().setSeq(record.seq()).setStep(record.step());
+        pac.simulation.v1.JournalEntry.Builder b = pac.simulation.v1.JournalEntry.newBuilder()
+                .setSeq(record.seq())
+                .setStep(record.step())
+                .setRuleName(record.ruleName())
+                .setBecause(record.because());
         switch (record.command()) {
             case Command.Place p -> b.setPlace(place(p));
             case Command.Cancel c ->
@@ -166,37 +179,41 @@ final class WorkerMapper {
         return out;
     }
 
+    static pac.simulation.v1.CheckStrategyRequest checkStrategyRequest(
+            String source, Map<String, Double> paramOverrides) {
+        return pac.simulation.v1.CheckStrategyRequest.newBuilder()
+                .setSource(source)
+                .addAllParamOverrides(paramValues(paramOverrides))
+                .build();
+    }
+
+    static pac.simulation.v1.RunStrategyRequest runStrategyRequest(
+            Market market, String source, Map<String, Double> paramOverrides, boolean includeHistory) {
+        return pac.simulation.v1.RunStrategyRequest.newBuilder()
+                .setMarket(market(market))
+                .setStrategy(pac.simulation.v1.StrategySource.newBuilder()
+                        .setSource(source)
+                        .addAllParamOverrides(paramValues(paramOverrides)))
+                .setIncludeHistory(includeHistory)
+                .build();
+    }
+
+    private static List<pac.simulation.v1.ParamValue> paramValues(Map<String, Double> paramOverrides) {
+        return paramOverrides.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> pac.simulation.v1.ParamValue.newBuilder()
+                        .setName(e.getKey())
+                        .setValue(e.getValue())
+                        .build())
+                .toList();
+    }
+
     // ---------- ответ ----------
 
     static ReplayResult replay(pac.simulation.v1.ReplaySessionResponse r) {
-        List<BarData> history = new ArrayList<>(r.getHistoryCount());
-        for (pac.simulation.v1.Bar b : r.getHistoryList()) {
-            history.add(bar(b));
-        }
-        List<OrderState> orders = new ArrayList<>(r.getOrdersCount());
-        for (pac.simulation.v1.Order o : r.getOrdersList()) {
-            orders.add(order(o));
-        }
-        List<FillState> fills = new ArrayList<>(r.getFillsCount());
-        for (pac.simulation.v1.Fill f : r.getFillsList()) {
-            fills.add(new FillState(
-                    f.getOrderId(),
-                    f.getStep(),
-                    f.getInstrumentKey(),
-                    side(f.getSide()),
-                    f.getLots(),
-                    decimal(f.getPrice()),
-                    decimal(f.getValue()),
-                    decimal(f.getCommission()),
-                    decimal(f.getExchangeFee()),
-                    decimal(f.getSpreadCost()),
-                    decimal(f.getSlippageCost()),
-                    f.getStopAndTakeSameBar(),
-                    f.getSeq(),
-                    decimal(f.getCost()),
-                    decimal(f.getCostPct()),
-                    decimal(f.getAmountPct())));
-        }
+        List<BarData> history = bars(r.getHistoryList());
+        List<OrderState> orders = orders(r.getOrdersList());
+        List<FillState> fills = fills(r.getFillsList());
         List<CommandOutcome> results = new ArrayList<>(r.getCommandResultsCount());
         for (pac.simulation.v1.CommandResult c : r.getCommandResultsList()) {
             results.add(new CommandOutcome(
@@ -223,6 +240,127 @@ final class WorkerMapper {
                 r.hasReport() ? report(r.getReport()) : null,
                 r.getCurrentDay(),
                 changes);
+    }
+
+    static StrategyCheck strategyCheck(pac.simulation.v1.CheckStrategyResponse r) {
+        List<StrategyParamDecl> params = new ArrayList<>(r.getParamsCount());
+        for (pac.simulation.v1.ParamDecl p : r.getParamsList()) {
+            params.add(new StrategyParamDecl(
+                    p.getName(),
+                    p.getDefaultValue(),
+                    p.hasRangeMin() ? p.getRangeMin() : null,
+                    p.hasRangeMax() ? p.getRangeMax() : null,
+                    p.hasStep() ? p.getStep() : null,
+                    p.getInteger()));
+        }
+        return new StrategyCheck(checkLevel(r.getLookaheadLevel()), diagnostics(r.getDiagnosticsList()), params);
+    }
+
+    static StrategyRunOutput strategyRunOutput(pac.simulation.v1.RunResult r) {
+        return new StrategyRunOutput(
+                strategyRunStatus(r.getStatus()),
+                reportLevel(r.getLevel()),
+                diagnostics(r.getDiagnosticsList()),
+                r.hasReport() ? report(r.getReport()) : null,
+                fills(r.getFillsList()),
+                orders(r.getOrdersList()),
+                journalRecords(r.getJournalList()),
+                r.getDigest(),
+                r.getLastStep(),
+                r.getTotalSteps(),
+                bars(r.getHistoryList()));
+    }
+
+    private static List<BarData> bars(List<pac.simulation.v1.Bar> source) {
+        List<BarData> out = new ArrayList<>(source.size());
+        for (pac.simulation.v1.Bar b : source) {
+            out.add(bar(b));
+        }
+        return out;
+    }
+
+    private static List<OrderState> orders(List<pac.simulation.v1.Order> source) {
+        List<OrderState> out = new ArrayList<>(source.size());
+        for (pac.simulation.v1.Order o : source) {
+            out.add(order(o));
+        }
+        return out;
+    }
+
+    private static List<FillState> fills(List<pac.simulation.v1.Fill> source) {
+        List<FillState> out = new ArrayList<>(source.size());
+        for (pac.simulation.v1.Fill f : source) {
+            out.add(new FillState(
+                    f.getOrderId(),
+                    f.getStep(),
+                    f.getInstrumentKey(),
+                    side(f.getSide()),
+                    f.getLots(),
+                    decimal(f.getPrice()),
+                    decimal(f.getValue()),
+                    decimal(f.getCommission()),
+                    decimal(f.getExchangeFee()),
+                    decimal(f.getSpreadCost()),
+                    decimal(f.getSlippageCost()),
+                    f.getStopAndTakeSameBar(),
+                    f.getSeq(),
+                    decimal(f.getCost()),
+                    decimal(f.getCostPct()),
+                    decimal(f.getAmountPct())));
+        }
+        return out;
+    }
+
+    private static List<StrategyDiagnostic> diagnostics(List<pac.simulation.v1.Diagnostic> source) {
+        List<StrategyDiagnostic> out = new ArrayList<>(source.size());
+        for (pac.simulation.v1.Diagnostic d : source) {
+            List<DiagnosticFix> fixes = new ArrayList<>(d.getFixCount());
+            for (pac.simulation.v1.DiagnosticFix fix : d.getFixList()) {
+                List<TextEdit> edits = new ArrayList<>(fix.getEditsCount());
+                for (pac.simulation.v1.TextEdit e : fix.getEditsList()) {
+                    edits.add(new TextEdit(
+                            e.getStartLine(),
+                            e.getStartColumn(),
+                            e.getEndLine(),
+                            e.getEndColumn(),
+                            e.getReplacement()));
+                }
+                fixes.add(new DiagnosticFix(fix.getDescription(), edits));
+            }
+            out.add(new StrategyDiagnostic(
+                    d.getCode(),
+                    checkLevel(d.getLevel()),
+                    d.getStartLine(),
+                    d.getStartColumn(),
+                    d.getEndLine(),
+                    d.getEndColumn(),
+                    d.getMessage(),
+                    fixes));
+        }
+        return out;
+    }
+
+    private static List<JournalRecord> journalRecords(List<pac.simulation.v1.JournalEntry> source) {
+        List<JournalRecord> out = new ArrayList<>(source.size());
+        for (pac.simulation.v1.JournalEntry j : source) {
+            Command command = switch (j.getCommandCase()) {
+                case PLACE -> placeCommand(j.getPlace());
+                case CANCEL -> new Command.Cancel(j.getCancel().getOrderId());
+                case REPLACE ->
+                    new Command.Replace(
+                            j.getReplace().getOrderId(),
+                            placeCommand(j.getReplace().getReplacement()));
+                case COMMAND_NOT_SET ->
+                    throw new IllegalStateException("Воркер вернул запись журнала без команды: " + j.getSeq());
+            };
+            out.add(new JournalRecord(j.getSeq(), j.getStep(), command, j.getRuleName(), j.getBecause()));
+        }
+        return out;
+    }
+
+    private static Command.Place placeCommand(pac.simulation.v1.PlaceOrder place) {
+        OrderParams oco = place.hasOcoWith() && place.getOcoWith().getLots() > 0 ? spec(place.getOcoWith()) : null;
+        return new Command.Place(spec(place.getOrder()), oco);
     }
 
     private static ReportData report(pac.simulation.v1.Report r) {
@@ -267,6 +405,10 @@ final class WorkerMapper {
         for (pac.simulation.v1.UnderwaterPoint u : r.getUnderwaterList()) {
             underwater.add(new UnderwaterPointData(u.getStep(), decimal(u.getDrawdownPct())));
         }
+        List<StrategyFinding> findings = new ArrayList<>(r.getFindingsCount());
+        for (pac.simulation.v1.Finding f : r.getFindingsList()) {
+            findings.add(new StrategyFinding(f.getCode(), checkLevel(f.getLevel()), f.getMessage(), f.getStep()));
+        }
         return new ReportData(
                 metrics,
                 new CostTotalsData(
@@ -279,7 +421,9 @@ final class WorkerMapper {
                 decimal(r.getFinalEquity()),
                 equity(r.getBenchmarkEquityList()),
                 trips,
-                underwater);
+                underwater,
+                findings,
+                reportLevel(r.getLevel()));
     }
 
     private static List<EquityPointData> equity(List<pac.simulation.v1.EquityPoint> points) {
@@ -376,7 +520,9 @@ final class WorkerMapper {
                 o.getFilledLots(),
                 o.getOcoSiblingId(),
                 o.hasTrailingStopLevel() ? decimal(o.getTrailingStopLevel()) : null,
-                o.getClosedStep());
+                o.getClosedStep(),
+                o.getRuleName(),
+                o.getBecause());
     }
 
     static OrderParams spec(pac.simulation.v1.OrderSpec s) {
@@ -536,6 +682,31 @@ final class WorkerMapper {
             case FINISHED_END -> RunState.FINISHED_END;
             case BANKRUPT -> RunState.BANKRUPT;
             default -> throw new IllegalStateException("Воркер вернул неизвестный статус сессии: " + status);
+        };
+    }
+
+    private static CheckLevel checkLevel(pac.simulation.v1.Level level) {
+        return switch (level) {
+            case OK -> CheckLevel.OK;
+            case WARNING -> CheckLevel.WARNING;
+            case ERROR -> CheckLevel.ERROR;
+            default -> throw new IllegalStateException("Воркер вернул неизвестный уровень диагностики: " + level);
+        };
+    }
+
+    private static CheckLevel reportLevel(pac.simulation.v1.Level level) {
+        if (level == pac.simulation.v1.Level.LEVEL_UNSPECIFIED) {
+            return CheckLevel.OK;
+        }
+        return checkLevel(level);
+    }
+
+    private static StrategyRunStatus strategyRunStatus(pac.simulation.v1.RunStatus status) {
+        return switch (status) {
+            case COMPLETED -> StrategyRunStatus.COMPLETED;
+            case BANKRUPT_STOP -> StrategyRunStatus.BANKRUPT_STOP;
+            case INVALID -> StrategyRunStatus.INVALID;
+            default -> throw new IllegalStateException("Воркер вернул неизвестный статус прогона стратегии: " + status);
         };
     }
 }
