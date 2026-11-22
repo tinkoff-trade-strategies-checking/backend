@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Локальный стенд для проверки UI: PostgreSQL, ClickHouse с фикстурой (та же, что у e2e), воркер из образа
-# simulation-worker и backend на http://localhost:8080 или --port (в фоне, pid в deploy/.dev/backend.pid).
-# Использование: deploy/dev-up.sh [--days N] [--port P]   (N >= 160 торговых дней, по умолчанию 160; порт backend по умолчанию 8080)
+# Локальный стенд для проверки UI и полного стека:
+# - По умолчанию: PostgreSQL, ClickHouse с фикстурой (та же, что у e2e), воркер simulation-worker и backend на
+#   http://localhost:8080 или --port (в фоне, pid в deploy/.dev/backend.pid).
+# - С флагом --caddy (или --compose): полный стек deploy/docker-compose.yml через Caddy HTTPS (https://localhost)
+#   с автоматической сборкой реального frontend SPA (dist/frontend/browser) или заглушкой (--stub).
+# Использование:
+#   deploy/dev-up.sh [--days N] [--port P] [--caddy|--compose] [--stub] [--skip-frontend-build] [--skip-image-build]
 # Пароль тестового пользователя пишется в deploy/.env.dev (в .gitignore), в вывод не попадает.
 set -euo pipefail
 
@@ -18,13 +22,60 @@ CH_PORT=18123
 WK_PORT=15051
 DAYS=160
 PORT=8080
-CORE_DIR="${CORE_DIR:-$ROOT/../core}"
-[ -d "$CORE_DIR" ] || CORE_DIR="$ROOT/../../../core"
+MODE=local
+USE_STUB=false
+SKIP_FRONTEND_BUILD=false
+SKIP_IMAGE_BUILD=false
+
+abs_path() {
+  ( cd "$1" && ( pwd -W 2>/dev/null || pwd ) )
+}
+
+resolve_dir() {
+  local val="$1"
+  if [ -n "$val" ]; then
+    if [ -d "$val" ]; then
+      abs_path "$val"
+      return 0
+    fi
+    if [ -d "$HERE/$val" ]; then
+      abs_path "$HERE/$val"
+      return 0
+    fi
+    echo "каталог не найден: $val" >&2
+    exit 1
+  fi
+  return 1
+}
+
+if [ -n "${CORE_DIR:-}" ]; then
+  CORE_DIR="$(resolve_dir "$CORE_DIR")"
+elif [ -d "$ROOT/../core" ]; then
+  CORE_DIR="$(abs_path "$ROOT/../core")"
+elif [ -d "$ROOT/../../../core" ]; then
+  CORE_DIR="$(abs_path "$ROOT/../../../core")"
+else
+  CORE_DIR="$ROOT/../core"
+fi
+
+if [ -n "${FRONTEND_DIR:-}" ]; then
+  FRONTEND_DIR="$(resolve_dir "$FRONTEND_DIR")"
+elif [ -d "$ROOT/../frontend" ]; then
+  FRONTEND_DIR="$(abs_path "$ROOT/../frontend")"
+elif [ -d "$ROOT/../../../frontend" ]; then
+  FRONTEND_DIR="$(abs_path "$ROOT/../../../frontend")"
+else
+  FRONTEND_DIR=""
+fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --days) DAYS="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
+    --caddy|--compose) MODE=compose; shift ;;
+    --stub) USE_STUB=true; shift ;;
+    --skip-frontend-build) SKIP_FRONTEND_BUILD=true; shift ;;
+    --skip-image-build) SKIP_IMAGE_BUILD=true; shift ;;
     *) echo "неизвестный аргумент: $1" >&2; exit 64 ;;
   esac
 done
@@ -32,6 +83,12 @@ done
 if [ -f "$DEV/backend.pid" ] && kill -0 "$(cat "$DEV/backend.pid")" 2>/dev/null; then
   echo "стенд уже запущен (deploy/dev-down.sh остановит)" >&2
   exit 1
+fi
+if [ -f "$DEV/mode" ] && [ "$(cat "$DEV/mode")" = "compose" ] && [ -f "$ENV_FILE" ]; then
+  if [ -n "$(docker compose -f "$HERE/docker-compose.yml" --env-file "$ENV_FILE" ps -q 2>/dev/null || true)" ]; then
+    echo "стенд compose уже запущен (deploy/dev-down.sh остановит)" >&2
+    exit 1
+  fi
 fi
 mkdir -p "$DEV"
 
@@ -52,6 +109,69 @@ set -a; . "$ENV_FILE"; set +a
 if ! docker image inspect simulation-worker:latest >/dev/null 2>&1; then
   echo "образа simulation-worker нет, собираю из $CORE_DIR"
   docker build -t simulation-worker:latest "$CORE_DIR"
+fi
+
+if [ "$MODE" = "compose" ]; then
+  if [ "$USE_STUB" = "true" ]; then
+    FRONTEND_DIST="./frontend-stub"
+  elif [ -n "${FRONTEND_DIST:-}" ]; then
+    [ -f "$FRONTEND_DIST/index.html" ] || [ -f "$HERE/$FRONTEND_DIST/index.html" ] || {
+      echo "FRONTEND_DIST не содержит index.html: $FRONTEND_DIST" >&2
+      exit 1
+    }
+  elif [ -n "$FRONTEND_DIR" ] && [ -d "$FRONTEND_DIR" ]; then
+    if [ "$SKIP_FRONTEND_BUILD" = "false" ]; then
+      echo "собираю frontend SPA в $FRONTEND_DIR"
+      if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
+        ( cd "$FRONTEND_DIR" && npx -y npm@11.21.2 ci --no-fund --no-audit )
+      fi
+      ( cd "$FRONTEND_DIR" && npm run build )
+    fi
+    FRONTEND_DIST="$FRONTEND_DIR/dist/frontend/browser"
+    if [ ! -f "$FRONTEND_DIST/index.html" ]; then
+      echo "не найден собранный SPA: $FRONTEND_DIST/index.html" >&2
+      exit 1
+    fi
+  else
+    echo "frontend не найден (задайте FRONTEND_DIR или FRONTEND_DIST), использую заглушку ./frontend-stub"
+    FRONTEND_DIST="./frontend-stub"
+  fi
+  export FRONTEND_DIST CORE_DIR
+
+  if [ "$SKIP_IMAGE_BUILD" = "false" ] || ! docker image inspect trainer-backend:latest >/dev/null 2>&1; then
+    echo "собираю образ trainer-backend"
+    docker build -f "$HERE/backend.Dockerfile" -t trainer-backend:latest "$ROOT"
+  fi
+
+  compose() {
+    docker compose -f "$HERE/docker-compose.yml" --env-file "$ENV_FILE" "$@"
+  }
+
+  echo "запускаю базы данных и воркер"
+  compose up -d --no-build --wait postgres clickhouse worker
+
+  echo "фикстура: $DAYS торговых дней"
+  ( cd "$ROOT" && ./gradlew -q devFixtureSql "-PfixtureOut=$DEV/fixture.sql" "-PfixtureDays=$DAYS" > "$DEV/snapshot-key" )
+  SNAPSHOT_KEY="$(tail -n 1 "$DEV/snapshot-key" | tr -d '\r\n')"
+  sed '/^[[:space:]]*$/d; s/;*[[:space:]]*$/;/' "$DEV/fixture.sql" \
+    | compose exec -T clickhouse clickhouse-client \
+      --user ttsc --password "$CLICKHOUSE_PASSWORD" --database ttsc --multiquery
+
+  echo "запускаю backend и Caddy HTTPS"
+  compose up -d --no-build --wait
+
+  USER_PASSWORD="$DEV_USER_PASSWORD" compose run --rm --no-deps \
+    -e USER_PASSWORD="$DEV_USER_PASSWORD" \
+    backend --spring.profiles.active=create-user --user.email="$DEV_USER_EMAIL" \
+    >"$DEV/create-user.log" 2>&1 \
+    || { echo "create-user не удался, см. deploy/.dev/create-user.log" >&2; exit 1; }
+
+  compose exec -T postgres psql -U trainer -d trainer -q -c \
+    "INSERT INTO marketdata.snapshot (id, snapshot_key, description) VALUES ('$SNAPSHOT_KEY', '$SNAPSHOT_KEY', 'dev-stand') ON CONFLICT DO NOTHING" >/dev/null
+
+  echo "compose" > "$DEV/mode"
+  echo "стенд готов: https://localhost (API https://localhost/api/v1, FRONTEND_DIST=$FRONTEND_DIST), почта $DEV_USER_EMAIL, пароль в deploy/.env.dev"
+  exit 0
 fi
 
 docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/dev/null
@@ -115,7 +235,9 @@ export SERVER_SERVLET_SESSION_COOKIE_SECURE=false
 export SERVER_PORT="$PORT"
 
 # пользователь (профиль create-user заодно применяет миграции); процесс завершается сам
-USER_PASSWORD="$DEV_USER_PASSWORD" "$JAVA" -jar "$JAR"   --spring.profiles.active=create-user --user.email="$DEV_USER_EMAIL" >"$DEV/create-user.log" 2>&1   || { echo "create-user не удался, см. deploy/.dev/create-user.log" >&2; exit 1; }
+USER_PASSWORD="$DEV_USER_PASSWORD" "$JAVA" -jar "$JAR" \
+  --spring.profiles.active=create-user --user.email="$DEV_USER_EMAIL" >"$DEV/create-user.log" 2>&1 \
+  || { echo "create-user не удался, см. deploy/.dev/create-user.log" >&2; exit 1; }
 
 # снапшот готов в ClickHouse; приложению он известен по строке в PostgreSQL
 docker exec "$PG" psql -U trainer -d trainer -q -c \
@@ -129,4 +251,5 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 
+echo "local" > "$DEV/mode"
 echo "стенд готов: http://localhost:$PORT (API /api/v1), почта $DEV_USER_EMAIL, пароль в deploy/.env.dev"

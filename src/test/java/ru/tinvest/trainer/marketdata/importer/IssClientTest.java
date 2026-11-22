@@ -162,4 +162,13 @@ class IssClientTest {
                 .containsEntry("SBER", new java.math.BigDecimal("30.25"))
                 .containsEntry("GAZP", new java.math.BigDecimal("20.0"));
     }
+
+    @Test
+    void compositionSkipsEmptyRetriesWhenPrevDateIsPresent() {
+        IssClient.IndexComposition c = iss.composition("IMOEX", LocalDate.of(2024, 3, 10));
+
+        assertThat(c.date()).isEqualTo(LocalDate.of(2024, 3, 8));
+        assertThat(c.secids()).containsExactly("SBER", "GAZP", "TINY", "GONE");
+        assertThat(server.requestsContaining("date=2024-03-10")).isEqualTo(1);
+    }
 }

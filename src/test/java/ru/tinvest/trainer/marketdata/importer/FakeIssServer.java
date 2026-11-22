@@ -206,9 +206,12 @@ final class FakeIssServer implements AutoCloseable {
                 : weights.keySet().stream().sorted().toList();
         int start = Integer.parseInt(q.getOrDefault("start", "0"));
         int size = 2;
-        List<String> page = empty || start >= secids.size()
+        boolean holiday = "2024-03-10".equals(q.get("date"));
+        List<String> page = holiday || empty || start >= secids.size()
                 ? List.of()
                 : secids.subList(start, Math.min(secids.size(), start + size));
+        String prevDate = holiday ? "2024-03-08" : "2024-03-11";
+        int total = holiday ? 0 : secids.size();
         String rows = page.stream()
                 .map(s -> "[\"" + index + "\", \"2024-03-12\", \"" + s + "\", \"x\", \"" + s + "\", " + weights.get(s)
                         + ", 3, null]")
@@ -216,7 +219,7 @@ final class FakeIssServer implements AutoCloseable {
         return "{\"analytics\": {\"columns\": [\"indexid\", \"tradedate\", \"ticker\", \"shortnames\", \"secids\", "
                 + "\"weight\", \"tradingsession\", \"trade_session_date\"], \"data\": [" + rows + "]}, "
                 + "\"analytics.cursor\": {\"columns\": [\"INDEX\", \"TOTAL\", \"PAGESIZE\", \"PREV_DATE\", "
-                + "\"NEXT_DATE\"], \"data\": [[0, " + secids.size() + ", " + size + ", \"2024-03-11\", null]]}}";
+                + "\"NEXT_DATE\"], \"data\": [[0, " + total + ", " + size + ", \"" + prevDate + "\", null]]}}";
     }
 
     private String security(String secid) {
