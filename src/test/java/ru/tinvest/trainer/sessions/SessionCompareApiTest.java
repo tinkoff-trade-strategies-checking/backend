@@ -126,7 +126,7 @@ class SessionCompareApiTest extends PostgresIntegrationTest {
         assertThat(twoAlgos).hasSize(2);
         assertThat(twoAlgos.get(0).get("algorithmId").asString()).isEqualTo(noParamAlgo.toString());
         assertThat(twoAlgos.get(0).get("strategyVersionId").asString()).isEqualTo(noParamVer.toString());
-        assertThat(twoAlgos.get(0).get("algorithmName").asString()).isEqualTo("БезПараметров");
+        assertThat(twoAlgos.get(0).get("algorithmName").asString()).isEqualTo("БезПараметров-" + noParamAlgo);
         assertThat(twoAlgos.get(0).get("version").asInt()).isEqualTo(1);
         assertThat(twoAlgos.get(1).get("algorithmId").asString())
                 .isEqualTo(StrategyCatalog.SYSTEM_STRATEGY_ID.toString());
