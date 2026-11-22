@@ -152,6 +152,8 @@ class Replay {
                 step,
                 s.warmupBars(),
                 s.costs(),
-                s.papers());
+                s.papers(),
+                s.algoVersionId(),
+                s.algoParams());
     }
 }

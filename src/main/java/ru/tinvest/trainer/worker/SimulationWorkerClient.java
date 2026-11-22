@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
+import ru.tinvest.trainer.worker.WorkerTypes.AlgorithmInput;
+import ru.tinvest.trainer.worker.WorkerTypes.DivergenceOutput;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
@@ -108,5 +110,15 @@ public interface SimulationWorkerClient {
             boolean includeHistory,
             Consumer<RunProgressData> onProgress) {
         throw new UnsupportedOperationException("runStrategy");
+    }
+
+    /**
+     * Разбор расхождений между действиями человека и алгоритмов ({@code AnalyzeDivergences}, ФТ-18…20).
+     *
+     * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
+     */
+    default DivergenceOutput analyzeDivergences(
+            Market market, List<JournalRecord> journal, long lastStep, List<AlgorithmInput> algorithms) {
+        throw new UnsupportedOperationException("analyzeDivergences");
     }
 }

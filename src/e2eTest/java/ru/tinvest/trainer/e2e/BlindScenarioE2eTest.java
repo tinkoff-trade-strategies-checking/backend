@@ -120,6 +120,17 @@ class BlindScenarioE2eTest extends E2eBase {
                 .contains(java.time.LocalDate.parse(
                         body.get("period").get("startDate").asString()));
         assertThat(body.get("humanMetrics").get("initialCapital").asString()).isEqualTo(Flows.CAPITAL);
+        assertThat(body.get("backgroundAlgorithmName").asString()).isEqualTo("Эталон платформы");
+        assertThat(body.get("algoMetrics").isObject()).isTrue();
+        assertThat(body.get("algoMetrics").get("initialCapital").asString()).isEqualTo(Flows.CAPITAL);
+        assertThat(body.get("comparison").isObject()).isTrue();
+        assertThat(body.get("divergenceSummary").isObject()).isTrue();
+        assertThat(body.get("divergences").isArray()).isTrue();
+        assertThat(body.get("divergences")).isNotEmpty();
+        assertThat(body.get("reverseCheckTrades").isArray()).isTrue();
+        assertThat(body.get("equityCurve").get(0).get("algoCapital").isString()).isTrue();
+        assertThat(body.get("underwaterCurve").get(0).get("algoDrawdownPct").isString())
+                .isTrue();
 
         JsonNode entry = api.get("/api/v1/history").ok().get("items").get(0);
         assertThat(entry.get("view").asString()).isEqualTo("REVEALED");

@@ -17,9 +17,10 @@ class StoredReports {
 
     /**
      * Версия формата сохранённого отчёта. Строки другой версии при чтении считаются отсутствующими, отчёт собирается
-     * заново отдельной строкой. Менять при изменении формы или смысла полей отчёта (версия 1 — до core#54).
+     * заново отдельной строкой. Менять при изменении формы или смысла полей отчёта (версия 1 — до core#54, версия 2 —
+     * до разбора расхождений ФТ-18…20).
      */
-    static final int FORMAT_VERSION = 2;
+    static final int FORMAT_VERSION = 3;
 
     /** {@code report} — тело {@code SessionReport}; {@code playedDays} и {@code netReturnPct} — для истории. */
     record Stored(UUID sessionId, JsonNode report, int playedDays, String netReturnPct) {}

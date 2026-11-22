@@ -52,6 +52,7 @@ import ru.tinvest.trainer.marketdata.Snapshot;
 import ru.tinvest.trainer.marketdata.Snapshots;
 import ru.tinvest.trainer.marketdata.StartMode;
 import ru.tinvest.trainer.marketdata.Timeframe;
+import ru.tinvest.trainer.workshop.StrategyCatalog;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -82,6 +83,9 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
 
     @Autowired
     private CurrentUser currentUser;
+
+    @Autowired
+    private StrategyCatalog strategyCatalog;
 
     @Autowired
     private ObjectMapper json;
@@ -446,7 +450,9 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
                 "blind = false",
                 "snapshot_id = gen_random_uuid()",
                 "sigma = 0",
-                "user_id = gen_random_uuid()")) {
+                "user_id = gen_random_uuid()",
+                "algo_version_id = gen_random_uuid()",
+                "algo_params = '{\"size_pct\":10}'::jsonb")) {
             assertThatThrownBy(() -> jdbc.sql("UPDATE sessions.session SET " + column + " WHERE id = :id")
                             .param("id", id)
                             .update())
@@ -561,7 +567,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
 
     @Test
     void paperIndexOrderIsRandomNotByTicker() {
-        Sessions sessions = new Sessions(jdbc, currentUser, snapshots, new Random(7));
+        Sessions sessions = new Sessions(jdbc, currentUser, snapshots, strategyCatalog, json, new Random(7));
         List<String> byTicker = SECIDS.stream().sorted().toList();
         boolean different = false;
         for (int i = 0; i < 20; i++) {
@@ -575,6 +581,69 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
             different |= !byIndex.equals(byTicker);
         }
         assertThat(different).isTrue();
+    }
+
+    @Test
+    void backgroundAlgorithmDefaultsToPlatformBenchmarkAndSupportsCatalogChoice() throws Exception {
+        planner.result = plan(true, 3);
+        UUID defaultId =
+                UUID.fromString(json.readTree(launch(randomBody()).getResponse().getContentAsString())
+                        .get("sessionId")
+                        .asString());
+        UUID defaultVer = jdbc.sql("SELECT algo_version_id FROM sessions.session WHERE id = :id")
+                .param("id", defaultId)
+                .query(UUID.class)
+                .single();
+        String defaultParams = jdbc.sql("SELECT algo_params::text FROM sessions.session WHERE id = :id")
+                .param("id", defaultId)
+                .query(String.class)
+                .single();
+        assertThat(defaultVer).isEqualTo(StrategyCatalog.SYSTEM_VERSION_ID);
+        assertThat(json.readTree(defaultParams).get("size_pct").asInt()).isEqualTo(31);
+
+        // пользовательский опубликованный алгоритм (выбирается последняя версия); чужой hidden -> 404
+        UUID customAlgoId = UUID.randomUUID();
+        UUID customVer1 = UUID.randomUUID();
+        UUID customVer2 = UUID.randomUUID();
+        jdbc.sql("INSERT INTO workshop.strategy (id, owner_id, author_name, is_system, name, visibility) "
+                        + "VALUES (:id, :owner, 'Author', FALSE, :name, 'public')")
+                .param("id", customAlgoId)
+                .param("owner", userId)
+                .param("name", "Custom-" + customAlgoId)
+                .update();
+        jdbc.sql("INSERT INTO workshop.strategy_version (id, strategy_id, version, source, params) "
+                        + "VALUES (:v1, :s, 1, 'rule \"a\" when true then buy 1 lots', '{}'::jsonb), "
+                        + "(:v2, :s, 2, 'rule \"b\" when true then buy 2 lots', '{}'::jsonb)")
+                .param("v1", customVer1)
+                .param("v2", customVer2)
+                .param("s", customAlgoId)
+                .update();
+        String withCustomAlgo = randomBody().replace("}", ",\"backgroundAlgorithmId\":\"" + customAlgoId + "\"}");
+        UUID customSessionId = UUID.fromString(
+                json.readTree(launch(withCustomAlgo).getResponse().getContentAsString())
+                        .get("sessionId")
+                        .asString());
+        assertThat(jdbc.sql("SELECT algo_version_id FROM sessions.session WHERE id = :id")
+                        .param("id", customSessionId)
+                        .query(UUID.class)
+                        .single())
+                .isEqualTo(customVer2);
+
+        UUID foreignHiddenAlgo = UUID.randomUUID();
+        jdbc.sql("INSERT INTO workshop.strategy (id, owner_id, author_name, is_system, name, visibility) "
+                        + "VALUES (:id, :owner, 'Stranger', FALSE, :name, 'hidden')")
+                .param("id", foreignHiddenAlgo)
+                .param("owner", createUser("stranger" + UUID.randomUUID() + "@example.com"))
+                .param("name", "Hidden-" + foreignHiddenAlgo)
+                .update();
+        jdbc.sql("INSERT INTO workshop.strategy_version (id, strategy_id, version, source, params) "
+                        + "VALUES (:v, :s, 1, 'rule \"a\" when true then buy 1 lots', '{}'::jsonb)")
+                .param("v", UUID.randomUUID())
+                .param("s", foreignHiddenAlgo)
+                .update();
+        String withForeignHidden =
+                randomBody().replace("}", ",\"backgroundAlgorithmId\":\"" + foreignHiddenAlgo + "\"}");
+        assertThat(launch(withForeignHidden).getResponse().getStatus()).isEqualTo(404);
     }
 
     /** Чужая и несуществующая сессии для проверки владельца: запросы по ним ещё не открыты контрактом. */

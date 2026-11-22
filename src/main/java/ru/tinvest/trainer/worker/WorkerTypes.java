@@ -3,6 +3,7 @@ package ru.tinvest.trainer.worker;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -467,4 +468,74 @@ public final class WorkerTypes {
             BigDecimal exchangeFeePct,
             BigDecimal requiredCashPct,
             @Nullable OrderParams resolvedOrder) {}
+
+    public record AlgorithmInput(String id, String source, Map<String, Double> paramOverrides) {
+        public AlgorithmInput {
+            paramOverrides = Map.copyOf(paramOverrides);
+        }
+    }
+
+    public enum DivergenceKind {
+        EXCESS,
+        MISSED,
+        SIZE,
+        TIMING
+    }
+
+    public record DivergenceData(
+            String algorithmId,
+            String paperKey,
+            DivergenceKind type,
+            long humanStep,
+            long algoStep,
+            long humanLots,
+            long algoLots,
+            long horizonStep,
+            BigDecimal cost,
+            BigDecimal costPercent,
+            String reason,
+            long seq,
+            @Nullable OrderKind humanOrderType,
+            @Nullable OrderKind algoOrderType) {}
+
+    public record MissedProfitableTradeData(
+            String paperKey,
+            long entryStep,
+            long exitStep,
+            long lots,
+            BigDecimal netPnl,
+            List<String> algorithmIds,
+            BigDecimal entryPrice,
+            BigDecimal exitPrice,
+            long seq,
+            List<Long> divergenceSeqs) {
+        public MissedProfitableTradeData {
+            algorithmIds = List.copyOf(algorithmIds);
+            divergenceSeqs = List.copyOf(divergenceSeqs);
+        }
+    }
+
+    public record ConsensusItemData(
+            String paperKey,
+            long step,
+            TradeSide side,
+            boolean humanAction,
+            int agreeing,
+            int total,
+            BigDecimal medianCost) {}
+
+    public record AlgorithmPortfolioData(String algorithmId, StrategyRunOutput result) {}
+
+    public record DivergenceOutput(
+            List<DivergenceData> divergences,
+            List<MissedProfitableTradeData> missedProfitable,
+            List<ConsensusItemData> consensus,
+            List<AlgorithmPortfolioData> algorithmPortfolios) {
+        public DivergenceOutput {
+            divergences = List.copyOf(divergences);
+            missedProfitable = List.copyOf(missedProfitable);
+            consensus = List.copyOf(consensus);
+            algorithmPortfolios = List.copyOf(algorithmPortfolios);
+        }
+    }
 }

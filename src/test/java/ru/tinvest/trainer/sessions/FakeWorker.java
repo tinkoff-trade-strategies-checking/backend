@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import ru.tinvest.trainer.api.DependencyUnavailableException;
 import ru.tinvest.trainer.worker.PeriodClassification;
 import ru.tinvest.trainer.worker.SimulationWorkerClient;
+import ru.tinvest.trainer.worker.WorkerTypes.AlgorithmInput;
+import ru.tinvest.trainer.worker.WorkerTypes.AlgorithmPortfolioData;
 import ru.tinvest.trainer.worker.WorkerTypes.BarData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindBarData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindFillData;
@@ -21,9 +23,13 @@ import ru.tinvest.trainer.worker.WorkerTypes.BlindOrderData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindPaperData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindPortfolioData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindViewData;
+import ru.tinvest.trainer.worker.WorkerTypes.CheckLevel;
 import ru.tinvest.trainer.worker.WorkerTypes.Command;
 import ru.tinvest.trainer.worker.WorkerTypes.CommandOutcome;
 import ru.tinvest.trainer.worker.WorkerTypes.CostTotalsData;
+import ru.tinvest.trainer.worker.WorkerTypes.DivergenceData;
+import ru.tinvest.trainer.worker.WorkerTypes.DivergenceKind;
+import ru.tinvest.trainer.worker.WorkerTypes.DivergenceOutput;
 import ru.tinvest.trainer.worker.WorkerTypes.EquityPointData;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.FillState;
@@ -31,6 +37,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.InstrumentChangeData;
 import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
 import ru.tinvest.trainer.worker.WorkerTypes.MetricsData;
+import ru.tinvest.trainer.worker.WorkerTypes.MissedProfitableTradeData;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderKind;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderParams;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderPhase;
@@ -43,6 +50,9 @@ import ru.tinvest.trainer.worker.WorkerTypes.RoundTripData;
 import ru.tinvest.trainer.worker.WorkerTypes.RunState;
 import ru.tinvest.trainer.worker.WorkerTypes.StepBars;
 import ru.tinvest.trainer.worker.WorkerTypes.StepReplay;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyRunOutput;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyRunStatus;
+import ru.tinvest.trainer.worker.WorkerTypes.TradeSide;
 import ru.tinvest.trainer.worker.WorkerTypes.UnderwaterPointData;
 
 /**
@@ -79,6 +89,7 @@ final class FakeWorker implements SimulationWorkerClient {
     final List<Long> dayRequests = new CopyOnWriteArrayList<>();
     final List<Long> replayUpToSteps = new CopyOnWriteArrayList<>();
     final List<ReportRequest> reportRequests = new CopyOnWriteArrayList<>();
+    final List<DivergenceCall> divergenceRequests = new CopyOnWriteArrayList<>();
 
     void reset() {
         down = false;
@@ -97,6 +108,7 @@ final class FakeWorker implements SimulationWorkerClient {
         estimateJournals.clear();
         estimated.clear();
         reportRequests.clear();
+        divergenceRequests.clear();
         replayUpToSteps.clear();
         dayRequests.clear();
         reportAttempts.set(0);
@@ -514,7 +526,131 @@ final class FakeWorker implements SimulationWorkerClient {
         return upToStep < 0 ? 0 : (int) (1 + upToStep / 3);
     }
 
+    @Override
+    public DivergenceOutput analyzeDivergences(
+            Market market, List<JournalRecord> journal, long lastStep, List<AlgorithmInput> algorithms) {
+        checkUp();
+        divergenceRequests.add(new DivergenceCall(List.copyOf(journal), lastStep, List.copyOf(algorithms)));
+        List<EquityPointData> equity = new ArrayList<>();
+        List<UnderwaterPointData> underwater = new ArrayList<>();
+        BigDecimal algoPerStep = new BigDecimal("200.00");
+        for (long step = 0; step <= lastStep; step++) {
+            equity.add(new EquityPointData(
+                    step, market.initialCash().add(algoPerStep.multiply(BigDecimal.valueOf(step)))));
+            underwater.add(new UnderwaterPointData(step, new BigDecimal("0.00")));
+        }
+        ReportData algoReport = new ReportData(
+                new MetricsData(
+                        0.0246, 0.025, null, 0.002, 1, null, null, null, 1.2, 2, 1, 1.0, 0, 0, 0.4, 0.25, null, 20, 0,
+                        1),
+                new CostTotalsData(
+                        new BigDecimal("5.00"),
+                        new BigDecimal("0.15"),
+                        new BigDecimal("0.80"),
+                        new BigDecimal("0.40"),
+                        new BigDecimal("6.35")),
+                equity,
+                market.initialCash().add(algoPerStep.multiply(BigDecimal.valueOf(lastStep))),
+                List.of(),
+                List.of(),
+                underwater);
+        List<AlgorithmPortfolioData> portfolios = new ArrayList<>(algorithms.size());
+        for (AlgorithmInput alg : algorithms) {
+            portfolios.add(new AlgorithmPortfolioData(
+                    alg.id(),
+                    new StrategyRunOutput(
+                            StrategyRunStatus.COMPLETED,
+                            CheckLevel.OK,
+                            List.of(),
+                            algoReport,
+                            List.of(),
+                            List.of(),
+                            List.of(),
+                            12345L,
+                            lastStep,
+                            TOTAL_STEPS,
+                            List.of())));
+        }
+        List<DivergenceData> divergences = new ArrayList<>();
+        List<MissedProfitableTradeData> missedProfitable = new ArrayList<>();
+        if (lastStep >= 2 && !algorithms.isEmpty()) {
+            String algId = algorithms.getFirst().id();
+            JournalRecord humanPlace = journal.stream()
+                    .filter(j -> j.step() < lastStep && j.command() instanceof Command.Place)
+                    .findFirst()
+                    .orElse(null);
+            if (humanPlace != null) {
+                Command.Place place = (Command.Place) humanPlace.command();
+                long signedLots = place.order().side() == TradeSide.BUY
+                        ? place.order().lots()
+                        : -place.order().lots();
+                divergences.add(new DivergenceData(
+                        algId,
+                        place.order().paperKey(),
+                        DivergenceKind.EXCESS,
+                        humanPlace.step(),
+                        -1,
+                        signedLots,
+                        0,
+                        Math.min(lastStep, humanPlace.step() + 2),
+                        new BigDecimal("150.00"),
+                        new BigDecimal("0.03"),
+                        "алгоритм здесь не действовал бы",
+                        0,
+                        place.order().kind(),
+                        null));
+                divergences.add(new DivergenceData(
+                        algId,
+                        market.papers().getFirst().key(),
+                        DivergenceKind.MISSED,
+                        -1,
+                        1,
+                        0,
+                        1,
+                        Math.min(lastStep, 3),
+                        new BigDecimal("-50.00"),
+                        new BigDecimal("-0.01"),
+                        "SMA(20) пересекла SMA(50) снизу вверх",
+                        1,
+                        null,
+                        OrderKind.MARKET));
+                if (lastStep >= 3) {
+                    missedProfitable.add(new MissedProfitableTradeData(
+                            place.order().paperKey(),
+                            1,
+                            3,
+                            place.order().lots(),
+                            new BigDecimal("188.00"),
+                            List.of(algId),
+                            new BigDecimal("200.00"),
+                            new BigDecimal("210.00"),
+                            0,
+                            List.of(0L)));
+                }
+            } else {
+                divergences.add(new DivergenceData(
+                        algId,
+                        market.papers().getFirst().key(),
+                        DivergenceKind.MISSED,
+                        -1,
+                        1,
+                        0,
+                        1,
+                        Math.min(lastStep, 3),
+                        new BigDecimal("120.00"),
+                        new BigDecimal("0.02"),
+                        "SMA(20) пересекла SMA(50) снизу вверх",
+                        0,
+                        null,
+                        OrderKind.MARKET));
+            }
+        }
+        return new DivergenceOutput(divergences, missedProfitable, List.of(), portfolios);
+    }
+
     record ReportRequest(List<JournalRecord> journal, long upToStep) {}
+
+    record DivergenceCall(List<JournalRecord> journal, long lastStep, List<AlgorithmInput> algorithms) {}
 
     private static BigDecimal rubles(int paperIndex, long step) {
         return BigDecimal.valueOf(20000 + 1000L * paperIndex + 100L * step, 2);

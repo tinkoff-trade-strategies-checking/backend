@@ -4,7 +4,9 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import ru.tinvest.trainer.marketdata.Regime;
 import ru.tinvest.trainer.marketdata.StartMode;
 import ru.tinvest.trainer.marketdata.Timeframe;
@@ -39,10 +41,67 @@ public record SessionRecord(
         long currentStep,
         int warmupBars,
         Costs costs,
-        List<PaperRecord> papers) {
+        List<PaperRecord> papers,
+        @Nullable UUID algoVersionId,
+        Map<String, Double> algoParams) {
 
     public SessionRecord {
         papers = List.copyOf(papers);
+        algoParams = algoParams == null ? Map.of() : Map.copyOf(algoParams);
+    }
+
+    public SessionRecord(
+            UUID id,
+            UUID userId,
+            boolean blind,
+            String status,
+            int durationDays,
+            Timeframe timeframe,
+            Regime regime,
+            StartMode startMode,
+            UUID snapshotId,
+            String snapshotKey,
+            LocalDate periodStart,
+            LocalDate periodEnd,
+            int tradingDays,
+            int barsCount,
+            double sigma,
+            double mdd,
+            double p33,
+            double p80,
+            BigDecimal initialCapital,
+            OffsetDateTime createdAt,
+            long currentStep,
+            int warmupBars,
+            Costs costs,
+            List<PaperRecord> papers) {
+        this(
+                id,
+                userId,
+                blind,
+                status,
+                durationDays,
+                timeframe,
+                regime,
+                startMode,
+                snapshotId,
+                snapshotKey,
+                periodStart,
+                periodEnd,
+                tradingDays,
+                barsCount,
+                sigma,
+                mdd,
+                p33,
+                p80,
+                initialCapital,
+                createdAt,
+                currentStep,
+                warmupBars,
+                costs,
+                papers,
+                null,
+                Map.of());
     }
 
     /**

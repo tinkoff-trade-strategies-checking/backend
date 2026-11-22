@@ -19,6 +19,18 @@ public final class DerivedIds {
         return v5(sessionId, "fill:" + seq);
     }
 
+    /** Расхождение: номер в ядре — {@code Divergence.seq} (0-based индекс в ответе {@code AnalyzeDivergences}). */
+    public static UUID divergence(UUID sessionId, long seq) {
+        return v5(sessionId, "divergence:" + seq);
+    }
+
+    /**
+     * Сделка обратной проверки (ФТ-20): номер в ядре — {@code MissedProfitableTrade.seq}.
+     */
+    public static UUID reverseCheckTrade(UUID sessionId, long seq) {
+        return v5(sessionId, "reverse:" + seq);
+    }
+
     static UUID v5(UUID namespace, String name) {
         try {
             MessageDigest sha1 = MessageDigest.getInstance("SHA-1");

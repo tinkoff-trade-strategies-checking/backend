@@ -46,6 +46,7 @@ import ru.tinvest.trainer.marketdata.Snapshot;
 import ru.tinvest.trainer.marketdata.Snapshots;
 import ru.tinvest.trainer.marketdata.StartMode;
 import ru.tinvest.trainer.marketdata.Timeframe;
+import ru.tinvest.trainer.workshop.StrategyCatalog;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -347,25 +348,66 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         assertThat(metrics.get("costs").get("commission").asString()).isEqualTo("6.00");
         assertThat(metrics.get("costs").get("total").asString()).isEqualTo("7.70");
 
-        // отложенное (ФТ-18…20) — null
-        assertThat(report.get("algoMetrics").isNull()).isTrue();
-        assertThat(report.get("comparison").isNull()).isTrue();
-        assertThat(report.get("backgroundAlgorithmName").isNull()).isTrue();
-        assertThat(report.get("divergenceSummary").isNull()).isTrue();
-        // не посчитано — null, а не пустой массив
-        assertThat(report.get("divergences").isNull()).isTrue();
-        assertThat(report.get("reverseCheckTrades").isNull()).isTrue();
-        // просадка — из core: точка на каждую точку капитала, доля алгоритма отложена
+        // ФТ-18…20: фоновый алгоритм, сравнение, кривые и разбор расхождений заполнены
+        assertThat(report.get("backgroundAlgorithmName").asString()).isEqualTo("Эталон платформы");
+        JsonNode algoMetrics = report.get("algoMetrics");
+        assertThat(algoMetrics.get("initialCapital").asString()).isEqualTo("500000.00");
+        assertThat(algoMetrics.get("finalCapital").asString()).isEqualTo("501200.00");
+        assertThat(algoMetrics.get("totalReturnPct").asString()).isEqualTo("2.46");
+        assertThat(algoMetrics.get("maxDrawdownPct").asString()).isEqualTo("0.20");
+        assertThat(algoMetrics.get("bankrupt").asBoolean()).isFalse();
+
+        JsonNode comparison = report.get("comparison");
+        assertThat(comparison.get("finalCapital").get("human").asString()).isEqualTo("500600.00");
+        assertThat(comparison.get("finalCapital").get("algo").asString()).isEqualTo("501200.00");
+        assertThat(comparison.get("finalCapital").get("winner").asString()).isEqualTo("algo");
+        assertThat(comparison.get("finalCapital").get("diff").asString()).isEqualTo("-600.00");
+        assertThat(comparison.get("netReturn").get("winner").asString()).isEqualTo("algo");
+        assertThat(comparison.get("netReturn").get("diffPctPoints").asString()).isEqualTo("-1.23");
+        assertThat(comparison.get("maxDrawdown").get("winner").asString()).isEqualTo("algo");
+        assertThat(comparison.get("maxDrawdown").get("diffPctPoints").asString())
+                .isEqualTo("0.20");
+
+        JsonNode summary = report.get("divergenceSummary");
+        assertThat(summary.get("totalErrorCost").asString()).isEqualTo("100.00");
+        assertThat(summary.get("totalErrorCostPct").asString()).isEqualTo("0.02");
+        assertThat(summary.get("worstDivergenceId").asString())
+                .isEqualTo(DerivedIds.divergence(id, 0).toString());
+        assertThat(summary.get("worstType").asString()).isEqualTo("extra");
+        assertThat(summary.get("worstDay").asInt()).isEqualTo(1);
+        assertThat(summary.get("worstErrorCost").asString()).isEqualTo("150.00");
+
+        JsonNode divergences = report.get("divergences");
+        assertThat(divergences).hasSize(2);
+        assertThat(divergences.get(0).get("id").asString())
+                .isEqualTo(DerivedIds.divergence(id, 0).toString());
+        assertThat(divergences.get(0).get("type").asString()).isEqualTo("extra");
+        assertThat(divergences.get(0).get("errorCostPct").asString()).isEqualTo("0.03");
+        assertThat(divergences.get(0).get("because").asString()).isEqualTo("алгоритм здесь не действовал бы");
+        assertThat(divergences.get(0).get("humanAction").get("kind").asString()).isEqualTo("trade");
+        assertThat(divergences.get(0).get("algoAction").get("kind").asString()).isEqualTo("none");
+        assertThat(divergences.get(1).get("id").asString())
+                .isEqualTo(DerivedIds.divergence(id, 1).toString());
+        assertThat(divergences.get(1).get("type").asString()).isEqualTo("missed");
+
+        JsonNode reverse = report.get("reverseCheckTrades");
+        assertThat(reverse).hasSize(1);
+        assertThat(reverse.get(0).get("id").asString())
+                .isEqualTo(DerivedIds.reverseCheckTrade(id, 0).toString());
+        assertThat(reverse.get(0).get("entryDivergenceId").asString())
+                .isEqualTo(DerivedIds.divergence(id, 0).toString());
+        assertThat(reverse.get(0).get("netProfit").asString()).isEqualTo("188.00");
+
         JsonNode underwater = report.get("underwaterCurve");
         assertThat(underwater).hasSize((int) LAST_STEP + 1);
         assertThat(underwater.get(2).get("humanDrawdownPct").asString()).isEqualTo("0.00");
-        assertThat(underwater.get(2).get("algoDrawdownPct").isNull()).isTrue();
+        assertThat(underwater.get(2).get("algoDrawdownPct").asString()).isEqualTo("0.00");
         assertThat(underwater.get(2).get("date").asString()).endsWith("Z");
 
         JsonNode equity = report.get("equityCurve");
         assertThat(equity).hasSize((int) LAST_STEP + 1);
         assertThat(equity.get(2).get("humanCapital").asString()).isEqualTo("500200.00");
-        assertThat(equity.get(2).get("algoCapital").isNull()).isTrue();
+        assertThat(equity.get(2).get("algoCapital").asString()).isEqualTo("500400.00");
         assertThat(equity.get(2).get("benchmarkCapital").asString()).isEqualTo("500010.00");
         assertThat(equity.get(1).get("benchmarkCapital").isNull()).isTrue();
         assertThat(equity.get(0).get("date").asString()).endsWith("Z");
@@ -379,10 +421,18 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         assertThat(fill.get("cost").asString()).isEqualTo("7.70");
         assertThat(fill.get("id").asString()).isEqualTo(DerivedIds.fill(id, 0).toString());
 
-        // отчёт строится по журналу целиком до итогового шага
+        // отчёт строится по журналу целиком до итогового шага, а разбор расхождений передаёт size_pct = floor(95/3) =
+        // 31
         assertThat(worker.reportRequests).hasSize(1);
         assertThat(worker.reportRequests.getFirst().upToStep()).isEqualTo(LAST_STEP);
         assertThat(worker.reportRequests.getFirst().journal()).hasSize(1);
+        assertThat(worker.divergenceRequests).hasSize(1);
+        assertThat(worker.divergenceRequests.getFirst().lastStep()).isEqualTo(LAST_STEP);
+        assertThat(worker.divergenceRequests.getFirst().algorithms()).hasSize(1);
+        assertThat(worker.divergenceRequests.getFirst().algorithms().getFirst().id())
+                .isEqualTo(StrategyCatalog.SYSTEM_VERSION_ID.toString());
+        assertThat(worker.divergenceRequests.getFirst().algorithms().getFirst().paramOverrides())
+                .containsEntry("size_pct", 31.0);
     }
 
     @Test

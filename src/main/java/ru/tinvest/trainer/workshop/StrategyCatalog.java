@@ -1,6 +1,8 @@
 package ru.tinvest.trainer.workshop;
 
 import java.time.OffsetDateTime;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -25,7 +27,27 @@ public class StrategyCatalog {
 
     /** Ищет опубликованную версию по идентификатору вместе с метаданными стратегии. */
     public Optional<StrategyVersionView> findVersion(UUID versionId) {
-        return jdbc.sql("""
+        return queryVersion("WHERE v.id = :versionId", Map.of("versionId", versionId));
+    }
+
+    /**
+     * Ищет последнюю опубликованную версию алгоритма, доступную пользователю (системную, публичную или свою).
+     */
+    public Optional<StrategyVersionView> findLatestVersion(UUID strategyId, @Nullable UUID userId) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("strategyId", strategyId);
+        String ownerClause = userId != null ? " OR s.owner_id = :userId" : "";
+        if (userId != null) {
+            params.put("userId", userId);
+        }
+        return queryVersion(
+                "WHERE v.strategy_id = :strategyId AND (s.is_system OR s.visibility = 'public'" + ownerClause + ")"
+                        + " ORDER BY v.version DESC LIMIT 1",
+                params);
+    }
+
+    private Optional<StrategyVersionView> queryVersion(String suffix, Map<String, Object> params) {
+        var spec = jdbc.sql("""
                         SELECT v.id AS version_id,
                                v.strategy_id,
                                s.name AS strategy_name,
@@ -42,10 +64,11 @@ public class StrategyCatalog {
                                v.published_at
                         FROM workshop.strategy_version v
                         JOIN workshop.strategy s ON s.id = v.strategy_id
-                        WHERE v.id = :versionId
-                        """)
-                .param("versionId", versionId)
-                .query((rs, n) -> new StrategyVersionView(
+                        """ + suffix);
+        for (Map.Entry<String, Object> e : params.entrySet()) {
+            spec = spec.param(e.getKey(), e.getValue());
+        }
+        return spec.query((rs, n) -> new StrategyVersionView(
                         rs.getObject("version_id", UUID.class),
                         rs.getObject("strategy_id", UUID.class),
                         rs.getString("strategy_name"),
