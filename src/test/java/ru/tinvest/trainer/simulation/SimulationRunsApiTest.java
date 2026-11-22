@@ -12,6 +12,7 @@ import jakarta.servlet.http.Cookie;
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -24,6 +25,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -37,6 +39,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.env.Environment;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.web.MockHttpSession;
@@ -95,7 +98,7 @@ import tools.jackson.databind.ObjectMapper;
  */
 @AutoConfigureMockMvc
 @Import(SimulationRunsApiTest.TestWiring.class)
-@TestPropertySource(properties = {"lab.simulation.threads=1", "lab.simulation.progress-interval=0ms"})
+@TestPropertySource(properties = {"lab.simulation.threads=4", "lab.simulation.progress-interval=0ms"})
 class SimulationRunsApiTest extends PostgresIntegrationTest {
 
     private static final String PASSWORD = "correct horse";
@@ -128,6 +131,12 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
 
     @Autowired
     private Runs runs;
+
+    @Autowired
+    private RunProperties runProperties;
+
+    @Autowired
+    private Environment environment;
 
     private UserSession userA;
     private UserSession userB;
@@ -546,6 +555,134 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.status").value("completed"));
     }
 
+    @Test
+    void defaultLimitsAndTenMinuteRunDeadlineAreConfigured() {
+        assertThat(runProperties.maxRunningPerUser()).isEqualTo(3);
+        assertThat(runProperties.maxQueuedPerUser()).isEqualTo(20);
+        assertThat(environment.getProperty("worker.run-deadline", Duration.class))
+                .isEqualTo(Duration.ofMinutes(10));
+    }
+
+    @Test
+    void maxRunningPerUserCapsConcurrentRunsAndStartsNextQueuedAfterFinish() throws Exception {
+        worker.entered = new CountDownLatch(4);
+        worker.gate = new CountDownLatch(1);
+
+        UUID r1 = createRun(userA, false, "custom");
+        UUID r2 = createRun(userA, false, "custom");
+        UUID r3 = createRun(userA, false, "custom");
+        UUID r4 = createRun(userA, false, "custom");
+
+        // Ждём, пока ровно 3 прогона userA войдут в воркер, затем запускаем userB на 4-м потоке:
+        // если бы лимит 3 не работал, r4 занял бы 4-й поток, а с лимитом 4-й поток сразу подхватывает userB.
+        long waitUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (worker.inFlight.get() < 3 && System.nanoTime() < waitUntil) {
+            Thread.sleep(10);
+        }
+        assertThat(worker.inFlight.get()).isEqualTo(3);
+
+        UUID b1 = createRun(userB, false, "custom");
+        assertThat(worker.entered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(worker.inFlight.get()).isEqualTo(4);
+
+        Integer runningA = jdbc.sql("SELECT count(*) FROM simulation.run WHERE user_id = :u AND status = 'running'")
+                .param("u", userA.id())
+                .query(Integer.class)
+                .single();
+        Integer queuedA = jdbc.sql("SELECT count(*) FROM simulation.run WHERE user_id = :u AND status = 'queued'")
+                .param("u", userA.id())
+                .query(Integer.class)
+                .single();
+        assertThat(runningA).isEqualTo(3);
+        assertThat(queuedA).isEqualTo(1);
+
+        worker.gate.countDown();
+
+        for (UUID id : List.of(r1, r2, r3, r4)) {
+            assertThat(awaitFinished(userA, id).get("status").asString()).isEqualTo("completed");
+        }
+        assertThat(awaitFinished(userB, b1).get("status").asString()).isEqualTo("completed");
+    }
+
+    @Test
+    void maxQueuedPerUserRejectsRunsAndRepeatsWith429AtomicallyUnderConcurrency() throws Exception {
+        UUID finishedId = createRun(userA, false, "custom");
+        assertThat(awaitFinished(userA, finishedId).get("status").asString()).isEqualTo("completed");
+
+        worker.entered = new CountDownLatch(3);
+        worker.gate = new CountDownLatch(1);
+
+        List<UUID> created = new CopyOnWriteArrayList<>();
+        // 3 прогона займут все слоты running пользователя userA
+        for (int i = 0; i < 3; i++) {
+            created.add(createRun(userA, false, "custom"));
+        }
+        assertThat(worker.entered.await(5, TimeUnit.SECONDS)).isTrue();
+
+        // Ещё 15 в очередь последовательно, затем 10 конкурентных запросов — суммарно queued не должен превысить 20
+        for (int i = 0; i < 15; i++) {
+            created.add(createRun(userA, false, "custom"));
+        }
+
+        int parallelCount = 10;
+        List<Integer> statuses = new CopyOnWriteArrayList<>();
+        try (ExecutorService pool = Executors.newFixedThreadPool(parallelCount)) {
+            CyclicBarrier barrier = new CyclicBarrier(parallelCount);
+            List<Future<?>> futures = new ArrayList<>();
+            for (int i = 0; i < parallelCount; i++) {
+                futures.add(pool.submit(() -> {
+                    barrier.await(5, TimeUnit.SECONDS);
+                    MvcResult res = mockMvc.perform(withAuth(userA, post("/api/v1/runs"))
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content(createRunBody("custom", false)))
+                            .andReturn();
+                    int code = res.getResponse().getStatus();
+                    statuses.add(code);
+                    if (code == 201) {
+                        created.add(
+                                UUID.fromString(json.readTree(res.getResponse().getContentAsString())
+                                        .get("runId")
+                                        .asString()));
+                    }
+                    return null;
+                }));
+            }
+            for (Future<?> f : futures) {
+                f.get(10, TimeUnit.SECONDS);
+            }
+        }
+
+        assertThat(statuses.stream().filter(s -> s == 201).count()).isEqualTo(5);
+        assertThat(statuses.stream().filter(s -> s == 429).count()).isEqualTo(5);
+
+        Integer queuedA = jdbc.sql("SELECT count(*) FROM simulation.run WHERE user_id = :u AND status = 'queued'")
+                .param("u", userA.id())
+                .query(Integer.class)
+                .single();
+        assertThat(queuedA).isEqualTo(20);
+
+        mockMvc.perform(withAuth(userA, post("/api/v1/runs"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRunBody("custom", false)))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.status").value(429))
+                .andExpect(jsonPath("$.code").value("TOO_MANY_REQUESTS"));
+
+        mockMvc.perform(withAuth(userA, post("/api/v1/runs/" + finishedId + "/repeat")))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.status").value(429))
+                .andExpect(jsonPath("$.code").value("TOO_MANY_REQUESTS"));
+
+        // Другой пользователь не затронут лимитом userA
+        UUID userBRun = createRun(userB, false, "custom");
+
+        worker.gate.countDown();
+        for (UUID id : created) {
+            assertThat(awaitFinished(userA, id).get("status").asString()).isEqualTo("completed");
+        }
+        assertThat(awaitFinished(userB, userBRun).get("status").asString()).isEqualTo("completed");
+    }
+
     private UUID createRun(UserSession user, boolean blind, String startMode) throws Exception {
         MvcResult result = mockMvc.perform(withAuth(user, post("/api/v1/runs"))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -701,6 +838,7 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
         volatile long nextDigest = 123_456L;
         volatile CountDownLatch entered;
         volatile CountDownLatch gate;
+        final AtomicInteger inFlight = new AtomicInteger();
 
         void reset() {
             checkLevel = CheckLevel.OK;
@@ -710,6 +848,7 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
             nextDigest = 123_456L;
             entered = null;
             gate = null;
+            inFlight.set(0);
         }
 
         @Override
@@ -763,21 +902,26 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
                 Map<String, Double> paramOverrides,
                 boolean includeHistory,
                 Consumer<RunProgressData> onProgress) {
-            if (entered != null) {
-                entered.countDown();
-            }
-            if (gate != null) {
-                try {
-                    if (!gate.await(10, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("gate timeout");
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException(e);
+            inFlight.incrementAndGet();
+            try {
+                if (entered != null) {
+                    entered.countDown();
                 }
-            }
-            if (failRunWithUnavailable) {
-                throw new DependencyUnavailableException("Worker unavailable", null);
+                if (gate != null) {
+                    try {
+                        if (!gate.await(10, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("gate timeout");
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                }
+                if (failRunWithUnavailable) {
+                    throw new DependencyUnavailableException("Worker unavailable", null);
+                }
+            } finally {
+                inFlight.decrementAndGet();
             }
             onProgress.accept(new RunProgressData(2L, 4L));
             onProgress.accept(new RunProgressData(4L, 4L));

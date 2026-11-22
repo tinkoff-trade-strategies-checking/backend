@@ -9,4 +9,4 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 record WorkerProperties(
         @DefaultValue("localhost:50051") String address,
         @DefaultValue("5s") Duration deadline,
-        @DefaultValue("120s") Duration runDeadline) {}
+        @DefaultValue("10m") Duration runDeadline) {}

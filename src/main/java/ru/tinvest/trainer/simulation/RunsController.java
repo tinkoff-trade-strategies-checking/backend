@@ -157,6 +157,14 @@ class RunsController {
         return problem;
     }
 
+    @ExceptionHandler(RunQueueLimitException.class)
+    ProblemDetail tooManyRuns(RunQueueLimitException e) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS, e.getMessage());
+        problem.setTitle("Too Many Requests");
+        ErrorCode.TOO_MANY_REQUESTS.applyTo(problem);
+        return problem;
+    }
+
     private Map<String, Object> runInfo(
             RunRecord run, String algoName, long lastEventId, @Nullable RunResultRecord result) {
         Map<String, Object> out = new LinkedHashMap<>();

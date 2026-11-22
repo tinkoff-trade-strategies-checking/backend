@@ -9,6 +9,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 record RunProperties(
         @DefaultValue("2") int threads,
         @DefaultValue("100") int queueCapacity,
+        @DefaultValue("3") int maxRunningPerUser,
+        @DefaultValue("20") int maxQueuedPerUser,
         @DefaultValue("250ms") Duration progressInterval,
         @DefaultValue("2s") Duration heartbeat,
         @DefaultValue("24h") Duration eventRetention,
@@ -17,6 +19,8 @@ record RunProperties(
     RunProperties {
         if (threads < 1
                 || queueCapacity < 1
+                || maxRunningPerUser < 1
+                || maxQueuedPerUser < 1
                 || progressInterval.isNegative()
                 || heartbeat.isZero()
                 || heartbeat.isNegative()

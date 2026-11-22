@@ -62,6 +62,7 @@ public class Runs {
     private final Snapshots snapshots;
     private final CurrentUser currentUser;
     private final RunEvents events;
+    private final RunProperties properties;
     private final ObjectMapper json;
     private final RandomGenerator random;
 
@@ -72,8 +73,9 @@ public class Runs {
             Snapshots snapshots,
             CurrentUser currentUser,
             RunEvents events,
+            RunProperties properties,
             ObjectMapper json) {
-        this(jdbc, strategyVersions, snapshots, currentUser, events, json, new SecureRandom());
+        this(jdbc, strategyVersions, snapshots, currentUser, events, properties, json, new SecureRandom());
     }
 
     Runs(
@@ -82,6 +84,7 @@ public class Runs {
             Snapshots snapshots,
             CurrentUser currentUser,
             RunEvents events,
+            RunProperties properties,
             ObjectMapper json,
             RandomGenerator random) {
         this.jdbc = jdbc;
@@ -89,6 +92,7 @@ public class Runs {
         this.snapshots = snapshots;
         this.currentUser = currentUser;
         this.events = events;
+        this.properties = properties;
         this.json = json;
         this.random = random;
     }
@@ -130,6 +134,7 @@ public class Runs {
             boolean blind,
             LaunchPlan plan,
             Map<String, Double> paramOverrides) {
+        acquireUserQueueSlot(userId);
         UUID id = Uuid7.next();
         jdbc.sql("""
                         INSERT INTO simulation.run (
@@ -186,6 +191,7 @@ public class Runs {
 
     @Transactional
     UUID repeatPlanned(UUID userId, RunRecord original) {
+        acquireUserQueueSlot(userId);
         UUID id = Uuid7.next();
         jdbc.sql("""
                         INSERT INTO simulation.run (
@@ -283,6 +289,61 @@ public class Runs {
                         .param("id", runId)
                         .update()
                 > 0;
+    }
+
+    /**
+     * Атомарно выбирает первый подходящий {@code queued}-прогон из {@code candidateIds}, чей пользователь сейчас имеет
+     * меньше {@code maxRunningPerUser} запущенных ({@code running}) прогонов, и переводит его в {@code running}.
+     */
+    @Transactional
+    Optional<UUID> claimFirstEligible(List<UUID> candidateIds, int maxRunningPerUser) {
+        if (candidateIds.isEmpty()) {
+            return Optional.empty();
+        }
+        jdbc.sql("SELECT pg_advisory_xact_lock(hashtext('run-dispatch'))")
+                .query()
+                .singleRow();
+        Optional<UUID> next = jdbc.sql("""
+                        SELECT r.id
+                        FROM simulation.run r
+                        WHERE r.id IN (:ids)
+                          AND r.status = 'queued'
+                          AND (
+                              SELECT count(*)
+                              FROM simulation.run r2
+                              WHERE r2.user_id = r.user_id
+                                AND r2.status = 'running'
+                          ) < :maxRunning
+                        ORDER BY r.created_at ASC, r.id ASC
+                        LIMIT 1
+                        """)
+                .param("ids", candidateIds)
+                .param("maxRunning", maxRunningPerUser)
+                .query(UUID.class)
+                .optional();
+        if (next.isEmpty()) {
+            return Optional.empty();
+        }
+        UUID runId = next.get();
+        int updated = jdbc.sql("UPDATE simulation.run SET status = 'running' WHERE id = :id AND status = 'queued'")
+                .param("id", runId)
+                .update();
+        return updated > 0 ? Optional.of(runId) : Optional.empty();
+    }
+
+    private void acquireUserQueueSlot(UUID userId) {
+        jdbc.sql("SELECT pg_advisory_xact_lock(hashtext(:key))")
+                .param("key", "run-user:" + userId)
+                .query()
+                .singleRow();
+        int queued = jdbc.sql("SELECT count(*) FROM simulation.run WHERE user_id = :user AND status = 'queued'")
+                .param("user", userId)
+                .query(Integer.class)
+                .single();
+        if (queued >= properties.maxQueuedPerUser()) {
+            throw new RunQueueLimitException(
+                    "Too many queued runs (max " + properties.maxQueuedPerUser() + " per user)");
+        }
     }
 
     @Transactional
