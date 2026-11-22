@@ -43,6 +43,8 @@ lab:
   simulation:
     threads: ${SIMULATION_RUN_THREADS:2}
     queue-capacity: ${SIMULATION_RUN_QUEUE:100}
+    max-running-per-user: ${SIMULATION_MAX_RUNNING_PER_USER:3}
+    max-queued-per-user: ${SIMULATION_MAX_QUEUED_PER_USER:20}
     progress-interval: 250ms
     heartbeat: 2s
     event-retention: 24h
@@ -57,7 +59,7 @@ analysis:
 worker:
   address: ${WORKER_ADDRESS:localhost:50051}
   deadline: ${WORKER_DEADLINE:5s}
-  run-deadline: ${WORKER_RUN_DEADLINE:120s}
+  run-deadline: ${WORKER_RUN_DEADLINE:10m}
 
 management:
   endpoints:

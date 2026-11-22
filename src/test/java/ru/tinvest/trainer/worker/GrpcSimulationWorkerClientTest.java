@@ -86,7 +86,7 @@ class GrpcSimulationWorkerClientTest {
 
     private SimulationWorkerClient start(SimulationWorkerGrpc.SimulationWorkerImplBase impl, Duration deadline)
             throws Exception {
-        return start(impl, deadline, Duration.ofSeconds(120));
+        return start(impl, deadline, Duration.ofMinutes(10));
     }
 
     private SimulationWorkerClient start(

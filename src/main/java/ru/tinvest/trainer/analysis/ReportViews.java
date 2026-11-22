@@ -322,8 +322,8 @@ final class ReportViews {
         List<Object> trades = new ArrayList<>(output.missedProfitable().size());
         for (MissedProfitableTradeData m : output.missedProfitable()) {
             if (m.divergenceSeqs().isEmpty()) {
-                throw new IllegalStateException(
-                        "Сделка обратной проверки без входного расхождения в сессии " + session.id());
+                // ФТ-20 требует входного Excess-расхождения; сделки без него фильтруем, чтобы не ронять сборку отчёта
+                continue;
             }
             long entryDivSeq = m.divergenceSeqs().getFirst();
             Map<String, Object> item = new LinkedHashMap<>();

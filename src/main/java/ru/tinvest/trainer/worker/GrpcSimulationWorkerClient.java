@@ -40,7 +40,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.StrategyRunOutput;
 /** Реализация {@link SimulationWorkerClient} на {@link ManagedChannel}. */
 class GrpcSimulationWorkerClient implements SimulationWorkerClient {
 
-    private static final Duration DEFAULT_RUN_DEADLINE = Duration.ofSeconds(120);
+    private static final Duration DEFAULT_RUN_DEADLINE = Duration.ofMinutes(10);
 
     private final SimulationWorkerGrpc.SimulationWorkerBlockingStub stub;
     private final Duration deadline;

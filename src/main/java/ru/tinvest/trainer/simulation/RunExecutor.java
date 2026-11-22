@@ -50,6 +50,10 @@ class RunExecutor {
         if (!runs.markRunning(runId)) {
             return;
         }
+        executeClaimed(runId);
+    }
+
+    void executeClaimed(UUID runId) {
         try {
             RunRecord run =
                     runs.findRecord(runId).orElseThrow(() -> new IllegalStateException("Прогон не найден: " + runId));
