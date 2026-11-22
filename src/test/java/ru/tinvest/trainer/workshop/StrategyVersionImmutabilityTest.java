@@ -36,7 +36,7 @@ class StrategyVersionImmutabilityTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void deleteAndTruncateOfVersionAreRejected() {
+    void deleteIsRejected() {
         StrategyVersion v = versions.publish(UUID.randomUUID(), "buy()", "{}");
 
         assertThatThrownBy(() -> jdbc.sql("DELETE FROM workshop.strategy_version WHERE id = :id")
@@ -44,7 +44,15 @@ class StrategyVersionImmutabilityTest extends PostgresIntegrationTest {
                         .update())
                 .isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("INV-5");
-        assertThatThrownBy(() -> jdbc.sql("TRUNCATE workshop.strategy_version").update())
+        assertThat(versions.find(v.id())).isPresent();
+    }
+
+    @Test
+    void truncateIsRejected() {
+        StrategyVersion v = versions.publish(UUID.randomUUID(), "buy()", "{}");
+
+        assertThatThrownBy(() ->
+                        jdbc.sql("TRUNCATE workshop.strategy_version CASCADE").update())
                 .isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("INV-5");
         assertThat(versions.find(v.id())).isPresent();
