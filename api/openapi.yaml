@@ -2486,9 +2486,6 @@ components:
           type: [array, 'null']
           items: { $ref: '#/components/schemas/Uuid' }
         initialCapital: { $ref: '#/components/schemas/Money' }
-        backgroundAlgorithmId:
-          oneOf: [{ $ref: '#/components/schemas/Uuid' }, { type: 'null' }]
-          description: Необязательный идентификатор алгоритма из каталога мастерской для фонового сравнения (по умолчанию — «Эталон платформы»)
     CreatedRun:
       type: object
       required: [runId]

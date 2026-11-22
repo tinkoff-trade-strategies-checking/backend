@@ -321,8 +321,11 @@ final class ReportViews {
             SessionRecord session, DivergenceOutput output, Map<Long, Long> times, ViewFormat.StepIndex index) {
         List<Object> trades = new ArrayList<>(output.missedProfitable().size());
         for (MissedProfitableTradeData m : output.missedProfitable()) {
-            long entryDivSeq =
-                    m.divergenceSeqs().isEmpty() ? m.seq() : m.divergenceSeqs().getFirst();
+            if (m.divergenceSeqs().isEmpty()) {
+                throw new IllegalStateException(
+                        "Сделка обратной проверки без входного расхождения в сессии " + session.id());
+            }
+            long entryDivSeq = m.divergenceSeqs().getFirst();
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("id", DerivedIds.reverseCheckTrade(session.id(), m.seq()));
             item.put("paperTicker", m.paperKey());

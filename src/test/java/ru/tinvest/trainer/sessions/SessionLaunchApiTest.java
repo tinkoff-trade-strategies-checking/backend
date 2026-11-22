@@ -644,6 +644,21 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
         String withForeignHidden =
                 randomBody().replace("}", ",\"backgroundAlgorithmId\":\"" + foreignHiddenAlgo + "\"}");
         assertThat(launch(withForeignHidden).getResponse().getStatus()).isEqualTo(404);
+
+        // неопубликованный черновик (latestVersion == 0) не может быть фоновым алгоритмом -> 404
+        UUID unpublishedDraftId = UUID.randomUUID();
+        jdbc.sql("INSERT INTO workshop.strategy (id, owner_id, author_name, is_system, name, visibility) "
+                        + "VALUES (:id, :owner, 'Author', FALSE, :name, 'public')")
+                .param("id", unpublishedDraftId)
+                .param("owner", userId)
+                .param("name", "Draft-" + unpublishedDraftId)
+                .update();
+        jdbc.sql(
+                        "INSERT INTO workshop.strategy_draft (strategy_id, source) VALUES (:id, 'rule \"a\" when true then buy 1 lots')")
+                .param("id", unpublishedDraftId)
+                .update();
+        String withDraft = randomBody().replace("}", ",\"backgroundAlgorithmId\":\"" + unpublishedDraftId + "\"}");
+        assertThat(launch(withDraft).getResponse().getStatus()).isEqualTo(404);
     }
 
     /** Чужая и несуществующая сессии для проверки владельца: запросы по ним ещё не открыты контрактом. */

@@ -469,6 +469,52 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void reportHandlesEmptyDivergencesAndLegacySessionWithoutBackgroundAlgorithm() throws Exception {
+        // пустые расхождения (step = 1 < 2 в FakeWorker): массивы пустые, worst* == null
+        UUID emptyDivId = newSession(false);
+        setStep(emptyDivId, 1);
+        finish(emptyDivId, "finished_early");
+
+        JsonNode emptyReport = readyReport(emptyDivId).get("report");
+        assertThat(emptyReport.get("backgroundAlgorithmName").asString()).isEqualTo("Эталон платформы");
+        assertThat(emptyReport.get("divergences")).isEmpty();
+        assertThat(emptyReport.get("reverseCheckTrades")).isEmpty();
+        JsonNode emptySummary = emptyReport.get("divergenceSummary");
+        assertThat(emptySummary.get("totalErrorCost").asString()).isEqualTo("0.00");
+        assertThat(emptySummary.get("totalErrorCostPct").asString()).isEqualTo("0.00");
+        assertThat(emptySummary.get("worstDivergenceId").isNull()).isTrue();
+        assertThat(emptySummary.get("worstType").isNull()).isTrue();
+        assertThat(emptySummary.get("worstDay").isNull()).isTrue();
+        assertThat(emptySummary.get("worstErrorCost").isNull()).isTrue();
+
+        // старая сессия до V18 (algo_version_id == null): поля фонового алгоритма остаются null
+        UUID legacyId = UUID.randomUUID();
+        Snapshot snapshot = registeredSnapshot();
+        jdbc.sql("INSERT INTO sessions.session (id, user_id, blind, status, trader_kind, duration_days, timeframe, "
+                        + "regime, start_mode, snapshot_id, period_start, period_end, trading_days, bars_count, "
+                        + "sigma, mdd, p33, p80, initial_capital, current_step, algo_version_id) "
+                        + "VALUES (:id, :user, false, 'completed', 'human', 20, '1d', 'calm', 'custom', :snap, "
+                        + "'2022-03-14', '2022-04-09', 20, 20, 0.1, 0.1, 0.15, 0.35, 500000.00, 3, NULL)")
+                .param("id", legacyId)
+                .param("user", userId)
+                .param("snap", snapshot.id())
+                .update();
+        jdbc.sql("INSERT INTO sessions.session_paper (session_id, paper_index, paper_id, secid, sector, "
+                        + "lot_size, price_step, name) VALUES (:s, 0, :p, 'SBER', 'Сектор0', 10, 0.01, 'SBER')")
+                .param("s", legacyId)
+                .param("p", Papers.id("SBER"))
+                .update();
+
+        JsonNode legacyReport = readyReport(legacyId).get("report");
+        assertThat(legacyReport.get("backgroundAlgorithmName").isNull()).isTrue();
+        assertThat(legacyReport.get("algoMetrics").isNull()).isTrue();
+        assertThat(legacyReport.get("comparison").isNull()).isTrue();
+        assertThat(legacyReport.get("divergenceSummary").isNull()).isTrue();
+        assertThat(legacyReport.get("divergences").isNull()).isTrue();
+        assertThat(legacyReport.get("reverseCheckTrades").isNull()).isTrue();
+    }
+
+    @Test
     void reportOfAnUnfinishedBlindSessionRevealsNothing() throws Exception {
         // INV-7: слепая сессия, пока идёт, не раскрывает бумаги, период, итог и рубли — на любом шаге и составе
         Random random = new Random(7);
