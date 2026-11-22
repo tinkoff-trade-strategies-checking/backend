@@ -81,14 +81,21 @@ USER_PASSWORD='...' ./gradlew bootRun --args='--spring.profiles.active=create-us
 - Тесты `marketdata/importer`: поддельный ISS на JDK `HttpServer` с образцами из `src/test/resources/iss`, настоящие ClickHouse (Testcontainers) и PostgreSQL, сети нет.
 
 
-### Полная загрузка пула (~3 суток)
-Версия схемы импорта — 2 (в идентификаторе снапшота): недогруженная загрузка по версии 1 не докачивается, импорт отказывает и называет её id; `--import.drop-legacy=true` удаляет строки этого снапшота (строго по id, из всех таблиц архива) и грузит заново; каталог на архиве без столбца `securities.name` отдаёт пустые названия.
-Загрузка идемпотентна по кускам «бумага × месяц»: после остановки (Ctrl+C, обрыв сети, перезагрузка) повторный запуск с **теми же** `--import.from/to/tickers/label` докачивает недостающее, загруженное не качает заново. Поэтому запускать можно по частям и в фоне: `nohup ./gradlew bootRun --args='--spring.profiles.active=import,local --import.from=… --import.to=…' > import.log 2>&1 &`, следить по `import.log` (строки «`<бумага> <месяц>: N свечей`»), при падении — запустить ту же команду снова. Другие параметры или `label` — другой снапшот с нуля. Снапшот регистрируется в PostgreSQL только после полной загрузки.
+### Полная загрузка пула
+Версия схемы импорта — 3 (в идентификаторе снапшота): недогруженная загрузка по версии 1 не докачивается, импорт отказывает и называет её id; `--import.drop-legacy=true` удаляет строки этого снапшота (строго по id, из всех таблиц архива) и грузит заново; каталог на архиве без столбца `securities.name` отдаёт пустые названия.
+Замер на реальном MOEX ISS (2024-01-01…2024-12-31, `SBER,GAZP,LKOH` + `IMOEX` + RUONIA): загружено `622 039` свечей (`SBER` `207 458`, `GAZP` `207 401`, `LKOH` `206 914`, `IMOEX` `266`), ~`10–14 с` на «бумага × месяц» (~`1 450` свечей/с, ~`7,8 мин` на 3 бумаги за год), пиковый батч — `18 676` строк на `INSERT` (предел `200 000`), сжатие в ClickHouse `5,9×` (`8,9 МБ` сжато / `52,9 МБ` без сжатия). Полный пул IMOEX с `2014-11` (~45 бумаг × 12 лет) при той же скорости занимает около суток без массовых повторов (до нескольких суток при задержках ISS).
+Загрузка идемпотентна по кускам «бумага × месяц»: после остановки (Ctrl+C, обрыв сети, перезагрузка) повторный запуск с **теми же** `--import.from/to/tickers/label` докачивает недостающее, загруженное не качает заново. Команда полного пула IMOEX (без `--import.tickers`):
+
+```bash
+nohup ./gradlew bootRun --args='--spring.profiles.active=import,local --import.from=2014-11-01 --import.to=2026-11-22' > import.log 2>&1 &
+```
+
+Следить по `import.log` (строки «`<бумага> <месяц>: N свечей`»), при падении — запустить ту же команду снова. Другие параметры или `label` — другой снапшот с нуля. Снапшот регистрируется в PostgreSQL только после полной загрузки.
 ## Подбор запуска
 `marketdata.LaunchPlanner` подбирает период и бумаги для ручной сессии, ничего не пишет. Бин обязателен: нужен `marketdata.clickhouse.url` (`MARKETDATA_CLICKHOUSE_URL`, а также `_DATABASE`, `_USER`, `_PASSWORD`, `_TIMEOUT`; в `deploy/` заданы), без него (пустая строка — тоже) веб-приложение не стартует. Без веб-сервера (профили `import`, `create-user`) подбор и всё, что его использует (`MarketdataConfiguration`, `LaunchService`, контроллеры), не создаётся: условие `@ConditionalOnWebApplication` одно на всю цепочку, новые зависимости от `LaunchPlanner` ставьте под него же (тест `FullApplicationProfilesTest` поднимает всё приложение в `import`, `create-user` и обычном режиме); профиль `local` задаёт `http://localhost:8123`, база и пользователь `ttsc`. Каждый `@SpringBootTest` (в том числе с собственными `properties`) задаёт заглушку `marketdata.clickhouse.url=http://localhost:1`. Остальное — `marketdata.pool` (тикеры IMOEX; пусто — все бумаги снапшота), `marketdata.max-bars` (5000).
 
 - Снапшот — последний готовый (есть в `snapshots_ready`) или заданный; заданный и не готовый — `NotFoundException`; нет готового — `DependencyUnavailableException` (503, в контракте нет подходящей причины отказа).
-- Календарь, интервалы, бумаги, даты свечей и сплиты читаются из ClickHouse один раз на снапшот (`CachingArchiveCatalog`, снапшот неизменяем); на запрос — только `sessionSteps`. Кэш держит последние `marketdata.cache-snapshots` снапшотов (2); чтения без блокировки карты: одновременные запросы одного ключа ждут общий результат, провал (таймаут) не кэшируется, чтений из ClickHouse одновременно не больше `marketdata.max-concurrent-scans` (2). После старта кэш последнего готового снапшота прогревается в фоне (`marketdata.warm-up`, `LaunchPlanner.warmUp`). Первый скан `candleDays` читает свечи всего снапшота; таймаут `marketdata.clickhouse.timeout` (120 с) **не проверен на полном архиве**: замерить, когда архив будет загружен целиком.
+- Календарь, интервалы, бумаги, даты свечей и сплиты читаются из ClickHouse один раз на снапшот (`CachingArchiveCatalog`, снапшот неизменяем); на запрос — только `sessionSteps`. Кэш держит последние `marketdata.cache-snapshots` снапшотов (2); чтения без блокировки карты: одновременные запросы одного ключа ждут общий результат, провал (таймаут) не кэшируется, чтений из ClickHouse одновременно не больше `marketdata.max-concurrent-scans` (2). После старта кэш последнего готового снапшота прогревается в фоне (`marketdata.warm-up`, `LaunchPlanner.warmUp`). Первый скан `candleDays` читает свечи всего снапшота; на реальном срезе `622 039` свечей (`SBER,GAZP,LKOH` за 2024 год) `candleDays` = `162 мс`, `maxStepsPerDay` = `178 мс`, `sessionSteps` (60d/1m) = `171 мс` — при линейном масштабировании до полного архива (~100 млн строк) это ~`25–30 с`, поэтому `marketdata.clickhouse.timeout=120s` достаточен (при медленном диске задаётся через `MARKETDATA_CLICKHOUSE_TIMEOUT`).
 - Торговый день — дата МСК календаря IMOEX, все сессии дня входят в него. Бумага покрывает окно, если свечи есть в каждый торговый день окна.
 - Лимит `max-bars` — «на одну бумагу» = шаги общей шкалы сессии (она общая для всех бумаг): число разных начал свечей шага по объединению выбранных бумаг в окне, точно по архиву, ≤ 5000, граница включительно. Торговый день — дата календаря IMOEX: свечи бумаг вне календаря (торги в выходные) в шкалу не входят (`ArchiveCatalog.sessionSteps` берёт список торговых дней окна). `Timeframe.minCandlesPerDay` (только основная сессия) — лишь ранний отсев заведомо невозможных пар; тогда `barsCount` в отказе — нижняя граница.
 - Капитал: от 10 000 до 100 000 000 ₽, до 2 знаков; пресеты 100 000 / 500 000 / 1 000 000 (по умолчанию) / 5 000 000 — `LaunchPlanner.CAPITAL_PRESETS`, `DEFAULT_CAPITAL` (решение владельца продукта, 19.11.2026).
@@ -182,32 +189,33 @@ curl -s http://localhost:8080/actuator/health
 docker stop trainer-pg
 ```
 
-CI (`.github/workflows/ci.yml`): джоба `format` (`./gradlew spotlessCheck --no-daemon`), джоба `build-test` (`./gradlew build -x spotlessCheck --no-daemon`), джоба `e2e` (образ воркера из `core/main` и `./gradlew e2eTest --no-daemon`), джоба `proto-sync` (сверка `proto/` с `core/main`), джоба `openapi` (`npx -y @redocly/cli@latest lint api/openapi.yaml`), джоба `invariants` (сверка ссылок `documentation/invariants.md` через `documentation/scripts/check-invariants.py`), джоба `pr-size` (наблюдение размера PR).
+CI (`.github/workflows/ci.yml`): джоба `format` (`./gradlew spotlessCheck --no-daemon`), джоба `build-test` (`./gradlew build -x spotlessCheck --no-daemon`), джоба `e2e` (образ воркера из `core/main` и `./gradlew e2eTest --no-daemon`), джоба `proto-sync` (сверка `proto/` с `core/main`), джоба `openapi` (`npx -y @redocly/cli@latest lint api/openapi.yaml`), джоба `invariants` (сверка ссылок `documentation/invariants.md` через `documentation/scripts/check-invariants.py`), джоба `pr-size` (наблюдение размера PR). Отдельный workflow `.github/workflows/deploy-smoke.yml` (на изменениях `deploy/**` и `workflow_dispatch`) собирает реальный `frontend` SPA, образы `simulation-worker` и `trainer-backend`, поднимает `deploy/docker-compose.yml` и прогоняет `deploy/smoke-stack.sh`.
 
 ## Локальный стенд
 Для проверки UI без полного `deploy/`: `deploy/dev-up.sh [--days N] [--port P]` поднимает PostgreSQL 17, ClickHouse 25.8 и воркер (образ `simulation-worker`, нет — собирается из `../core`), грузит в ClickHouse ту же фикстуру, что e2e (`MarketFixture`: SBER, GAZP, LKOH и IMOEX, 160 торговых дней с 2025-03-03, дневные свечи, календарь, RUONIA; `--days` не меньше 160, например 260), регистрирует снапшот, заводит пользователя профилем `create-user` и запускает backend в фоне (pid и логи в `deploy/.dev/`). Нужны Docker, `curl` и Java 25 (системная или скачанная Gradle). Порты: backend 8080 (`--port`, если занят), PostgreSQL 15432, ClickHouse 18123, воркер 15051 (только 127.0.0.1). Почта пользователя `trader@example.com`, пароль и пароли БД генерируются в `deploy/.env.dev` (в `.gitignore`, в вывод скриптов не попадают). `deploy/dev-down.sh` останавливает всё и удаляет `deploy/.dev` и `deploy/.env.dev`.
 
+С флагом `--caddy` (или `--compose`) `deploy/dev-up.sh` поднимает полный стек `deploy/docker-compose.yml` за Caddy HTTPS (`https://localhost`): если рядом найден `../frontend` (или задан `FRONTEND_DIR`), автоматически собирает SPA (`npm run build`) и монтирует `dist/frontend/browser` в `FRONTEND_DIST` (с `--stub` остаётся заглушка `./frontend-stub`), загружает фикстуру и создаёт dev-пользователя. Проверить живой HTTPS-стенд можно скриптом `deploy/smoke-stack.sh` (`/` без заглушки, `/api/health`, `/api/v1/me` 401 + `XSRF-TOKEN`, вход 204 → `/api/v1/me` 200, порты только у `caddy`).
+
 ```bash
-bash deploy/dev-up.sh                       # или --port 18080
-. deploy/.env.dev                           # DEV_USER_EMAIL, DEV_USER_PASSWORD
-curl -i http://localhost:8080/api/v1/me     # 401 и cookie XSRF-TOKEN; вход — POST /api/v1/auth/login с X-XSRF-TOKEN
+bash deploy/dev-up.sh                       # локальный стенд для npm run start:local (http://localhost:8080)
+bash deploy/dev-up.sh --caddy               # полный стек compose с Caddy HTTPS и собранным frontend SPA
+bash deploy/smoke-stack.sh                  # проверка живого HTTPS-стека (SPA, API, вход, INV-10)
 bash deploy/dev-down.sh
 ```
 
-Фронтенд: в `frontend` настроен прокси `proxy.conf.js` (`/api → http://localhost:${BACKEND_PORT:-8080}`) и скрипт `npm run start:local`; страницы идут с `http://localhost:4200`, запросы `/api/v1/...` — на тот же origin, поэтому CORS не нужен. Cookie сессии на стенде без `Secure` (`SERVER_SERVLET_SESSION_COOKIE_SECURE=false`).
+Фронтенд: в `frontend` настроен прокси `proxy.conf.js` (`/api → http://localhost:${BACKEND_PORT:-8080}`) и скрипт `npm run start:local`; страницы идут с `http://localhost:4200`, запросы `/api/v1/...` — на тот же origin, поэтому CORS не нужен. Cookie сессии на локальном стенде (`http://localhost`) без `Secure` (`SERVER_SERVLET_SESSION_COOKIE_SECURE=false`); за Caddy HTTPS cookie с `Secure=true`.
 
 ## Окружение
 Локальный стек в `deploy/`: `caddy` (HTTPS, единственный с опубликованными портами 80/443, INV-10) → `backend`; внутри сети `postgres` (17), `clickhouse` (25.8) и `worker` (образ `simulation-worker`, собирается из `../core` по его `Dockerfile`).
 Соседние репозитории лежат рядом с `backend` (`../core`, `../frontend`); нет локально — `home/scripts/clone-repos.sh`.
 
 ```bash
-cp deploy/.env.example deploy/.env      # задать POSTGRES_PASSWORD и CLICKHOUSE_PASSWORD
+cp deploy/.env.example deploy/.env      # задать POSTGRES_PASSWORD, CLICKHOUSE_PASSWORD и при необходимости FRONTEND_DIST
 # Образы собираем напрямую: `compose build` через bake требует --allow=fs.read=.. для ../../core
 docker build -t simulation-worker ../core          # или путь к core; тяжёлая сборка C++
 docker build -f deploy/backend.Dockerfile -t trainer-backend .
-docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --no-build
-curl -k https://localhost/api/health    # 200 (-k: сертификат внутреннего CA Caddy)
-docker compose -f deploy/docker-compose.yml --env-file deploy/.env ps   # порты только у caddy
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --no-build --wait
+bash deploy/smoke-stack.sh --allow-stub            # или без --allow-stub при заданном FRONTEND_DIST
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env down -v
 ```
 
@@ -215,7 +223,7 @@ docker compose -f deploy/docker-compose.yml --env-file deploy/.env down -v
 
 `CORE_DIR` в `deploy/.env` — путь к репозиторию core для `up --build` (по умолчанию `../../core` от `deploy/`; в worktree задать явно).
 
-Frontend: `FRONTEND_DIST` в `deploy/.env` — каталог сборки (`../../frontend/dist/<имя>/browser`); не задан — Caddy отдаёт заглушку `deploy/frontend-stub`. Сборка образа worker тяжёлая (C++, gRPC).
+Frontend: `FRONTEND_DIST` в `deploy/.env` — каталог сборки (`../../frontend/dist/frontend/browser`, выходной путь в `frontend/angular.json` для `@angular/build:application`); не задан — Caddy отдаёт заглушку `deploy/frontend-stub`. Сборка образа worker тяжёлая (C++, gRPC).
 
 ## Когда обновлять документы
 Общая таблица — `home/workflow.md`, раздел «Когда обновлять документы». Для этого репозитория:

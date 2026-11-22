@@ -38,7 +38,13 @@ final class IssClient {
         Map<String, String> q = new LinkedHashMap<>(query);
         q.put("iss.meta", "off");
         q.put("iss.only", block + "," + block + ".cursor");
-        return fetcher.get(uri(path, q), body -> IssParsers.table(body, block), IssTable::isEmpty, emptyRetries);
+        return fetcher.get(
+                uri(path, q),
+                body -> IssParsers.table(body, block),
+                // Пустой ответ с явным PREV_DATE (неторговый день в analytics, TOTAL=0) — не сбой, повторы не нужны;
+                // при TOTAL > 0 на торговом дне или отсутствии PREV_DATE повторяем emptyRetries раз.
+                t -> t.isEmpty() && (t.prevDate() == null || (t.total() != null && t.total() > 0)),
+                emptyRetries);
     }
 
     /**

@@ -1,0 +1,99 @@
+name: Deploy Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/**'
+      - '.github/workflows/deploy-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: backend
+      - uses: actions/checkout@v4
+        with:
+          repository: tinkoff-trade-strategies-checking/core
+          path: core
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: tinkoff-trade-strategies-checking/frontend
+          path: frontend
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.5
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # npm 10.9 падает на разрешении peer-зависимостей Taiga UI — ставим npm из packageManager.
+      - name: Сборка frontend SPA
+        working-directory: frontend
+        run: |
+          npx -y npm@11.21.2 ci --no-fund --no-audit
+          npm run build
+
+      - uses: docker/setup-buildx-action@v3
+      - name: Образ simulation-worker из core
+        uses: docker/build-push-action@v6
+        with:
+          context: core
+          load: true
+          tags: simulation-worker:latest
+          cache-from: type=gha,scope=simulation-worker
+          cache-to: type=gha,mode=max,scope=simulation-worker
+
+      - name: Образ trainer-backend
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/deploy/backend.Dockerfile
+          load: true
+          tags: trainer-backend:latest
+          cache-from: type=gha,scope=trainer-backend
+          cache-to: type=gha,mode=max,scope=trainer-backend
+
+      - name: Подготовка .env и запуск стека
+        run: |
+          rand() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "$1" || true; }
+          PG_PASS="$(rand 20)"
+          CH_PASS="$(rand 20)"
+          DEV_PASS="$(rand 20)"
+          {
+            echo "POSTGRES_PASSWORD=$PG_PASS"
+            echo "CLICKHOUSE_PASSWORD=$CH_PASS"
+            echo "FRONTEND_DIST=../../frontend/dist/frontend/browser"
+            echo "CORE_DIR=../../core"
+          } > backend/deploy/.env
+          echo "DEV_USER_EMAIL=smoke@example.com" >> "$GITHUB_ENV"
+          echo "::add-mask::$DEV_PASS"
+          echo "DEV_USER_PASSWORD=$DEV_PASS" >> "$GITHUB_ENV"
+          docker compose -f backend/deploy/docker-compose.yml --env-file backend/deploy/.env up -d --no-build --wait
+          docker compose -f backend/deploy/docker-compose.yml --env-file backend/deploy/.env run --rm --no-deps \
+            -e USER_PASSWORD="$DEV_PASS" \
+            backend --spring.profiles.active=create-user --user.email=smoke@example.com
+
+      - name: Проверка HTTPS SPA, API, входа и INV-10
+        run: bash backend/deploy/smoke-stack.sh
+
+      - name: Диагностика при падении
+        if: failure()
+        run: |
+          docker compose -f backend/deploy/docker-compose.yml --env-file backend/deploy/.env ps || true
+          docker compose -f backend/deploy/docker-compose.yml --env-file backend/deploy/.env logs --tail=60 || true
+
+      - name: Остановка стека
+        if: always()
+        run: docker compose -f backend/deploy/docker-compose.yml --env-file backend/deploy/.env down -v || true
