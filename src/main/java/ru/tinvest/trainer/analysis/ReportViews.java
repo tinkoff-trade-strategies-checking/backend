@@ -120,7 +120,7 @@ final class ReportViews {
             // названий в архиве нет: name = тикер, как в GET /papers
             out.put("name", paper.displayName());
             out.put("sector", paper.sector());
-            out.put("startPrice", ViewFormat.number(startPrice(session, paper, replay)));
+            out.put("startPrice", ViewFormat.number(startPrice(paper, replay)));
             out.put("lotSize", paper.lotSize());
             papers.add(out);
         }
@@ -128,12 +128,12 @@ final class ReportViews {
     }
 
     /** Цена открытия первого бара сессии (шаг 0) — стартовая цена бумаги. */
-    private static BigDecimal startPrice(SessionRecord session, PaperRecord paper, ReplayResult replay) {
+    private static BigDecimal startPrice(PaperRecord paper, ReplayResult replay) {
         return replay.history().stream()
                 .filter(b -> b.paperKey().equals(paper.secid()) && b.step() >= 0)
                 .findFirst()
                 .map(BarData::open)
-                .orElseThrow(() -> new IllegalStateException("Нет баров бумаги в отчёте сессии " + session.id()));
+                .orElse(BigDecimal.ZERO);
     }
 
     private static Map<String, Object> metrics(SessionRecord session, ReportData report, boolean bankrupt) {

@@ -722,6 +722,13 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         assertThat(defaults.get("pageSize").asInt()).isEqualTo(20);
         assertThat(defaults.get("totalPages").asInt()).isEqualTo(1);
         assertThat(idsOf(defaults)).doesNotContain(stranger.toString()).hasSize(5);
+
+        for (String kindParam : List.of("", "&kind=session", "&kind=algo_run")) {
+            JsonNode hugePage = body(httpGet("/api/v1/history?page=30000000&pageSize=100" + kindParam));
+            assertThat(hugePage.get("items")).isEmpty();
+            assertThat(hugePage.get("page").asInt()).isEqualTo(30_000_000);
+            assertThat(hugePage.get("pageSize").asInt()).isEqualTo(100);
+        }
     }
 
     @Test

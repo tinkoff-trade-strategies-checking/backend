@@ -2,6 +2,7 @@ package ru.tinvest.trainer.simulation;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -211,10 +212,14 @@ class RunEvents {
         scheduler.scheduleAtFixedRate(
                 () -> {
                     try {
-                        for (List<Subscription> list : subscriptions.values()) {
-                            for (Subscription subscription : list) {
-                                subscription.heartbeat(hangLimitMs);
+                        List<Subscription> snapshot = new ArrayList<>();
+                        synchronized (subscriptions) {
+                            for (List<Subscription> list : subscriptions.values()) {
+                                snapshot.addAll(list);
                             }
+                        }
+                        for (Subscription subscription : snapshot) {
+                            subscription.heartbeat(hangLimitMs);
                         }
                     } catch (RuntimeException e) {
                         log.error("Ошибка heartbeat потока событий прогона", e);
@@ -283,26 +288,43 @@ class RunEvents {
         long last = lastEventId(runId);
         long startAfter = lastEventId == null ? 0L : Math.min(lastEventId, last);
         Subscription subscription = new Subscription(runId, sink, startAfter);
-        subscriptions.computeIfAbsent(runId, k -> new CopyOnWriteArrayList<>()).add(subscription);
+        synchronized (subscriptions) {
+            subscriptions
+                    .computeIfAbsent(runId, k -> new CopyOnWriteArrayList<>())
+                    .add(subscription);
+        }
         subscription.signal();
         return subscription;
     }
 
-    private void unsubscribe(Subscription subscription) {
-        List<Subscription> list = subscriptions.get(subscription.runId);
-        if (list == null) {
-            return;
-        }
-        list.remove(subscription);
-        if (list.isEmpty()) {
-            subscriptions.remove(subscription.runId, list);
+    int subscribers(UUID runId) {
+        synchronized (subscriptions) {
+            List<Subscription> list = subscriptions.get(runId);
+            return list == null ? 0 : list.size();
         }
     }
 
-    private void notifySubscribers(UUID runId) {
-        List<Subscription> list = subscriptions.get(runId);
-        if (list == null) {
-            return;
+    private void unsubscribe(Subscription subscription) {
+        synchronized (subscriptions) {
+            List<Subscription> list = subscriptions.get(subscription.runId);
+            if (list == null) {
+                return;
+            }
+            list.remove(subscription);
+            if (list.isEmpty()) {
+                subscriptions.remove(subscription.runId, list);
+            }
+        }
+    }
+
+    void notifySubscribers(UUID runId) {
+        List<Subscription> list;
+        synchronized (subscriptions) {
+            List<Subscription> current = subscriptions.get(runId);
+            if (current == null || current.isEmpty()) {
+                return;
+            }
+            list = List.copyOf(current);
         }
         for (Subscription subscription : list) {
             subscription.signal();

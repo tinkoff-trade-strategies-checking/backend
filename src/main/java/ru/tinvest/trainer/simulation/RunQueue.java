@@ -5,10 +5,13 @@ import java.util.UUID;
 import java.util.concurrent.ThreadPoolExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import ru.tinvest.trainer.api.ErrorCode;
 
 /**
  * Фоновая очередь исполнения прогонов алгоритмов (UC-14). Использует собственный пул потоков (не бин {@code Executor},
@@ -19,10 +22,12 @@ class RunQueue {
 
     private static final Logger log = LoggerFactory.getLogger(RunQueue.class);
 
+    private final Runs runs;
     private final RunExecutor executorService;
     private final ThreadPoolTaskExecutor pool;
 
-    RunQueue(RunExecutor executorService, RunProperties properties) {
+    RunQueue(Runs runs, RunExecutor executorService, RunProperties properties) {
+        this.runs = runs;
         this.executorService = executorService;
         this.pool = new ThreadPoolTaskExecutor();
         pool.setCorePoolSize(properties.threads());
@@ -33,6 +38,21 @@ class RunQueue {
         pool.setWaitForTasksToCompleteOnShutdown(true);
         pool.setAwaitTerminationSeconds(30);
         pool.initialize();
+    }
+
+    /**
+     * После перезапуска процесса очередь в памяти пуста: осиротевшие {@code queued}/{@code running} прогоны переводим в
+     * {@code failed} ({@code SERVICE_UNAVAILABLE}), чтобы они не зависали навсегда.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    void failAbandonedAfterRestart() {
+        for (UUID runId : runs.findActiveIds()) {
+            try {
+                runs.finishFailed(runId, ErrorCode.SERVICE_UNAVAILABLE);
+            } catch (RuntimeException e) {
+                log.error("Не удалось перевести осиротевший прогон {} в failed", runId, e);
+            }
+        }
     }
 
     /** Ставит прогон в очередь после фиксации текущей транзакции (или сразу, если транзакции нет). */

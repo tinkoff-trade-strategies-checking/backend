@@ -252,6 +252,13 @@ public class Runs {
                 .optional();
     }
 
+    /** Активные ({@code queued}/{@code running}) прогоны для восстановления после перезапуска процесса. */
+    List<UUID> findActiveIds() {
+        return jdbc.sql("SELECT id FROM simulation.run WHERE status IN ('queued', 'running') ORDER BY created_at ASC")
+                .query(UUID.class)
+                .list();
+    }
+
     Optional<RunResultRecord> findResult(UUID runId) {
         return jdbc.sql("""
                         SELECT run_id, report::text AS report, journal::text AS journal,
