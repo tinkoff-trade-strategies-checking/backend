@@ -293,7 +293,7 @@ class LaunchPlannerTest {
 
     @Test
     void corporateActionInTheWarmupWindowRejectsThePeriodToo() {
-        // окно целиком после сплита, но прогрев (100 шагов до начала) захватывает день сплита
+        // окно целиком после сплита, но прогрев (200 шагов до начала) захватывает день сплита
         int s = FakeArchive.SPLIT_AT + 3;
         LaunchRejection split = rejection(planner.plan(custom(regimeAt(s), calendar.get(s), "A", "SPLIT")));
         assertThat(split.reason()).isEqualTo(LaunchRejectReason.CORPORATE_ACTION_ON_PERIOD);

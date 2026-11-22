@@ -27,7 +27,7 @@ public interface LaunchPlanner {
      * в окне прогрева отсекают отрезок так же, как внутри периода ({@code decisions.md}, «Данные»). Значение
      * фиксируется в сессии при запуске.
      */
-    int WARMUP_BARS = 100;
+    int WARMUP_BARS = 200;
 
     int DEFAULT_DURATION = 60;
 

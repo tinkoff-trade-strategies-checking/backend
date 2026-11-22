@@ -521,6 +521,7 @@ final class WorkerMapper {
             case ORDER_NOT_ACTIVE -> RejectCode.ORDER_NOT_ACTIVE;
             case LIQUIDITY_LIMIT -> RejectCode.LIQUIDITY_LIMIT;
             case OCO_SIBLING_FILLED -> RejectCode.OCO_SIBLING_FILLED;
+            case POSITION_CLOSED -> RejectCode.POSITION_CLOSED;
             case REPLACED -> RejectCode.REPLACED;
             case SESSION_END -> RejectCode.SESSION_END;
             case CANCELLED_BY_USER -> RejectCode.CANCELLED_BY_USER;
