@@ -171,4 +171,16 @@ class IssClientTest {
         assertThat(c.secids()).containsExactly("SBER", "GAZP", "TINY", "GONE");
         assertThat(server.requestsContaining("date=2024-03-10")).isEqualTo(1);
     }
+
+    @Test
+    void compositionRetriesEmptyPageWhenPrevDateAndTotalArePositive() {
+        // На торговый день PREV_DATE тоже заполнен, но TOTAL > 0: разовый пустой ответ нужно повторить.
+        server.empties.put("analytics/IMOEX.json?date=2024-03-12", new AtomicInteger(1));
+
+        IssClient.IndexComposition c = iss.composition("IMOEX", LocalDate.of(2024, 3, 12));
+
+        assertThat(c.date()).isEqualTo(LocalDate.of(2024, 3, 12));
+        assertThat(c.secids()).containsExactly("SBER", "GAZP", "TINY", "GONE");
+        assertThat(server.requestsContaining("analytics/IMOEX.json")).isEqualTo(4);
+    }
 }

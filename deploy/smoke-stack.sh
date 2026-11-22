@@ -38,7 +38,7 @@ trap 'rm -rf "$TMP"' EXIT
 echo "0/5 Ожидание готовности HTTPS Caddy: $BASE_URL/api/health"
 READY=false
 for _ in $(seq 1 15); do
-  if curl -sk --max-time 2 -o /dev/null "$BASE_URL/api/health"; then
+  if curl -fsk --max-time 2 -o /dev/null "$BASE_URL/api/health"; then
     READY=true
     break
   fi

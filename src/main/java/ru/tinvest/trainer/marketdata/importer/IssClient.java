@@ -41,8 +41,9 @@ final class IssClient {
         return fetcher.get(
                 uri(path, q),
                 body -> IssParsers.table(body, block),
-                // Пустой ответ с явным PREV_DATE (неторговый день в analytics) — не сбой, повторы не нужны.
-                t -> t.isEmpty() && t.prevDate() == null,
+                // Пустой ответ с явным PREV_DATE (неторговый день в analytics, TOTAL=0) — не сбой, повторы не нужны;
+                // при TOTAL > 0 на торговом дне или отсутствии PREV_DATE повторяем emptyRetries раз.
+                t -> t.isEmpty() && (t.prevDate() == null || (t.total() != null && t.total() > 0)),
                 emptyRetries);
     }
 

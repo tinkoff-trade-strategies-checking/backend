@@ -5,7 +5,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEV="$HERE/.dev"
 ENV_FILE="$HERE/.env.dev"
 
+HAS_COMPOSE=false
 if [ -f "$DEV/mode" ] && [ "$(cat "$DEV/mode")" = "compose" ]; then
+  HAS_COMPOSE=true
+elif [ -n "$(docker ps -aq --filter "label=com.docker.compose.project=trainer" 2>/dev/null || true)" ]; then
+  HAS_COMPOSE=true
+fi
+
+if [ "$HAS_COMPOSE" = "true" ]; then
   if [ -f "$ENV_FILE" ]; then
     docker compose -f "$HERE/docker-compose.yml" --env-file "$ENV_FILE" down -v >/dev/null 2>&1 || true
   else

@@ -115,7 +115,8 @@ if [ "$MODE" = "compose" ]; then
   if [ "$USE_STUB" = "true" ]; then
     FRONTEND_DIST="./frontend-stub"
   elif [ -n "${FRONTEND_DIST:-}" ]; then
-    [ -f "$FRONTEND_DIST/index.html" ] || [ -f "$HERE/$FRONTEND_DIST/index.html" ] || {
+    FRONTEND_DIST="$(resolve_dir "$FRONTEND_DIST")"
+    [ -f "$FRONTEND_DIST/index.html" ] || {
       echo "FRONTEND_DIST не содержит index.html: $FRONTEND_DIST" >&2
       exit 1
     }
@@ -147,6 +148,7 @@ if [ "$MODE" = "compose" ]; then
     docker compose -f "$HERE/docker-compose.yml" --env-file "$ENV_FILE" "$@"
   }
 
+  echo "compose" > "$DEV/mode"
   echo "запускаю базы данных и воркер"
   compose up -d --no-build --wait postgres clickhouse worker
 
@@ -169,7 +171,6 @@ if [ "$MODE" = "compose" ]; then
   compose exec -T postgres psql -U trainer -d trainer -q -c \
     "INSERT INTO marketdata.snapshot (id, snapshot_key, description) VALUES ('$SNAPSHOT_KEY', '$SNAPSHOT_KEY', 'dev-stand') ON CONFLICT DO NOTHING" >/dev/null
 
-  echo "compose" > "$DEV/mode"
   echo "стенд готов: https://localhost (API https://localhost/api/v1, FRONTEND_DIST=$FRONTEND_DIST), почта $DEV_USER_EMAIL, пароль в deploy/.env.dev"
   exit 0
 fi
