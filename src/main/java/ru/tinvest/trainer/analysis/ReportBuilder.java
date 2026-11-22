@@ -2,11 +2,13 @@ package ru.tinvest.trainer.analysis;
 
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadPoolExecutor;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -16,6 +18,12 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import ru.tinvest.trainer.sessions.SessionArchive;
 import ru.tinvest.trainer.sessions.SessionEvents;
 import ru.tinvest.trainer.sessions.SessionFinished;
+import ru.tinvest.trainer.sessions.SessionRecord;
+import ru.tinvest.trainer.worker.SimulationWorkerClient;
+import ru.tinvest.trainer.worker.WorkerTypes.AlgorithmInput;
+import ru.tinvest.trainer.worker.WorkerTypes.DivergenceOutput;
+import ru.tinvest.trainer.workshop.StrategyCatalog;
+import ru.tinvest.trainer.workshop.StrategyVersionView;
 
 /**
  * Отчёт строится в фоне после завершения сессии и сохраняется (решение «Отчёт и история: реализация»): журнал
@@ -34,16 +42,26 @@ public class ReportBuilder {
     private final SessionArchive archive;
     private final StoredReports store;
     private final SessionEvents events;
+    private final StrategyCatalog strategyCatalog;
+    private final SimulationWorkerClient worker;
     private final ThreadPoolTaskExecutor executor;
     private final Duration retryInterval;
     private final Set<UUID> inFlight = ConcurrentHashMap.newKeySet();
     /** Когда сборка сессии упала в последний раз (монотонные наносекунды); в памяти, теряется при рестарте. */
     private final Map<UUID, Long> failedAt = new ConcurrentHashMap<>();
 
-    ReportBuilder(SessionArchive archive, StoredReports store, SessionEvents events, ReportBuildProperties properties) {
+    ReportBuilder(
+            SessionArchive archive,
+            StoredReports store,
+            SessionEvents events,
+            StrategyCatalog strategyCatalog,
+            SimulationWorkerClient worker,
+            ReportBuildProperties properties) {
         this.archive = archive;
         this.store = store;
         this.events = events;
+        this.strategyCatalog = strategyCatalog;
+        this.worker = worker;
         this.retryInterval = properties.retryInterval();
         // свой пул, не бин: бин Executor отключил бы стандартный пул Spring Boot для остальных асинхронных задач
         this.executor = new ThreadPoolTaskExecutor();
@@ -103,7 +121,8 @@ public class ReportBuilder {
         }
         boolean stored = archive.completed(sessionId)
                 .map(completed -> {
-                    Map<String, Object> report = ReportViews.report(completed);
+                    ReportViews.BackgroundAnalysis analysis = analyzeBackground(completed);
+                    Map<String, Object> report = ReportViews.report(completed, analysis);
                     return store.insert(
                             sessionId,
                             report,
@@ -115,6 +134,23 @@ public class ReportBuilder {
             announce(sessionId);
         }
         return stored || store.find(sessionId).isPresent();
+    }
+
+    private ReportViews.@Nullable BackgroundAnalysis analyzeBackground(SessionArchive.CompletedReplay completed) {
+        SessionRecord session = completed.session();
+        UUID algoVersionId = session.algoVersionId();
+        if (algoVersionId == null) {
+            return null;
+        }
+        StrategyVersionView algo = strategyCatalog
+                .findVersion(algoVersionId)
+                .orElseThrow(() -> new IllegalStateException("Версия фонового алгоритма не найдена: " + algoVersionId));
+        DivergenceOutput output = worker.analyzeDivergences(
+                completed.market(),
+                completed.journal(),
+                completed.replay().lastStep(),
+                List.of(new AlgorithmInput(algo.versionId().toString(), algo.source(), session.algoParams())));
+        return new ReportViews.BackgroundAnalysis(algo.strategyName(), output);
     }
 
     @PreDestroy

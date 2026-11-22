@@ -101,13 +101,27 @@ class ReportExportApiTest extends PostgresIntegrationTest {
                             "Заявки",
                             "Издержки",
                             "Кривая капитала",
-                            "Параметры и версии");
+                            "Параметры и версии",
+                            "Сравнение",
+                            "Расхождения");
             try (var rows = workbook.findSheet("Метрики").orElseThrow().openStream()) {
                 var metrics = rows.filter(r -> "Итоговый капитал".equals(r.getCellText(0)))
                         .findFirst()
                         .orElseThrow();
                 // деньги — числовая ячейка с точным значением отчёта ядра
                 assertThat(metrics.getCellText(1)).isEqualTo("500600.00");
+                assertThat(metrics.getCellText(2)).isEqualTo("501200.00");
+            }
+            try (var rows = workbook.findSheet("Сравнение").orElseThrow().openStream()) {
+                var comparisonRows = rows.toList();
+                assertThat(comparisonRows.get(1).getCellText(0)).isEqualTo("Итоговый капитал");
+                assertThat(comparisonRows.get(1).getCellText(3)).isEqualTo("алгоритм");
+            }
+            try (var rows = workbook.findSheet("Расхождения").orElseThrow().openStream()) {
+                var divRows = rows.toList();
+                assertThat(divRows).hasSize(2);
+                assertThat(divRows.get(1).getCellText(3)).isIn(SECIDS);
+                assertThat(divRows.get(1).getCellText(5)).isEqualTo("упущенное действие");
             }
         }
     }
@@ -123,6 +137,7 @@ class ReportExportApiTest extends PostgresIntegrationTest {
         assertThat(result.getResponse().getHeader("Content-Disposition")).contains("report-" + id + ".zip");
         List<String> names = new ArrayList<>();
         String metrics = null;
+        String divergences = null;
         try (ZipInputStream zip = new ZipInputStream(
                 new ByteArrayInputStream(result.getResponse().getContentAsByteArray()), StandardCharsets.UTF_8)) {
             for (ZipEntry e = zip.getNextEntry(); e != null; e = zip.getNextEntry()) {
@@ -131,6 +146,8 @@ class ReportExportApiTest extends PostgresIntegrationTest {
                 assertThat(text).startsWith("﻿").contains("\r\n");
                 if (e.getName().equals("Метрики.csv")) {
                     metrics = text;
+                } else if (e.getName().equals("Расхождения.csv")) {
+                    divergences = text;
                 }
             }
         } catch (IOException e) {
@@ -144,8 +161,16 @@ class ReportExportApiTest extends PostgresIntegrationTest {
                         "Заявки.csv",
                         "Издержки.csv",
                         "Кривая капитала.csv",
-                        "Параметры и версии.csv");
-        assertThat(metrics).startsWith("﻿Метрика;Значение\r\n").contains("Итоговый капитал;500600,00\r\n");
+                        "Параметры и версии.csv",
+                        "Сравнение.csv",
+                        "Расхождения.csv");
+        assertThat(metrics)
+                .startsWith("﻿Метрика;Человек;Алгоритм\r\n")
+                .contains("Итоговый капитал;500600,00;501200,00\r\n");
+        assertThat(divergences)
+                .containsAnyOf(";SBER;", ";GAZP;")
+                .contains(";упущенное действие;")
+                .contains(";120,00;0,020000;SMA(20) пересекла SMA(50) снизу вверх\r\n");
     }
 
     @Test

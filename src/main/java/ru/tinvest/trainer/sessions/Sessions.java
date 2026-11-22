@@ -6,11 +6,14 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.random.RandomGenerator;
+import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -27,6 +30,10 @@ import ru.tinvest.trainer.marketdata.Snapshots;
 import ru.tinvest.trainer.marketdata.StartMode;
 import ru.tinvest.trainer.marketdata.Timeframe;
 import ru.tinvest.trainer.worker.WorkerTypes.Costs;
+import ru.tinvest.trainer.workshop.StrategyCatalog;
+import ru.tinvest.trainer.workshop.StrategyVersionView;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Хранилище сессий (схема {@code sessions}) и единственная точка доступа к ним по владельцу: чужая сессия
@@ -48,34 +55,61 @@ public class Sessions {
     private final JdbcClient jdbc;
     private final CurrentUser currentUser;
     private final Snapshots snapshots;
+    private final StrategyCatalog strategyCatalog;
+    private final ObjectMapper json;
     private final RandomGenerator random;
 
     @Autowired
-    Sessions(JdbcClient jdbc, CurrentUser currentUser, Snapshots snapshots) {
-        this(jdbc, currentUser, snapshots, new SecureRandom());
+    Sessions(
+            JdbcClient jdbc,
+            CurrentUser currentUser,
+            Snapshots snapshots,
+            StrategyCatalog strategyCatalog,
+            ObjectMapper json) {
+        this(jdbc, currentUser, snapshots, strategyCatalog, json, new SecureRandom());
     }
 
-    Sessions(JdbcClient jdbc, CurrentUser currentUser, Snapshots snapshots, RandomGenerator random) {
+    Sessions(
+            JdbcClient jdbc,
+            CurrentUser currentUser,
+            Snapshots snapshots,
+            StrategyCatalog strategyCatalog,
+            ObjectMapper json,
+            RandomGenerator random) {
         this.snapshots = snapshots;
         this.jdbc = jdbc;
         this.currentUser = currentUser;
+        this.strategyCatalog = strategyCatalog;
+        this.json = json;
         this.random = random;
     }
 
     /**
-     * Создаёт сессию по подобранному плану. Бумаги получают индекс в случайном порядке, не по тикеру
-     * ({@code api/openapi.yaml}, {@code PaperIndex}).
+     * Создаёт сессию по подобранному плану с фоновым алгоритмом по умолчанию («Эталон платформы» v1). Бумаги
+     * получают индекс в случайном порядке, не по тикеру ({@code api/openapi.yaml}, {@code PaperIndex}).
      */
     @Transactional
     UUID create(UUID userId, StartMode startMode, int durationDays, LaunchPlan plan) {
+        return create(userId, startMode, durationDays, plan, strategyCatalog.systemDefaultVersion());
+    }
+
+    /**
+     * Создаёт сессию по подобранному плану с указанной опубликованной версией фонового алгоритма.
+     */
+    @Transactional
+    UUID create(UUID userId, StartMode startMode, int durationDays, LaunchPlan plan, StrategyVersionView algoVersion) {
         UUID id = Uuid7.next();
+        Map<String, Double> algoParams = algoVersion.isSystem()
+                ? Map.of("size_pct", (double) Math.max(1, 95 / plan.papers().size()))
+                : Map.of();
         jdbc.sql("INSERT INTO sessions.session (id, user_id, blind, status, trader_kind, duration_days, timeframe, "
                         + "regime, start_mode, snapshot_id, period_start, period_end, trading_days, bars_count, "
                         + "sigma, mdd, p33, p80, initial_capital, warmup_bars, commission_rate, exchange_fee_rate, spread, "
-                        + "slippage_kappa, liquidity_share) VALUES (:id, :user, :blind, :status, 'human', "
+                        + "slippage_kappa, liquidity_share, algo_version_id, algo_params) "
+                        + "VALUES (:id, :user, :blind, :status, 'human', "
                         + ":duration, :timeframe, :regime, :startMode, :snapshot, :start, :end, :days, :bars, "
                         + ":sigma, :mdd, :p33, :p80, :capital, :warmup, :commission, :exchangeFee, :spread, "
-                        + ":kappa, :liquidity)")
+                        + ":kappa, :liquidity, :algoVersionId, CAST(:algoParams AS jsonb))")
                 .param("id", id)
                 .param("user", userId)
                 .param("blind", plan.blind())
@@ -100,6 +134,8 @@ public class Sessions {
                 .param("spread", DEFAULT_COSTS.spread())
                 .param("kappa", DEFAULT_COSTS.slippageKappa())
                 .param("liquidity", DEFAULT_COSTS.liquidityShare())
+                .param("algoVersionId", algoVersion.versionId())
+                .param("algoParams", json.writeValueAsString(algoParams))
                 .update();
         List<PlannedPaper> shuffled = new ArrayList<>(plan.papers());
         Collections.shuffle(shuffled, random);
@@ -214,8 +250,20 @@ public class Sessions {
                                 rs.getBigDecimal("spread"),
                                 rs.getBigDecimal("slippage_kappa"),
                                 rs.getBigDecimal("liquidity_share")),
-                        papers(sessionId)))
+                        papers(sessionId),
+                        rs.getObject("algo_version_id", UUID.class),
+                        parseAlgoParams(rs.getString("algo_params"))))
                 .optional();
+    }
+
+    private Map<String, Double> parseAlgoParams(@Nullable String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Map.of();
+        }
+        JsonNode node = json.readTree(raw);
+        Map<String, Double> out = new LinkedHashMap<>();
+        node.properties().forEach(e -> out.put(e.getKey(), e.getValue().asDouble()));
+        return out;
     }
 
     /**

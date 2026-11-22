@@ -11,6 +11,8 @@ import ru.tinvest.trainer.api.NotFoundException;
 import ru.tinvest.trainer.identity.CurrentUser;
 import ru.tinvest.trainer.marketdata.Regime;
 import ru.tinvest.trainer.worker.SimulationWorkerClient;
+import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
+import ru.tinvest.trainer.worker.WorkerTypes.Market;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
 
 /**
@@ -157,7 +159,12 @@ public class SessionArchive {
     }
 
     /** Завершённая сессия с полным воспроизведением: вход фоновой сборки отчёта. */
-    public record CompletedReplay(SessionRecord session, ReplayResult replay, int playedDays) {}
+    public record CompletedReplay(
+            SessionRecord session, ReplayResult replay, int playedDays, Market market, List<JournalRecord> journal) {
+        public CompletedReplay {
+            journal = List.copyOf(journal);
+        }
+    }
 
     /**
      * Завершённая сессия по идентификатору из события завершения, без проверки владельца: только для фоновой сборки
@@ -170,12 +177,13 @@ public class SessionArchive {
         return sessions.findAny(sessionId)
                 .filter(s -> !"running".equals(s.status()))
                 .map(session -> {
-                    ReplayResult replay = worker.replayWithReport(
-                            Arena.market(session), journals.records(session), session.currentStep());
+                    Market market = Arena.market(session);
+                    List<JournalRecord> journal = journals.records(session);
+                    ReplayResult replay = worker.replayWithReport(market, journal, session.currentStep());
                     if (replay.report() == null) {
                         throw new IllegalStateException("Воркер не вернул отчёт завершённой сессии " + session.id());
                     }
-                    return new CompletedReplay(session, replay, replay.currentDay());
+                    return new CompletedReplay(session, replay, replay.currentDay(), market, journal);
                 });
     }
 }

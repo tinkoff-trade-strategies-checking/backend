@@ -16,6 +16,7 @@ import org.jspecify.annotations.Nullable;
 import pac.simulation.v1.CheckStrategyRequest;
 import pac.simulation.v1.ClassifyPeriodsRequest;
 import pac.simulation.v1.ClassifyPeriodsResponse;
+import pac.simulation.v1.DivergenceRequest;
 import pac.simulation.v1.EstimateOrderRequest;
 import pac.simulation.v1.PingRequest;
 import pac.simulation.v1.ReplaySessionRequest;
@@ -24,6 +25,8 @@ import pac.simulation.v1.RunStrategyRequest;
 import pac.simulation.v1.RunStrategyUpdate;
 import pac.simulation.v1.SimulationWorkerGrpc;
 import ru.tinvest.trainer.api.DependencyUnavailableException;
+import ru.tinvest.trainer.worker.WorkerTypes.AlgorithmInput;
+import ru.tinvest.trainer.worker.WorkerTypes.DivergenceOutput;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
@@ -196,6 +199,13 @@ class GrpcSimulationWorkerClient implements SimulationWorkerClient {
             }
             return WorkerMapper.strategyRunOutput(result);
         });
+    }
+
+    @Override
+    public DivergenceOutput analyzeDivergences(
+            Market market, List<JournalRecord> journal, long lastStep, List<AlgorithmInput> algorithms) {
+        DivergenceRequest request = WorkerMapper.divergenceRequest(market, journal, lastStep, algorithms);
+        return WorkerMapper.divergenceOutput(call(() -> runStub().analyzeDivergences(request)));
     }
 
     private static PeriodCategory category(pac.simulation.v1.PeriodCategory c) {

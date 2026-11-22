@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
+import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -40,7 +41,7 @@ class SessionsController {
 
     @PostMapping("/sessions")
     ResponseEntity<Map<String, Object>> create(@RequestBody CreateSessionRequest body) {
-        UUID id = launchService.launch(body.toLaunchRequest());
+        UUID id = launchService.launch(body.toLaunchRequest(), body.backgroundAlgorithmId());
         return ResponseEntity.status(HttpStatus.CREATED).body(masking.createdSession(id));
     }
 
@@ -61,7 +62,8 @@ class SessionsController {
             LocalDate customStartDate,
             Integer paperCount,
             List<UUID> paperIds,
-            String initialCapital) {
+            String initialCapital,
+            @Nullable UUID backgroundAlgorithmId) {
 
         LaunchRequest toLaunchRequest() {
             if (!"human".equals(traderKind)) {

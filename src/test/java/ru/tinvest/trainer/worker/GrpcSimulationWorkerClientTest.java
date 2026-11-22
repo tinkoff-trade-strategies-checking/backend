@@ -20,20 +20,30 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import pac.simulation.v1.AlgorithmPortfolio;
 import pac.simulation.v1.CheckStrategyRequest;
 import pac.simulation.v1.CheckStrategyResponse;
 import pac.simulation.v1.ClassifyPeriodsRequest;
 import pac.simulation.v1.ClassifyPeriodsResponse;
+import pac.simulation.v1.ConsensusItem;
 import pac.simulation.v1.Decimal;
 import pac.simulation.v1.Diagnostic;
 import pac.simulation.v1.DiagnosticFix;
+import pac.simulation.v1.Divergence;
+import pac.simulation.v1.DivergenceRequest;
+import pac.simulation.v1.DivergenceResponse;
+import pac.simulation.v1.DivergenceType;
+import pac.simulation.v1.EquityPoint;
 import pac.simulation.v1.Finding;
 import pac.simulation.v1.Level;
+import pac.simulation.v1.MissedProfitableTrade;
+import pac.simulation.v1.OrderType;
 import pac.simulation.v1.ParamDecl;
 import pac.simulation.v1.PeriodCategory;
 import pac.simulation.v1.PingRequest;
 import pac.simulation.v1.PingResponse;
 import pac.simulation.v1.ReplaySessionResponse;
+import pac.simulation.v1.Report;
 import pac.simulation.v1.RunProgress;
 import pac.simulation.v1.RunResult;
 import pac.simulation.v1.RunStatus;
@@ -41,11 +51,14 @@ import pac.simulation.v1.RunStrategyRequest;
 import pac.simulation.v1.RunStrategyUpdate;
 import pac.simulation.v1.SimulationWorkerGrpc;
 import pac.simulation.v1.TextEdit;
+import pac.simulation.v1.UnderwaterPoint;
 import ru.tinvest.trainer.api.DependencyUnavailableException;
+import ru.tinvest.trainer.worker.WorkerTypes.AlgorithmInput;
 import ru.tinvest.trainer.worker.WorkerTypes.BarInterval;
 import ru.tinvest.trainer.worker.WorkerTypes.CheckLevel;
 import ru.tinvest.trainer.worker.WorkerTypes.Command;
 import ru.tinvest.trainer.worker.WorkerTypes.Costs;
+import ru.tinvest.trainer.worker.WorkerTypes.DivergenceKind;
 import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderKind;
@@ -617,6 +630,139 @@ class GrpcSimulationWorkerClientTest {
         assertThat(mapped.report().findings()).hasSize(1);
         assertThat(mapped.report().findings().getFirst().code()).isEqualTo("W-RT02");
         assertThat(mapped.report().findings().getFirst().step()).isEqualTo(-1);
+    }
+
+    @Test
+    void analyzeDivergencesMapsRequestResponseAndUsesRunDeadline() throws Exception {
+        var seen = new AtomicReference<DivergenceRequest>();
+        var client = start(
+                new SimulationWorkerGrpc.SimulationWorkerImplBase() {
+                    @Override
+                    public void analyzeDivergences(
+                            DivergenceRequest request, StreamObserver<DivergenceResponse> observer) {
+                        try {
+                            Thread.sleep(60);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        seen.set(request);
+                        observer.onNext(DivergenceResponse.newBuilder()
+                                .addDivergences(Divergence.newBuilder()
+                                        .setAlgorithmId("alg-1")
+                                        .setInstrumentKey("SBER")
+                                        .setType(DivergenceType.EXCESS)
+                                        .setHumanStep(2)
+                                        .setAlgoStep(-1)
+                                        .setHumanLots(3)
+                                        .setAlgoLots(0)
+                                        .setHorizonStep(5)
+                                        .setCost(dec(150, 0))
+                                        .setCostPercent(dec(0, 30_000_000))
+                                        .setReason("алгоритм здесь не действовал бы")
+                                        .setSeq(0)
+                                        .setHumanOrderType(OrderType.MARKET)
+                                        .setAlgoOrderType(OrderType.ORDER_TYPE_UNSPECIFIED))
+                                .addMissedProfitable(MissedProfitableTrade.newBuilder()
+                                        .setInstrumentKey("SBER")
+                                        .setEntryStep(2)
+                                        .setExitStep(5)
+                                        .setLots(3)
+                                        .setNetPnl(dec(240, 0))
+                                        .addAlgorithmIds("alg-1")
+                                        .setEntryPrice(dec(200, 0))
+                                        .setExitPrice(dec(210, 0))
+                                        .setSeq(0)
+                                        .addDivergenceSeqs(0))
+                                .addConsensus(ConsensusItem.newBuilder()
+                                        .setInstrumentKey("SBER")
+                                        .setStep(2)
+                                        .setSide(pac.simulation.v1.Side.BUY)
+                                        .setHumanAction(true)
+                                        .setAgreeing(0)
+                                        .setTotal(1)
+                                        .setMedianCost(dec(150, 0)))
+                                .addAlgorithmPortfolios(AlgorithmPortfolio.newBuilder()
+                                        .setAlgorithmId("alg-1")
+                                        .setResult(RunResult.newBuilder()
+                                                .setStatus(RunStatus.COMPLETED)
+                                                .setLevel(Level.OK)
+                                                .setLastStep(5)
+                                                .setTotalSteps(10)
+                                                .setReport(Report.newBuilder()
+                                                        .setMetrics(pac.simulation.v1.Metrics.newBuilder()
+                                                                .setTotalReturn(0.05)
+                                                                .setGrossReturn(0.06)
+                                                                .setMaxDrawdown(0.01)
+                                                                .setTradingDays(2))
+                                                        .setCosts(pac.simulation.v1.CostTotals.newBuilder()
+                                                                .setCommission(dec(5, 0))
+                                                                .setExchangeFee(dec(1, 0))
+                                                                .setSpread(dec(0, 0))
+                                                                .setSlippage(dec(0, 0))
+                                                                .setTotal(dec(6, 0)))
+                                                        .setFinalEquity(dec(525_000, 0))
+                                                        .addEquity(EquityPoint.newBuilder()
+                                                                .setStep(0)
+                                                                .setEquity(dec(500_000, 0)))
+                                                        .addUnderwater(UnderwaterPoint.newBuilder()
+                                                                .setStep(0)
+                                                                .setDrawdownPct(dec(0, 0))))))
+                                .build());
+                        observer.onCompleted();
+                    }
+                },
+                Duration.ofMillis(20),
+                Duration.ofSeconds(2));
+
+        var journal = List.of(new JournalRecord(
+                0,
+                2,
+                new Command.Place(
+                        new OrderParams("SBER", TradeSide.BUY, OrderKind.MARKET, 3, null, null, null, Tif.DAY, false),
+                        null)));
+        var output = client.analyzeDivergences(
+                market(), journal, 5, List.of(new AlgorithmInput("alg-1", "strategy s {}", Map.of("size_pct", 95.0))));
+
+        assertThat(seen.get().getLastStep()).isEqualTo(5);
+        assertThat(seen.get().getJournalCount()).isEqualTo(1);
+        assertThat(seen.get().getAlgorithms(0).getId()).isEqualTo("alg-1");
+        assertThat(seen.get()
+                        .getAlgorithms(0)
+                        .getStrategy()
+                        .getParamOverrides(0)
+                        .getName())
+                .isEqualTo("size_pct");
+        assertThat(output.divergences()).hasSize(1);
+        var div = output.divergences().getFirst();
+        assertThat(div.type()).isEqualTo(DivergenceKind.EXCESS);
+        assertThat(div.humanOrderType()).isEqualTo(OrderKind.MARKET);
+        assertThat(div.algoOrderType()).isNull();
+        assertThat(div.cost()).isEqualByComparingTo("150.00");
+        assertThat(div.costPercent()).isEqualByComparingTo("0.03");
+        assertThat(output.missedProfitable()).hasSize(1);
+        assertThat(output.missedProfitable().getFirst().divergenceSeqs()).containsExactly(0L);
+        assertThat(output.consensus()).hasSize(1);
+        assertThat(output.algorithmPortfolios()).hasSize(1);
+        assertThat(output.algorithmPortfolios().getFirst().result().report().finalEquity())
+                .isEqualByComparingTo("525000.00");
+    }
+
+    @Test
+    void analyzeDivergencesTimeoutMapsToDependencyUnavailable() throws Exception {
+        var client = start(
+                new SimulationWorkerGrpc.SimulationWorkerImplBase() {
+                    @Override
+                    public void analyzeDivergences(
+                            DivergenceRequest request, StreamObserver<DivergenceResponse> observer) {
+                        // не отвечаем: должен сработать runDeadline
+                    }
+                },
+                Duration.ofSeconds(5),
+                Duration.ofMillis(100));
+
+        assertThatThrownBy(() -> client.analyzeDivergences(
+                        market(), List.of(), 5, List.of(new AlgorithmInput("alg-1", "strategy s {}", Map.of()))))
+                .isInstanceOf(DependencyUnavailableException.class);
     }
 
     private static Market market() {

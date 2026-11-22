@@ -465,7 +465,9 @@ final class ReportSheets {
         if (!a.isObject() || "none".equals(text(a, "kind"))) {
             return "нет действия";
         }
-        return label("side", text(a, "side")) + " " + text(a, "lots") + " " + label("kind", text(a, "orderType"));
+        String kindLabel = label("kind", text(a, "orderType"));
+        String base = label("side", text(a, "side")) + " " + text(a, "lots");
+        return kindLabel.isEmpty() ? base : base + " " + kindLabel;
     }
 
     private static final Map<String, String> LABELS = Map.ofEntries(

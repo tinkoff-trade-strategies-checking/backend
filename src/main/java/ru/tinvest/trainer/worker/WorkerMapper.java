@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Map;
 import org.jspecify.annotations.Nullable;
 import pac.simulation.v1.Decimal;
+import ru.tinvest.trainer.worker.WorkerTypes.AlgorithmInput;
+import ru.tinvest.trainer.worker.WorkerTypes.AlgorithmPortfolioData;
 import ru.tinvest.trainer.worker.WorkerTypes.BarData;
 import ru.tinvest.trainer.worker.WorkerTypes.BarInterval;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindBarData;
@@ -19,8 +21,12 @@ import ru.tinvest.trainer.worker.WorkerTypes.BlindViewData;
 import ru.tinvest.trainer.worker.WorkerTypes.CheckLevel;
 import ru.tinvest.trainer.worker.WorkerTypes.Command;
 import ru.tinvest.trainer.worker.WorkerTypes.CommandOutcome;
+import ru.tinvest.trainer.worker.WorkerTypes.ConsensusItemData;
 import ru.tinvest.trainer.worker.WorkerTypes.CostTotalsData;
 import ru.tinvest.trainer.worker.WorkerTypes.DiagnosticFix;
+import ru.tinvest.trainer.worker.WorkerTypes.DivergenceData;
+import ru.tinvest.trainer.worker.WorkerTypes.DivergenceKind;
+import ru.tinvest.trainer.worker.WorkerTypes.DivergenceOutput;
 import ru.tinvest.trainer.worker.WorkerTypes.EquityPointData;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.FillState;
@@ -28,6 +34,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.InstrumentChangeData;
 import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
 import ru.tinvest.trainer.worker.WorkerTypes.MetricsData;
+import ru.tinvest.trainer.worker.WorkerTypes.MissedProfitableTradeData;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderKind;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderParams;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderPhase;
@@ -196,6 +203,22 @@ final class WorkerMapper {
                         .addAllParamOverrides(paramValues(paramOverrides)))
                 .setIncludeHistory(includeHistory)
                 .build();
+    }
+
+    static pac.simulation.v1.DivergenceRequest divergenceRequest(
+            Market market, List<JournalRecord> journal, long lastStep, List<AlgorithmInput> algorithms) {
+        pac.simulation.v1.DivergenceRequest.Builder b = pac.simulation.v1.DivergenceRequest.newBuilder()
+                .setMarket(market(market))
+                .addAllJournal(journal(journal))
+                .setLastStep(lastStep);
+        for (AlgorithmInput alg : algorithms) {
+            b.addAlgorithms(pac.simulation.v1.AlgorithmRef.newBuilder()
+                    .setId(alg.id())
+                    .setStrategy(pac.simulation.v1.StrategySource.newBuilder()
+                            .setSource(alg.source())
+                            .addAllParamOverrides(paramValues(alg.paramOverrides()))));
+        }
+        return b.build();
     }
 
     private static List<pac.simulation.v1.ParamValue> paramValues(Map<String, Double> paramOverrides) {
@@ -708,5 +731,70 @@ final class WorkerMapper {
             case INVALID -> StrategyRunStatus.INVALID;
             default -> throw new IllegalStateException("Воркер вернул неизвестный статус прогона стратегии: " + status);
         };
+    }
+
+    static DivergenceOutput divergenceOutput(pac.simulation.v1.DivergenceResponse r) {
+        List<DivergenceData> divergences = new ArrayList<>(r.getDivergencesCount());
+        for (pac.simulation.v1.Divergence d : r.getDivergencesList()) {
+            divergences.add(new DivergenceData(
+                    d.getAlgorithmId(),
+                    d.getInstrumentKey(),
+                    divergenceKind(d.getType()),
+                    d.getHumanStep(),
+                    d.getAlgoStep(),
+                    d.getHumanLots(),
+                    d.getAlgoLots(),
+                    d.getHorizonStep(),
+                    decimal(d.getCost()),
+                    decimal(d.getCostPercent()),
+                    d.getReason(),
+                    d.getSeq(),
+                    optionalKind(d.getHumanOrderType()),
+                    optionalKind(d.getAlgoOrderType())));
+        }
+        List<MissedProfitableTradeData> missed = new ArrayList<>(r.getMissedProfitableCount());
+        for (pac.simulation.v1.MissedProfitableTrade m : r.getMissedProfitableList()) {
+            missed.add(new MissedProfitableTradeData(
+                    m.getInstrumentKey(),
+                    m.getEntryStep(),
+                    m.getExitStep(),
+                    m.getLots(),
+                    decimal(m.getNetPnl()),
+                    m.getAlgorithmIdsList(),
+                    decimal(m.getEntryPrice()),
+                    decimal(m.getExitPrice()),
+                    m.getSeq(),
+                    m.getDivergenceSeqsList()));
+        }
+        List<ConsensusItemData> consensus = new ArrayList<>(r.getConsensusCount());
+        for (pac.simulation.v1.ConsensusItem c : r.getConsensusList()) {
+            consensus.add(new ConsensusItemData(
+                    c.getInstrumentKey(),
+                    c.getStep(),
+                    side(c.getSide()),
+                    c.getHumanAction(),
+                    c.getAgreeing(),
+                    c.getTotal(),
+                    decimal(c.getMedianCost())));
+        }
+        List<AlgorithmPortfolioData> portfolios = new ArrayList<>(r.getAlgorithmPortfoliosCount());
+        for (pac.simulation.v1.AlgorithmPortfolio p : r.getAlgorithmPortfoliosList()) {
+            portfolios.add(new AlgorithmPortfolioData(p.getAlgorithmId(), strategyRunOutput(p.getResult())));
+        }
+        return new DivergenceOutput(divergences, missed, consensus, portfolios);
+    }
+
+    private static DivergenceKind divergenceKind(pac.simulation.v1.DivergenceType type) {
+        return switch (type) {
+            case EXCESS -> DivergenceKind.EXCESS;
+            case MISSED -> DivergenceKind.MISSED;
+            case SIZE -> DivergenceKind.SIZE;
+            case TIMING -> DivergenceKind.TIMING;
+            default -> throw new IllegalStateException("Воркер вернул неизвестный тип расхождения: " + type);
+        };
+    }
+
+    private static @Nullable OrderKind optionalKind(pac.simulation.v1.OrderType type) {
+        return type == pac.simulation.v1.OrderType.ORDER_TYPE_UNSPECIFIED ? null : kind(type);
     }
 }
