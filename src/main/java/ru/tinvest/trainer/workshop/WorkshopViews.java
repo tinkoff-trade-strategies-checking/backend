@@ -6,6 +6,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyCheck;
 import ru.tinvest.trainer.worker.WorkerTypes.StrategyDiagnostic;
 import ru.tinvest.trainer.worker.WorkerTypes.StrategyParamDecl;
 
@@ -34,6 +35,7 @@ final class WorkshopViews {
             boolean isSystem,
             String visibility,
             int latestVersion,
+            @Nullable UUID latestVersionId,
             int versionsCount,
             @Nullable String publishedAt,
             String license,
@@ -63,6 +65,7 @@ final class WorkshopViews {
             boolean isSystem,
             String visibility,
             int latestVersion,
+            @Nullable UUID latestVersionId,
             int versionsCount,
             @Nullable String publishedAt,
             String license,
@@ -71,6 +74,12 @@ final class WorkshopViews {
             List<LinterWarningView> linterWarnings,
             @Nullable ForkSourceView forkedFrom,
             List<AlgorithmVersionView> versions) {}
+
+    sealed interface DetailResultView permits DetailReadyView, DetailNotFoundView {}
+
+    record DetailReadyView(String status, AlgorithmDetailView algorithm) implements DetailResultView {}
+
+    record DetailNotFoundView(String status) implements DetailResultView {}
 
     record WorkshopPageView(
             List<AlgorithmSummaryView> items,
@@ -87,11 +96,7 @@ final class WorkshopViews {
             String visibility,
             @Nullable ForkSourceView forkedFrom,
             String source,
-            @Nullable String lastCheckLevel,
-            List<StrategyDiagnostic> lastDiagnostics,
-            List<StrategyParamDecl> lastParams,
+            @Nullable StrategyCheck check,
             String updatedAt,
             int latestVersion) {}
-
-    record VisibilityView(UUID id, String visibility, String updatedAt) {}
 }

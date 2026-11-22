@@ -4,6 +4,7 @@ import java.time.OffsetDateTime;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import ru.tinvest.trainer.worker.WorkerTypes.CheckLevel;
@@ -69,9 +70,11 @@ public class StrategyCatalog {
     }
 
     /** Проверяет доступ пользователя к опубликованной версии: публичная, своя или системная. */
-    public boolean canAccess(UUID versionId, UUID userId) {
+    public boolean canAccess(UUID versionId, @Nullable UUID userId) {
         return findVersion(versionId)
-                .map(v -> v.isSystem() || "public".equals(v.visibility()) || Objects.equals(v.ownerId(), userId))
+                .map(v -> v.isSystem()
+                        || "public".equals(v.visibility())
+                        || (userId != null && Objects.equals(v.ownerId(), userId)))
                 .orElse(false);
     }
 }

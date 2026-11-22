@@ -25,7 +25,6 @@ import ru.tinvest.trainer.worker.WorkerTypes.StrategyParamDecl;
 import ru.tinvest.trainer.workshop.WorkshopViews.AlgorithmVersionView;
 import ru.tinvest.trainer.workshop.WorkshopViews.DraftView;
 import ru.tinvest.trainer.workshop.WorkshopViews.ForkSourceView;
-import ru.tinvest.trainer.workshop.WorkshopViews.VisibilityView;
 import tools.jackson.databind.ObjectMapper;
 
 /** Мутации мастерской: черновики, проверка DSL, публикация версий, форки и скрытие из каталога. */
@@ -34,8 +33,8 @@ class WorkshopService {
 
     private static final int MAX_NAME_LENGTH = 80;
     private static final int MAX_DESCRIPTION_LENGTH = 2000;
-    private static final int MAX_SUMMARY_LENGTH = 2000;
-    private static final int MAX_SOURCE_LENGTH = 200_000;
+    private static final int MAX_SUMMARY_LENGTH = 500;
+    private static final int MAX_SOURCE_LENGTH = 65_536;
 
     private final JdbcClient jdbc;
     private final CurrentUser currentUser;
@@ -282,7 +281,7 @@ class WorkshopService {
         return loadOwnedDraft(newStrategyId, ownerId);
     }
 
-    VisibilityView changeVisibility(UUID strategyId, @Nullable String visibility) {
+    void changeVisibility(UUID strategyId, @Nullable String visibility) {
         if (!"public".equals(visibility) && !"hidden".equals(visibility)) {
             throw new InvalidRequestException("visibility must be public or hidden");
         }
@@ -307,17 +306,11 @@ class WorkshopService {
             throw new NotFoundException("Algorithm not found");
         }
 
-        OffsetDateTime updatedAt = jdbc.sql("""
+        jdbc.sql("""
                         UPDATE workshop.strategy
                         SET visibility = :vis, updated_at = now()
                         WHERE id = :id
-                        RETURNING updated_at
-                        """)
-                .param("vis", visibility)
-                .param("id", strategyId)
-                .query((rs, n) -> rs.getObject("updated_at", OffsetDateTime.class))
-                .single();
-        return new VisibilityView(strategyId, visibility, WorkshopViews.formatTimestamp(updatedAt));
+                        """).param("vis", visibility).param("id", strategyId).update();
     }
 
     private DraftView loadOwnedDraft(UUID strategyId, UUID ownerId) {
@@ -445,6 +438,13 @@ class WorkshopService {
                         rs.getString("fork_strategy_name"),
                         rs.getString("fork_author_name"),
                         rs.getInt("fork_version"));
+        String lastLevel = rs.getString("last_check_level");
+        StrategyCheck check = lastLevel == null
+                ? null
+                : new StrategyCheck(
+                        CheckLevel.valueOf(lastLevel),
+                        List.of(json.readValue(rs.getString("last_diagnostics_json"), StrategyDiagnostic[].class)),
+                        List.of(json.readValue(rs.getString("last_params_json"), StrategyParamDecl[].class)));
         return new DraftView(
                 rs.getObject("id", UUID.class),
                 rs.getString("name"),
@@ -452,9 +452,7 @@ class WorkshopService {
                 rs.getString("visibility"),
                 forkedFrom,
                 rs.getString("source"),
-                rs.getString("last_check_level"),
-                List.of(json.readValue(rs.getString("last_diagnostics_json"), StrategyDiagnostic[].class)),
-                List.of(json.readValue(rs.getString("last_params_json"), StrategyParamDecl[].class)),
+                check,
                 WorkshopViews.formatTimestamp(rs.getObject("updated_at", OffsetDateTime.class)),
                 rs.getInt("latest_version"));
     }

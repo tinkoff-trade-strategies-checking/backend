@@ -72,10 +72,14 @@ class RunReportController {
             return conflict(ErrorCode.NOT_FINISHED, "The run is not finished");
         }
         RunResultRecord result = archive.findResult(runId).orElse(null);
-        if (result == null) {
+        JsonNode reportNode;
+        if (result != null) {
+            reportNode = json.readTree(result.reportJson());
+        } else if ("failed".equals(run.status())) {
+            reportNode = json.valueToTree(archive.failedReportFallback(run));
+        } else {
             return conflict(ErrorCode.REPORT_BUILDING, "The report is being built");
         }
-        JsonNode reportNode = json.readTree(result.reportJson());
         List<ReportSheets.Sheet> sheets =
                 ReportSheets.ofAlgoRun(reportNode, run.snapshotId().toString());
         byte[] body = xlsx ? ReportFiles.xlsx(sheets) : ReportFiles.csvZip(sheets);

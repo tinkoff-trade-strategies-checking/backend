@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
@@ -139,7 +140,7 @@ class RunEvents {
 
         private void abortAsync() {
             close();
-            sendExecutor.execute(() -> {
+            abortExecutor.execute(() -> {
                 try {
                     sink.abort();
                 } catch (RuntimeException e) {
@@ -179,6 +180,7 @@ class RunEvents {
     private final RunProperties properties;
     private final Semaphore sends;
     private final ThreadPoolTaskExecutor sendExecutor;
+    private final ExecutorService abortExecutor;
     private final ScheduledExecutorService scheduler;
     private final Map<UUID, List<Subscription>> subscriptions = new ConcurrentHashMap<>();
 
@@ -194,6 +196,7 @@ class RunEvents {
         sendExecutor.setThreadNamePrefix("run-sse-");
         sendExecutor.setWaitForTasksToCompleteOnShutdown(true);
         sendExecutor.initialize();
+        this.abortExecutor = Executors.newVirtualThreadPerTaskExecutor();
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "run-sse-heartbeat");
             t.setDaemon(true);
@@ -207,10 +210,14 @@ class RunEvents {
         long hangLimitMs = 2 * heartbeatMs;
         scheduler.scheduleAtFixedRate(
                 () -> {
-                    for (List<Subscription> list : subscriptions.values()) {
-                        for (Subscription subscription : list) {
-                            subscription.heartbeat(hangLimitMs);
+                    try {
+                        for (List<Subscription> list : subscriptions.values()) {
+                            for (Subscription subscription : list) {
+                                subscription.heartbeat(hangLimitMs);
+                            }
                         }
+                    } catch (RuntimeException e) {
+                        log.error("Ошибка heartbeat потока событий прогона", e);
                     }
                 },
                 heartbeatMs,
@@ -232,6 +239,7 @@ class RunEvents {
     @PreDestroy
     void stop() {
         scheduler.shutdownNow();
+        abortExecutor.shutdownNow();
         sendExecutor.shutdown();
     }
 

@@ -22,10 +22,10 @@ import org.springframework.web.bind.annotation.RestController;
 import ru.tinvest.trainer.api.ErrorCode;
 import ru.tinvest.trainer.api.InvalidRequestException;
 import ru.tinvest.trainer.worker.WorkerTypes.StrategyCheck;
-import ru.tinvest.trainer.workshop.WorkshopViews.AlgorithmDetailView;
+import ru.tinvest.trainer.workshop.WorkshopViews.AlgorithmSummaryView;
 import ru.tinvest.trainer.workshop.WorkshopViews.AlgorithmVersionView;
+import ru.tinvest.trainer.workshop.WorkshopViews.DetailResultView;
 import ru.tinvest.trainer.workshop.WorkshopViews.DraftView;
-import ru.tinvest.trainer.workshop.WorkshopViews.VisibilityView;
 import ru.tinvest.trainer.workshop.WorkshopViews.WorkshopPageView;
 
 /** REST API мастерской стратегий ({@code /api/v1/workshop/...}). */
@@ -56,7 +56,7 @@ class WorkshopController {
     }
 
     @GetMapping("/algorithms/{id}")
-    AlgorithmDetailView getById(@PathVariable UUID id) {
+    DetailResultView getById(@PathVariable UUID id) {
         return queries.getById(id);
     }
 
@@ -100,8 +100,9 @@ class WorkshopController {
     }
 
     @PatchMapping("/algorithms/{id}/visibility")
-    VisibilityView changeVisibility(@PathVariable UUID id, @RequestBody VisibilityRequest body) {
-        return service.changeVisibility(id, body.visibility());
+    AlgorithmSummaryView changeVisibility(@PathVariable UUID id, @RequestBody VisibilityRequest body) {
+        service.changeVisibility(id, body.visibility());
+        return queries.getSummary(id);
     }
 
     @ExceptionHandler(WorkshopConflictException.class)

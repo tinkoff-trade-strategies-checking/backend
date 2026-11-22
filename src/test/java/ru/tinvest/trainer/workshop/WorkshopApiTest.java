@@ -141,8 +141,10 @@ class WorkshopApiTest extends PostgresIntegrationTest {
         mockMvc.perform(get("/api/v1/workshop/algorithms/{id}", StrategyCatalog.SYSTEM_STRATEGY_ID)
                         .session(authorA.session()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.versions.length()").value(1))
-                .andExpect(jsonPath("$.versions[0].params.length()").value(6));
+                .andExpect(jsonPath("$.status").value("READY"))
+                .andExpect(jsonPath("$.algorithm.latestVersionId").value(StrategyCatalog.SYSTEM_VERSION_ID.toString()))
+                .andExpect(jsonPath("$.algorithm.versions.length()").value(1))
+                .andExpect(jsonPath("$.algorithm.versions[0].params.length()").value(6));
 
         mockMvc.perform(patch("/api/v1/workshop/algorithms/{id}/visibility", StrategyCatalog.SYSTEM_STRATEGY_ID)
                         .session(authorA.session())
@@ -286,12 +288,13 @@ class WorkshopApiTest extends PostgresIntegrationTest {
 
         mockMvc.perform(get("/api/v1/workshop/algorithms/{id}", id).session(authorB.session()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.latestVersion").value(2))
-                .andExpect(jsonPath("$.versionsCount").value(2))
-                .andExpect(jsonPath("$.hasLinterWarnings").value(false))
-                .andExpect(jsonPath("$.versions.length()").value(2))
-                .andExpect(jsonPath("$.versions[0].version").value(2))
-                .andExpect(jsonPath("$.versions[1].version").value(1));
+                .andExpect(jsonPath("$.status").value("READY"))
+                .andExpect(jsonPath("$.algorithm.latestVersion").value(2))
+                .andExpect(jsonPath("$.algorithm.versionsCount").value(2))
+                .andExpect(jsonPath("$.algorithm.hasLinterWarnings").value(false))
+                .andExpect(jsonPath("$.algorithm.versions.length()").value(2))
+                .andExpect(jsonPath("$.algorithm.versions[0].version").value(2))
+                .andExpect(jsonPath("$.algorithm.versions[1].version").value(1));
     }
 
     @Test
@@ -385,6 +388,7 @@ class WorkshopApiTest extends PostgresIntegrationTest {
                         .header("X-XSRF-TOKEN", authorB.xsrf().getValue()))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.source").value("CLEAN_DSL"))
+                .andExpect(jsonPath("$.check.lookaheadLevel").value("OK"))
                 .andExpect(jsonPath("$.forkedFrom.versionId").value(origVersionId.toString()))
                 .andExpect(jsonPath("$.forkedFrom.strategyName").value("Original-" + tag))
                 .andExpect(jsonPath("$.forkedFrom.version").value(1))
@@ -410,7 +414,7 @@ class WorkshopApiTest extends PostgresIntegrationTest {
                         .content("{\"visibility\":\"hidden\"}"))
                 .andExpect(status().isNotFound());
 
-        // Author A скрывает алгоритм (UC-21)
+        // Author A скрывает алгоритм (UC-21) -> возвращает WorkshopAlgorithmSummary
         mockMvc.perform(patch("/api/v1/workshop/algorithms/{id}/visibility", origId)
                         .session(authorA.session())
                         .cookie(authorA.xsrf())
@@ -418,11 +422,15 @@ class WorkshopApiTest extends PostgresIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"visibility\":\"hidden\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.visibility").value("hidden"));
+                .andExpect(jsonPath("$.id").value(origId.toString()))
+                .andExpect(jsonPath("$.visibility").value("hidden"))
+                .andExpect(jsonPath("$.latestVersionId").value(origVersionId.toString()))
+                .andExpect(jsonPath("$.isMine").value(true));
 
-        // Чужой скрытый не виден в каталоге, карточке (404), форке (404) и StrategyCatalog.canAccess
+        // Чужой скрытый не виден в каталоге, карточке (200 NOT_FOUND), форке (404) и StrategyCatalog.canAccess
         assertThat(catalog.canAccess(origVersionId, authorB.id())).isFalse();
         assertThat(catalog.canAccess(origVersionId, authorA.id())).isTrue();
+        assertThat(catalog.canAccess(origVersionId, null)).isFalse();
 
         mockMvc.perform(get("/api/v1/workshop/algorithms")
                         .session(authorB.session())
@@ -431,8 +439,9 @@ class WorkshopApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.total").value(0));
 
         mockMvc.perform(get("/api/v1/workshop/algorithms/{id}", origId).session(authorB.session()))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("NOT_FOUND"))
+                .andExpect(jsonPath("$.algorithm").doesNotExist());
 
         mockMvc.perform(post("/api/v1/workshop/algorithms/{id}/fork", origId)
                         .session(authorB.session())
@@ -443,7 +452,8 @@ class WorkshopApiTest extends PostgresIntegrationTest {
         // Но владелец по-прежнему видит свой скрытый алгоритм и может вернуть его в каталог
         mockMvc.perform(get("/api/v1/workshop/algorithms/{id}", origId).session(authorA.session()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.visibility").value("hidden"));
+                .andExpect(jsonPath("$.status").value("READY"))
+                .andExpect(jsonPath("$.algorithm.visibility").value("hidden"));
 
         // И существующий форк сохраняет ссылку на исходную версию после скрытия исходника (UC-20)
         mockMvc.perform(get("/api/v1/workshop/algorithms/{id}/draft", fork1Id).session(authorB.session()))

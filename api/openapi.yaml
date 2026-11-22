@@ -2378,7 +2378,7 @@ components:
         visibility: { $ref: '#/components/schemas/WorkshopVisibility' }
         latestVersion: { type: integer, minimum: 0 }
         latestVersionId: { $ref: '#/components/schemas/UuidOrNull' }
-        publishedAt: { type: string, format: date-time }
+        publishedAt: { type: [string, 'null'], format: date-time }
         license: { $ref: '#/components/schemas/WorkshopLicense' }
         linterWarnings: { type: array, items: { $ref: '#/components/schemas/WorkshopLinterWarning' } }
     WorkshopAlgorithmDetail:
@@ -2427,11 +2427,10 @@ components:
         source: { type: string }
     UpdateWorkshopDraftRequest:
       type: object
-      required: [name, source]
       properties:
-        name: { type: string, minLength: 1, maxLength: 80 }
-        description: { type: string, maxLength: 2000 }
-        source: { type: string }
+        name: { type: [string, 'null'], minLength: 1, maxLength: 80 }
+        description: { type: [string, 'null'], maxLength: 2000 }
+        source: { type: [string, 'null'] }
     WorkshopDraft:
       type: object
       required: [strategyId, name, description, source, updatedAt, check]
@@ -2455,6 +2454,7 @@ components:
       properties:
         version: { type: [integer, 'null'], minimum: 1 }
         name: { type: [string, 'null'], minLength: 1, maxLength: 80 }
+        description: { type: [string, 'null'], maxLength: 2000 }
     UpdateWorkshopVisibilityRequest:
       type: object
       required: [visibility]

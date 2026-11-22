@@ -23,6 +23,9 @@ import ru.tinvest.trainer.workshop.WorkshopViews.AlgorithmDetailView;
 import ru.tinvest.trainer.workshop.WorkshopViews.AlgorithmSummaryView;
 import ru.tinvest.trainer.workshop.WorkshopViews.AlgorithmVersionView;
 import ru.tinvest.trainer.workshop.WorkshopViews.AuthorOptionView;
+import ru.tinvest.trainer.workshop.WorkshopViews.DetailNotFoundView;
+import ru.tinvest.trainer.workshop.WorkshopViews.DetailReadyView;
+import ru.tinvest.trainer.workshop.WorkshopViews.DetailResultView;
 import ru.tinvest.trainer.workshop.WorkshopViews.ForkSourceView;
 import ru.tinvest.trainer.workshop.WorkshopViews.LinterWarningView;
 import ru.tinvest.trainer.workshop.WorkshopViews.WorkshopPageView;
@@ -37,6 +40,7 @@ class WorkshopCatalogQueries {
     private static final String SUMMARY_CTE = """
             WITH latest_ver AS (
                 SELECT DISTINCT ON (v.strategy_id)
+                       v.id,
                        v.strategy_id,
                        v.version,
                        v.lookahead_level,
@@ -51,6 +55,29 @@ class WorkshopCatalogQueries {
                 FROM workshop.strategy_version v
                 GROUP BY v.strategy_id
             )
+            """;
+
+    private static final String SUMMARY_SELECT = """
+            SELECT s.id,
+                   s.name,
+                   s.description,
+                   s.owner_id,
+                   COALESCE(s.owner_id, :systemAuthor) AS author_id,
+                   s.author_name,
+                   s.is_system,
+                   s.visibility,
+                   s.license,
+                   COALESCE(lv.version, 0) AS latest_version,
+                   lv.id AS latest_version_id,
+                   COALESCE(vc.versions_count, 0) AS versions_count,
+                   lv.published_at,
+                   lv.lookahead_level,
+                   COALESCE(lv.diagnostics_json, '[]') AS diagnostics_json,
+                   fv.id AS fork_version_id,
+                   fv.strategy_id AS fork_strategy_id,
+                   fs.name AS fork_strategy_name,
+                   fs.author_name AS fork_author_name,
+                   fv.version AS fork_version
             """;
 
     private static final String SUMMARY_FROM = """
@@ -118,28 +145,8 @@ class WorkshopCatalogQueries {
 
         long total = queryLong(SUMMARY_CTE + "SELECT COUNT(*) " + SUMMARY_FROM + where, params);
         int offset = (page - 1) * pageSize;
-        String selectItems =
-                SUMMARY_CTE + """
-                SELECT s.id,
-                       s.name,
-                       s.description,
-                       s.owner_id,
-                       COALESCE(s.owner_id, :systemAuthor) AS author_id,
-                       s.author_name,
-                       s.is_system,
-                       s.visibility,
-                       s.license,
-                       COALESCE(lv.version, 0) AS latest_version,
-                       COALESCE(vc.versions_count, 0) AS versions_count,
-                       lv.published_at,
-                       lv.lookahead_level,
-                       COALESCE(lv.diagnostics_json, '[]') AS diagnostics_json,
-                       fv.id AS fork_version_id,
-                       fv.strategy_id AS fork_strategy_id,
-                       fs.name AS fork_strategy_name,
-                       fs.author_name AS fork_author_name,
-                       fv.version AS fork_version
-                """ + SUMMARY_FROM + where + " ORDER BY " + orderBy + " LIMIT :limit OFFSET :offset";
+        String selectItems = SUMMARY_CTE + SUMMARY_SELECT + SUMMARY_FROM + where + " ORDER BY " + orderBy
+                + " LIMIT :limit OFFSET :offset";
 
         Map<String, Object> itemParams = new LinkedHashMap<>(params);
         itemParams.put("limit", pageSize);
@@ -150,29 +157,22 @@ class WorkshopCatalogQueries {
         return new WorkshopPageView(items, authors, total, page, pageSize, totalPages);
     }
 
-    AlgorithmDetailView getById(UUID strategyId) {
+    AlgorithmSummaryView getSummary(UUID strategyId) {
         UUID viewerId = currentUser.requireId();
-        String sql = SUMMARY_CTE + """
-                SELECT s.id,
-                       s.name,
-                       s.description,
-                       s.owner_id,
-                       COALESCE(s.owner_id, :systemAuthor) AS author_id,
-                       s.author_name,
-                       s.is_system,
-                       s.visibility,
-                       s.license,
-                       COALESCE(lv.version, 0) AS latest_version,
-                       COALESCE(vc.versions_count, 0) AS versions_count,
-                       lv.published_at,
-                       lv.lookahead_level,
-                       COALESCE(lv.diagnostics_json, '[]') AS diagnostics_json,
-                       fv.id AS fork_version_id,
-                       fv.strategy_id AS fork_strategy_id,
-                       fs.name AS fork_strategy_name,
-                       fs.author_name AS fork_author_name,
-                       fv.version AS fork_version
-                """ + SUMMARY_FROM + """
+        String sql = SUMMARY_CTE + SUMMARY_SELECT + SUMMARY_FROM + " WHERE s.id = :id AND s.owner_id = :viewerId";
+        List<AlgorithmSummaryView> found = querySummaries(
+                sql,
+                Map.of("id", strategyId, "viewerId", viewerId, "systemAuthor", StrategyCatalog.SYSTEM_AUTHOR_ID),
+                viewerId);
+        if (found.isEmpty()) {
+            throw new NotFoundException("Algorithm not found");
+        }
+        return found.getFirst();
+    }
+
+    DetailResultView getById(UUID strategyId) {
+        UUID viewerId = currentUser.requireId();
+        String sql = SUMMARY_CTE + SUMMARY_SELECT + SUMMARY_FROM + """
                  WHERE s.id = :id
                    AND (s.owner_id = :viewerId OR (s.visibility = 'public' AND lv.version IS NOT NULL))
                 """;
@@ -181,7 +181,7 @@ class WorkshopCatalogQueries {
                 Map.of("id", strategyId, "viewerId", viewerId, "systemAuthor", StrategyCatalog.SYSTEM_AUTHOR_ID),
                 viewerId);
         if (found.isEmpty()) {
-            throw new NotFoundException("Algorithm not found");
+            return new DetailNotFoundView("NOT_FOUND");
         }
         AlgorithmSummaryView summary = found.getFirst();
         List<AlgorithmVersionView> versions = jdbc.sql("""
@@ -201,7 +201,7 @@ class WorkshopCatalogQueries {
                 .query((rs, n) -> mapVersion(rs))
                 .list();
 
-        return new AlgorithmDetailView(
+        AlgorithmDetailView detail = new AlgorithmDetailView(
                 summary.id(),
                 summary.name(),
                 summary.description(),
@@ -211,6 +211,7 @@ class WorkshopCatalogQueries {
                 summary.isSystem(),
                 summary.visibility(),
                 summary.latestVersion(),
+                summary.latestVersionId(),
                 summary.versionsCount(),
                 summary.publishedAt(),
                 summary.license(),
@@ -219,6 +220,7 @@ class WorkshopCatalogQueries {
                 summary.linterWarnings(),
                 summary.forkedFrom(),
                 versions);
+        return new DetailReadyView("READY", detail);
     }
 
     private long queryLong(String sql, Map<String, Object> params) {
@@ -271,6 +273,7 @@ class WorkshopCatalogQueries {
                 rs.getBoolean("is_system"),
                 rs.getString("visibility"),
                 rs.getInt("latest_version"),
+                rs.getObject("latest_version_id", UUID.class),
                 rs.getInt("versions_count"),
                 published == null ? null : WorkshopViews.formatTimestamp(published),
                 rs.getString("license"),

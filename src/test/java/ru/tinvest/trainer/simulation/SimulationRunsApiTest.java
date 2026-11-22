@@ -310,6 +310,14 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.total").value(1))
                 .andExpect(jsonPath("$.items[0].id").value(failedId.toString()));
+
+        mockMvc.perform(withAuth(userA, get("/api/v1/runs/" + failedId + "/report")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("READY"))
+                .andExpect(jsonPath("$.report.status").value("failed"));
+
+        mockMvc.perform(withAuth(userA, get("/api/v1/runs/" + failedId + "/report/export?format=xlsx")))
+                .andExpect(status().isOk());
     }
 
     @Test
