@@ -54,9 +54,7 @@ final class ReportViews {
         ReplayResult replay = finished.replay();
         ReportData report = replay.report();
         Map<Long, Long> times = stepTimes(replay);
-        ViewFormat.StepIndex index = new ViewFormat.StepIndex();
-        replay.history().forEach(b -> index.add(b.step(), b.tradingDay()));
-        index.build();
+        ViewFormat.StepIndex index = stepIndex(replay);
 
         StrategyRunOutput algoRun =
                 analysis == null || analysis.output().algorithmPortfolios().isEmpty()
@@ -95,10 +93,12 @@ final class ReportViews {
             out.put("divergences", null);
             out.put("reverseCheckTrades", null);
         } else {
-            DivergenceViews divViews = divergences(session, analysis.output(), times, index);
+            DivergenceViews divViews = divergences(session, analysis.output().divergences(), times, index);
             out.put("divergenceSummary", divViews.summary());
             out.put("divergences", divViews.items());
-            out.put("reverseCheckTrades", reverseCheckTrades(session, analysis.output(), times, index));
+            out.put(
+                    "reverseCheckTrades",
+                    reverseCheckTrades(session, analysis.output().missedProfitable(), null, Map.of(), times, index));
         }
         out.put("roundTrips", roundTrips(report, times));
         out.put("fills", fills(session, replay, index));
@@ -136,7 +136,7 @@ final class ReportViews {
                 .orElse(BigDecimal.ZERO);
     }
 
-    private static Map<String, Object> metrics(SessionRecord session, ReportData report, boolean bankrupt) {
+    static Map<String, Object> metrics(SessionRecord session, ReportData report, boolean bankrupt) {
         MetricsData m = report.metrics();
         Map<String, Object> costs = new LinkedHashMap<>();
         // общую сумму издержек считает core (core#54), backend не складывает
@@ -174,7 +174,7 @@ final class ReportViews {
         return out;
     }
 
-    private static Map<String, Object> comparison(ReportData human, ReportData algo) {
+    static Map<String, Object> comparison(ReportData human, ReportData algo) {
         BigDecimal hCap = human.finalEquity();
         BigDecimal aCap = algo.finalEquity();
         Map<String, Object> finalCapital = new LinkedHashMap<>();
@@ -211,11 +211,23 @@ final class ReportViews {
         return cmp > 0 ? "human" : (cmp < 0 ? "algo" : "tie");
     }
 
-    private static List<Object> equityCurve(ReportData report, @Nullable ReportData algoReport, Map<Long, Long> times) {
-        Map<Long, BigDecimal> benchmark = new TreeMap<>();
-        for (EquityPointData p : report.benchmarkEquity()) {
-            benchmark.put(p.step(), p.equity());
+    static List<Object> humanEquityCurve(ReportData report, Map<Long, Long> times) {
+        Map<Long, BigDecimal> benchmark = benchmarkByStep(report);
+        List<Object> points = new ArrayList<>(report.equity().size());
+        for (EquityPointData p : report.equity()) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("step", p.step());
+            out.put("date", date(times, p.step()));
+            out.put("humanCapital", ViewFormat.money(p.equity()));
+            BigDecimal bench = benchmark.get(p.step());
+            out.put("benchmarkCapital", bench == null ? null : ViewFormat.money(bench));
+            points.add(out);
         }
+        return points;
+    }
+
+    static List<Object> equityCurve(ReportData report, @Nullable ReportData algoReport, Map<Long, Long> times) {
+        Map<Long, BigDecimal> benchmark = benchmarkByStep(report);
         Map<Long, BigDecimal> algo = new TreeMap<>();
         if (algoReport != null) {
             for (EquityPointData p : algoReport.equity()) {
@@ -237,9 +249,16 @@ final class ReportViews {
         return points;
     }
 
+    private static Map<Long, BigDecimal> benchmarkByStep(ReportData report) {
+        Map<Long, BigDecimal> benchmark = new TreeMap<>();
+        for (EquityPointData p : report.benchmarkEquity()) {
+            benchmark.put(p.step(), p.equity());
+        }
+        return benchmark;
+    }
+
     /** Кривая просадки ядра: точка на каждую точку капитала. */
-    private static List<Object> underwaterCurve(
-            ReportData report, @Nullable ReportData algoReport, Map<Long, Long> times) {
+    static List<Object> underwaterCurve(ReportData report, @Nullable ReportData algoReport, Map<Long, Long> times) {
         Map<Long, BigDecimal> algo = new TreeMap<>();
         if (algoReport != null) {
             for (UnderwaterPointData p : algoReport.underwater()) {
@@ -259,22 +278,25 @@ final class ReportViews {
         return points;
     }
 
-    private record DivergenceViews(Map<String, Object> summary, List<Object> items) {}
+    record DivergenceViews(Map<String, Object> summary, List<Object> items) {}
 
-    private static DivergenceViews divergences(
-            SessionRecord session, DivergenceOutput output, Map<Long, Long> times, ViewFormat.StepIndex index) {
+    static DivergenceViews divergences(
+            SessionRecord session,
+            List<DivergenceData> divergenceList,
+            Map<Long, Long> times,
+            ViewFormat.StepIndex index) {
         Map<String, String> sectors = new LinkedHashMap<>();
         for (PaperRecord p : session.papers()) {
             sectors.put(p.secid(), p.sector());
         }
-        List<Object> items = new ArrayList<>(output.divergences().size());
+        List<Object> items = new ArrayList<>(divergenceList.size());
         BigDecimal totalCost = BigDecimal.ZERO;
         BigDecimal totalCostPct = BigDecimal.ZERO;
         UUID worstId = null;
         String worstType = null;
         Integer worstDay = null;
         BigDecimal worstCost = null;
-        for (DivergenceData d : output.divergences()) {
+        for (DivergenceData d : divergenceList) {
             UUID id = DerivedIds.divergence(session.id(), d.seq());
             long step = d.humanStep() >= 0 ? d.humanStep() : d.algoStep();
             int day = index.at(step)[0];
@@ -317,15 +339,23 @@ final class ReportViews {
         return new DivergenceViews(summary, items);
     }
 
-    private static List<Object> reverseCheckTrades(
-            SessionRecord session, DivergenceOutput output, Map<Long, Long> times, ViewFormat.StepIndex index) {
-        List<Object> trades = new ArrayList<>(output.missedProfitable().size());
-        for (MissedProfitableTradeData m : output.missedProfitable()) {
-            if (m.divergenceSeqs().isEmpty()) {
+    static List<Object> reverseCheckTrades(
+            SessionRecord session,
+            List<MissedProfitableTradeData> missedProfitable,
+            @Nullable String algorithmId,
+            Map<Long, String> divergenceAlgorithms,
+            Map<Long, Long> times,
+            ViewFormat.StepIndex index) {
+        List<Object> trades = new ArrayList<>(missedProfitable.size());
+        for (MissedProfitableTradeData m : missedProfitable) {
+            if (algorithmId != null && !m.algorithmIds().contains(algorithmId)) {
+                continue;
+            }
+            Long entryDivSeq = findEntryDivergenceSeq(m, algorithmId, divergenceAlgorithms);
+            if (entryDivSeq == null) {
                 // ФТ-20 требует входного Excess-расхождения; сделки без него фильтруем, чтобы не ронять сборку отчёта
                 continue;
             }
-            long entryDivSeq = m.divergenceSeqs().getFirst();
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("id", DerivedIds.reverseCheckTrade(session.id(), m.seq()));
             item.put("paperTicker", m.paperKey());
@@ -343,6 +373,22 @@ final class ReportViews {
             trades.add(item);
         }
         return trades;
+    }
+
+    private static @Nullable Long findEntryDivergenceSeq(
+            MissedProfitableTradeData m, @Nullable String algorithmId, Map<Long, String> divergenceAlgorithms) {
+        if (m.divergenceSeqs().isEmpty()) {
+            return null;
+        }
+        if (algorithmId == null) {
+            return m.divergenceSeqs().getFirst();
+        }
+        for (Long seq : m.divergenceSeqs()) {
+            if (algorithmId.equals(divergenceAlgorithms.get(seq))) {
+                return seq;
+            }
+        }
+        return null;
     }
 
     private static String divergenceType(DivergenceKind kind) {
@@ -418,7 +464,7 @@ final class ReportViews {
     }
 
     /** Время бара по шагу: у каждого шага шкалы есть бар хотя бы одной бумаги. */
-    private static Map<Long, Long> stepTimes(ReplayResult replay) {
+    static Map<Long, Long> stepTimes(ReplayResult replay) {
         Map<Long, Long> times = new TreeMap<>();
         for (BarData bar : replay.history()) {
             times.putIfAbsent(bar.step(), bar.timeUnixMs());
@@ -426,7 +472,14 @@ final class ReportViews {
         return times;
     }
 
-    private static String date(Map<Long, Long> times, long step) {
+    static ViewFormat.StepIndex stepIndex(ReplayResult replay) {
+        ViewFormat.StepIndex index = new ViewFormat.StepIndex();
+        replay.history().forEach(b -> index.add(b.step(), b.tradingDay()));
+        index.build();
+        return index;
+    }
+
+    static String date(Map<Long, Long> times, long step) {
         Long time = times.get(step);
         if (time == null) {
             throw new IllegalStateException("Нет бара на шаге " + step + " отчёта");

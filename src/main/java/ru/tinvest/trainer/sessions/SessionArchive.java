@@ -174,16 +174,22 @@ public class SessionArchive {
      * @return пусто, если сессии нет или она ещё идёт
      */
     public Optional<CompletedReplay> completed(UUID sessionId) {
-        return sessions.findAny(sessionId)
-                .filter(s -> !"running".equals(s.status()))
-                .map(session -> {
-                    Market market = Arena.market(session);
-                    List<JournalRecord> journal = journals.records(session);
-                    ReplayResult replay = worker.replayWithReport(market, journal, session.currentStep());
-                    if (replay.report() == null) {
-                        throw new IllegalStateException("Воркер не вернул отчёт завершённой сессии " + session.id());
-                    }
-                    return new CompletedReplay(session, replay, replay.currentDay(), market, journal);
-                });
+        return sessions.findAny(sessionId).filter(SessionArchive::isFinished).map(this::replayCompleted);
+    }
+
+    /**
+     * Проигрывает журнал уже найденной завершённой сессии до итогового шага с историей баров и отчётом ядра (INV-8).
+     */
+    public CompletedReplay replayCompleted(SessionRecord session) {
+        if (!isFinished(session)) {
+            throw new IllegalStateException("Завершённое воспроизведение доступно только завершённой сессии");
+        }
+        Market market = Arena.market(session);
+        List<JournalRecord> journal = journals.records(session);
+        ReplayResult replay = worker.replayWithReport(market, journal, session.currentStep());
+        if (replay.report() == null) {
+            throw new IllegalStateException("Воркер не вернул отчёт завершённой сессии " + session.id());
+        }
+        return new CompletedReplay(session, replay, replay.currentDay(), market, journal);
     }
 }

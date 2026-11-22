@@ -26,6 +26,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.BlindViewData;
 import ru.tinvest.trainer.worker.WorkerTypes.CheckLevel;
 import ru.tinvest.trainer.worker.WorkerTypes.Command;
 import ru.tinvest.trainer.worker.WorkerTypes.CommandOutcome;
+import ru.tinvest.trainer.worker.WorkerTypes.ConsensusItemData;
 import ru.tinvest.trainer.worker.WorkerTypes.CostTotalsData;
 import ru.tinvest.trainer.worker.WorkerTypes.DivergenceData;
 import ru.tinvest.trainer.worker.WorkerTypes.DivergenceKind;
@@ -573,47 +574,75 @@ final class FakeWorker implements SimulationWorkerClient {
         }
         List<DivergenceData> divergences = new ArrayList<>();
         List<MissedProfitableTradeData> missedProfitable = new ArrayList<>();
+        List<ConsensusItemData> consensus = new ArrayList<>();
         if (lastStep >= 2 && !algorithms.isEmpty()) {
-            String algId = algorithms.getFirst().id();
             JournalRecord humanPlace = journal.stream()
                     .filter(j -> j.step() < lastStep && j.command() instanceof Command.Place)
                     .findFirst()
                     .orElse(null);
+            long nextDivSeq = 0;
+            List<String> allAlgIds = new ArrayList<>(algorithms.size());
+            List<Long> excessDivSeqs = new ArrayList<>(algorithms.size());
+            for (AlgorithmInput alg : algorithms) {
+                String algId = alg.id();
+                allAlgIds.add(algId);
+                if (humanPlace != null) {
+                    Command.Place place = (Command.Place) humanPlace.command();
+                    long signedLots = place.order().side() == TradeSide.BUY
+                            ? place.order().lots()
+                            : -place.order().lots();
+                    long excessSeq = nextDivSeq++;
+                    excessDivSeqs.add(excessSeq);
+                    divergences.add(new DivergenceData(
+                            algId,
+                            place.order().paperKey(),
+                            DivergenceKind.EXCESS,
+                            humanPlace.step(),
+                            -1,
+                            signedLots,
+                            0,
+                            Math.min(lastStep, humanPlace.step() + 2),
+                            new BigDecimal("150.00"),
+                            new BigDecimal("0.03"),
+                            "алгоритм здесь не действовал бы",
+                            excessSeq,
+                            place.order().kind(),
+                            null));
+                    divergences.add(new DivergenceData(
+                            algId,
+                            market.papers().getFirst().key(),
+                            DivergenceKind.MISSED,
+                            -1,
+                            1,
+                            0,
+                            1,
+                            Math.min(lastStep, 3),
+                            new BigDecimal("-50.00"),
+                            new BigDecimal("-0.01"),
+                            "SMA(20) пересекла SMA(50) снизу вверх",
+                            nextDivSeq++,
+                            null,
+                            OrderKind.MARKET));
+                } else {
+                    divergences.add(new DivergenceData(
+                            algId,
+                            market.papers().getFirst().key(),
+                            DivergenceKind.MISSED,
+                            -1,
+                            1,
+                            0,
+                            1,
+                            Math.min(lastStep, 3),
+                            new BigDecimal("120.00"),
+                            new BigDecimal("0.02"),
+                            "SMA(20) пересекла SMA(50) снизу вверх",
+                            nextDivSeq++,
+                            null,
+                            OrderKind.MARKET));
+                }
+            }
             if (humanPlace != null) {
                 Command.Place place = (Command.Place) humanPlace.command();
-                long signedLots = place.order().side() == TradeSide.BUY
-                        ? place.order().lots()
-                        : -place.order().lots();
-                divergences.add(new DivergenceData(
-                        algId,
-                        place.order().paperKey(),
-                        DivergenceKind.EXCESS,
-                        humanPlace.step(),
-                        -1,
-                        signedLots,
-                        0,
-                        Math.min(lastStep, humanPlace.step() + 2),
-                        new BigDecimal("150.00"),
-                        new BigDecimal("0.03"),
-                        "алгоритм здесь не действовал бы",
-                        0,
-                        place.order().kind(),
-                        null));
-                divergences.add(new DivergenceData(
-                        algId,
-                        market.papers().getFirst().key(),
-                        DivergenceKind.MISSED,
-                        -1,
-                        1,
-                        0,
-                        1,
-                        Math.min(lastStep, 3),
-                        new BigDecimal("-50.00"),
-                        new BigDecimal("-0.01"),
-                        "SMA(20) пересекла SMA(50) снизу вверх",
-                        1,
-                        null,
-                        OrderKind.MARKET));
                 if (lastStep >= 3) {
                     missedProfitable.add(new MissedProfitableTradeData(
                             place.order().paperKey(),
@@ -621,31 +650,31 @@ final class FakeWorker implements SimulationWorkerClient {
                             3,
                             place.order().lots(),
                             new BigDecimal("188.00"),
-                            List.of(algId),
+                            allAlgIds,
                             new BigDecimal("200.00"),
                             new BigDecimal("210.00"),
                             0,
-                            List.of(0L)));
+                            excessDivSeqs));
                 }
-            } else {
-                divergences.add(new DivergenceData(
-                        algId,
-                        market.papers().getFirst().key(),
-                        DivergenceKind.MISSED,
-                        -1,
-                        1,
+                consensus.add(new ConsensusItemData(
+                        place.order().paperKey(),
+                        humanPlace.step(),
+                        place.order().side(),
+                        true,
                         0,
-                        1,
-                        Math.min(lastStep, 3),
-                        new BigDecimal("120.00"),
-                        new BigDecimal("0.02"),
-                        "SMA(20) пересекла SMA(50) снизу вверх",
-                        0,
-                        null,
-                        OrderKind.MARKET));
+                        algorithms.size(),
+                        new BigDecimal("150.00")));
             }
+            consensus.add(new ConsensusItemData(
+                    market.papers().getFirst().key(),
+                    1,
+                    TradeSide.BUY,
+                    false,
+                    algorithms.size(),
+                    algorithms.size(),
+                    new BigDecimal(humanPlace != null ? "-50.00" : "120.00")));
         }
-        return new DivergenceOutput(divergences, missedProfitable, List.of(), portfolios);
+        return new DivergenceOutput(divergences, missedProfitable, consensus, portfolios);
     }
 
     record ReportRequest(List<JournalRecord> journal, long upToStep) {}
