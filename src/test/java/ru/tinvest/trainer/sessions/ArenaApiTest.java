@@ -983,13 +983,13 @@ class ArenaApiTest extends PostgresIntegrationTest {
                 .param("id", id)
                 .query()
                 .singleRow();
-        assertThat(row.get("warmup_bars")).isEqualTo(100);
+        assertThat(row.get("warmup_bars")).isEqualTo(200);
         assertThat((BigDecimal) row.get("commission_rate")).isEqualByComparingTo("0.003");
         assertThat((BigDecimal) row.get("liquidity_share")).isEqualByComparingTo("0.1");
 
         body(httpGet(id, ""));
 
-        assertThat(worker.lastMarket.warmupBars()).isEqualTo(100);
+        assertThat(worker.lastMarket.warmupBars()).isEqualTo(200);
         assertThat(worker.lastMarket.costs().exchangeFeeRate()).isEqualByComparingTo("0.0001");
         assertThat(worker.lastMarket.costs().spread()).isEqualByComparingTo("0.001");
         // план сессии неизменяем, прогрев и издержки тоже (INV-8)

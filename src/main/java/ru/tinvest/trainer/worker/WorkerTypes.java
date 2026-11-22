@@ -51,6 +51,7 @@ public final class WorkerTypes {
         ORDER_NOT_ACTIVE,
         LIQUIDITY_LIMIT,
         OCO_SIBLING_FILLED,
+        POSITION_CLOSED,
         REPLACED,
         SESSION_END,
         CANCELLED_BY_USER,

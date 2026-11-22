@@ -445,6 +445,45 @@ class GrpcArenaMappingTest {
     }
 
     @Test
+    void allProtoReasonsMapToRejectCodeAndPositionClosedIsSupported() {
+        for (Reason reason : Reason.values()) {
+            if (reason == Reason.UNRECOGNIZED) {
+                continue;
+            }
+            var response = ReplaySessionResponse.newBuilder()
+                    .setStatus(pac.simulation.v1.SessionStatus.RUNNING)
+                    .addOrders(pac.simulation.v1.Order.newBuilder()
+                            .setId(1)
+                            .setSpec(WorkerMapper.spec(limit("250.00", false)))
+                            .setStatus(pac.simulation.v1.OrderStatus.CANCELLED)
+                            .setReason(reason)
+                            .setOcoSiblingId(-1)
+                            .setClosedStep(1))
+                    .build();
+
+            RejectCode mapped =
+                    WorkerMapper.replay(response).orders().getFirst().reason();
+            if (reason == Reason.REASON_UNSPECIFIED) {
+                assertThat(mapped).isNull();
+            } else {
+                assertThat(mapped).isEqualTo(RejectCode.valueOf(reason.name()));
+            }
+        }
+        var closedResponse = ReplaySessionResponse.newBuilder()
+                .setStatus(pac.simulation.v1.SessionStatus.RUNNING)
+                .addOrders(pac.simulation.v1.Order.newBuilder()
+                        .setId(2)
+                        .setSpec(WorkerMapper.spec(limit("250.00", false)))
+                        .setStatus(pac.simulation.v1.OrderStatus.CANCELLED)
+                        .setReason(Reason.POSITION_CLOSED)
+                        .setOcoSiblingId(-1)
+                        .setClosedStep(2))
+                .build();
+        assertThat(WorkerMapper.replay(closedResponse).orders().getFirst().reason())
+                .isEqualTo(RejectCode.POSITION_CLOSED);
+    }
+
+    @Test
     void workerErrorsMapLikeTheOtherCalls() throws Exception {
         for (Status status : new Status[] {Status.UNAVAILABLE, Status.DEADLINE_EXCEEDED, Status.FAILED_PRECONDITION}) {
             var client = start(new SimulationWorkerGrpc.SimulationWorkerImplBase() {
