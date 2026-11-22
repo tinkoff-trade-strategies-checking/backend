@@ -40,6 +40,13 @@ lab:
     event-retention: 24h
     max-concurrent-ticks: 8
     max-concurrent-sends: 256
+  simulation:
+    threads: ${SIMULATION_RUN_THREADS:2}
+    queue-capacity: ${SIMULATION_RUN_QUEUE:100}
+    progress-interval: 250ms
+    heartbeat: 2s
+    event-retention: 24h
+    max-concurrent-sends: 256
 
 analysis:
   report-build:
@@ -50,6 +57,7 @@ analysis:
 worker:
   address: ${WORKER_ADDRESS:localhost:50051}
   deadline: ${WORKER_DEADLINE:5s}
+  run-deadline: ${WORKER_RUN_DEADLINE:120s}
 
 management:
   endpoints:

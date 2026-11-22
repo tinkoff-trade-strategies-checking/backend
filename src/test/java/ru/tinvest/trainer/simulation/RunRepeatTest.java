@@ -81,4 +81,27 @@ class RunRepeatTest extends PostgresIntegrationTest {
 
         assertThatThrownBy(() -> runs.create(UUID.randomUUID(), snap.id())).isInstanceOf(NotFoundException.class);
     }
+
+    @Test
+    void deleteAndFinishedUpdateAreBlockedByTriggers() {
+        StrategyVersion v = versions.publish(UUID.randomUUID(), "buy()", "{}");
+        Snapshot snap = snapshots.register("snap-" + UUID.randomUUID(), "");
+        Run run = runs.create(v.id(), snap.id());
+
+        assertThatThrownBy(() -> jdbc.sql("DELETE FROM simulation.run WHERE id = :id")
+                        .param("id", run.id())
+                        .update())
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("INV-5");
+
+        jdbc.sql("UPDATE simulation.run SET status = 'completed', finished_at = now() WHERE id = :id")
+                .param("id", run.id())
+                .update();
+
+        assertThatThrownBy(() -> jdbc.sql("UPDATE simulation.run SET status = 'running' WHERE id = :id")
+                        .param("id", run.id())
+                        .update())
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("INV-5");
+    }
 }

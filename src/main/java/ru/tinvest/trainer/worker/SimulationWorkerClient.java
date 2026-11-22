@@ -2,13 +2,18 @@ package ru.tinvest.trainer.worker;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderParams;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
+import ru.tinvest.trainer.worker.WorkerTypes.RunProgressData;
 import ru.tinvest.trainer.worker.WorkerTypes.StepReplay;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyCheck;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyRunOutput;
 
 /** Клиент Simulation Worker по gRPC. Единственная точка обращения других модулей к воркеру. */
 public interface SimulationWorkerClient {
@@ -81,4 +86,27 @@ public interface SimulationWorkerClient {
      * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
      */
     EstimateResult estimateOrder(Market market, List<JournalRecord> journal, long upToStep, OrderParams order);
+
+    /**
+     * Статическая проверка и линтер стратегии на DSL ({@code CheckStrategy}).
+     *
+     * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
+     */
+    default StrategyCheck checkStrategy(String source, Map<String, Double> paramOverrides) {
+        throw new UnsupportedOperationException("checkStrategy");
+    }
+
+    /**
+     * Детерминированный прогон DSL-стратегии на истории с потоковым прогрессом ({@code RunStrategy}).
+     *
+     * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер недоступен или не ответил в срок
+     */
+    default StrategyRunOutput runStrategy(
+            Market market,
+            String source,
+            Map<String, Double> paramOverrides,
+            boolean includeHistory,
+            Consumer<RunProgressData> onProgress) {
+        throw new UnsupportedOperationException("runStrategy");
+    }
 }

@@ -20,6 +20,6 @@ class WorkerConfiguration {
 
     @Bean
     SimulationWorkerClient simulationWorkerClient(ManagedChannel workerChannel, WorkerProperties properties) {
-        return new GrpcSimulationWorkerClient(workerChannel, properties.deadline());
+        return new GrpcSimulationWorkerClient(workerChannel, properties.deadline(), properties.runDeadline());
     }
 }

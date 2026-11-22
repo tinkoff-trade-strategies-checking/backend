@@ -6,15 +6,22 @@ import io.grpc.StatusRuntimeException;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
+import pac.simulation.v1.CheckStrategyRequest;
 import pac.simulation.v1.ClassifyPeriodsRequest;
 import pac.simulation.v1.ClassifyPeriodsResponse;
 import pac.simulation.v1.EstimateOrderRequest;
 import pac.simulation.v1.PingRequest;
 import pac.simulation.v1.ReplaySessionRequest;
+import pac.simulation.v1.RunResult;
+import pac.simulation.v1.RunStrategyRequest;
+import pac.simulation.v1.RunStrategyUpdate;
 import pac.simulation.v1.SimulationWorkerGrpc;
 import ru.tinvest.trainer.api.DependencyUnavailableException;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
@@ -22,17 +29,28 @@ import ru.tinvest.trainer.worker.WorkerTypes.JournalRecord;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
 import ru.tinvest.trainer.worker.WorkerTypes.OrderParams;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
+import ru.tinvest.trainer.worker.WorkerTypes.RunProgressData;
 import ru.tinvest.trainer.worker.WorkerTypes.StepReplay;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyCheck;
+import ru.tinvest.trainer.worker.WorkerTypes.StrategyRunOutput;
 
 /** Реализация {@link SimulationWorkerClient} на {@link ManagedChannel}. */
 class GrpcSimulationWorkerClient implements SimulationWorkerClient {
 
+    private static final Duration DEFAULT_RUN_DEADLINE = Duration.ofSeconds(120);
+
     private final SimulationWorkerGrpc.SimulationWorkerBlockingStub stub;
     private final Duration deadline;
+    private final Duration runDeadline;
 
     GrpcSimulationWorkerClient(ManagedChannel channel, Duration deadline) {
+        this(channel, deadline, DEFAULT_RUN_DEADLINE);
+    }
+
+    GrpcSimulationWorkerClient(ManagedChannel channel, Duration deadline, Duration runDeadline) {
         this.stub = SimulationWorkerGrpc.newBlockingStub(channel);
         this.deadline = deadline;
+        this.runDeadline = runDeadline;
     }
 
     @Override
@@ -144,6 +162,42 @@ class GrpcSimulationWorkerClient implements SimulationWorkerClient {
         return WorkerMapper.estimate(call(() -> stub().estimateOrder(request)));
     }
 
+    @Override
+    public StrategyCheck checkStrategy(String source, Map<String, Double> paramOverrides) {
+        CheckStrategyRequest request = WorkerMapper.checkStrategyRequest(source, paramOverrides);
+        return WorkerMapper.strategyCheck(call(() -> stub().checkStrategy(request)));
+    }
+
+    @Override
+    public StrategyRunOutput runStrategy(
+            Market market,
+            String source,
+            Map<String, Double> paramOverrides,
+            boolean includeHistory,
+            Consumer<RunProgressData> onProgress) {
+        RunStrategyRequest request = WorkerMapper.runStrategyRequest(market, source, paramOverrides, includeHistory);
+        return call(() -> {
+            Iterator<RunStrategyUpdate> updates = runStub().runStrategy(request);
+            RunResult result = null;
+            while (updates.hasNext()) {
+                RunStrategyUpdate update = updates.next();
+                switch (update.getUpdateCase()) {
+                    case PROGRESS -> {
+                        var progress = update.getProgress();
+                        onProgress.accept(new RunProgressData(progress.getDoneSteps(), progress.getTotalSteps()));
+                    }
+                    case RESULT -> result = update.getResult();
+                    case UPDATE_NOT_SET ->
+                        throw new IllegalStateException("Воркер вернул пустое обновление прогона стратегии");
+                }
+            }
+            if (result == null) {
+                throw new IllegalStateException("Поток прогона стратегии завершился без результата");
+            }
+            return WorkerMapper.strategyRunOutput(result);
+        });
+    }
+
     private static PeriodCategory category(pac.simulation.v1.PeriodCategory c) {
         return switch (c) {
             case CALM -> PeriodCategory.CALM;
@@ -155,6 +209,10 @@ class GrpcSimulationWorkerClient implements SimulationWorkerClient {
 
     private SimulationWorkerGrpc.SimulationWorkerBlockingStub stub() {
         return stub.withDeadlineAfter(deadline.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    private SimulationWorkerGrpc.SimulationWorkerBlockingStub runStub() {
+        return stub.withDeadlineAfter(runDeadline.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     private static <T> T call(Supplier<T> rpc) {
