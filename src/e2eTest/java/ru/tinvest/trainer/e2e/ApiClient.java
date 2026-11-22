@@ -37,6 +37,37 @@ final class ApiClient {
         }
     }
 
+    /** Двоичный ответ сервера (например, выгрузка XLSX). */
+    static final class BinaryResponse {
+        private final int status;
+        private final String contentType;
+        private final String contentDisposition;
+        private final byte[] body;
+
+        BinaryResponse(int status, String contentType, String contentDisposition, byte[] body) {
+            this.status = status;
+            this.contentType = contentType;
+            this.contentDisposition = contentDisposition;
+            this.body = body;
+        }
+
+        int status() {
+            return status;
+        }
+
+        String contentType() {
+            return contentType;
+        }
+
+        String contentDisposition() {
+            return contentDisposition;
+        }
+
+        byte[] body() {
+            return body;
+        }
+    }
+
     /** Событие SSE. */
     record SseEvent(long id, String type, String data, JsonNode json) {}
 
@@ -79,8 +110,38 @@ final class ApiClient {
         return request("POST", path, body, Map.of("Idempotency-Key", idempotencyKey.toString()));
     }
 
+    Response put(String path, String body) {
+        return request("PUT", path, body, Map.of());
+    }
+
+    Response patch(String path, String body) {
+        return request("PATCH", path, body, Map.of());
+    }
+
     Response delete(String path) {
         return request("DELETE", path, null, Map.of());
+    }
+
+    synchronized BinaryResponse getBytes(String path) {
+        HttpRequest.Builder builder =
+                HttpRequest.newBuilder(URI.create(base + path)).timeout(Duration.ofSeconds(60));
+        applyCookies(builder);
+        builder.GET();
+        try {
+            HttpResponse<byte[]> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+            storeCookies(response);
+            String contentType = response.headers().firstValue("Content-Type").orElse("");
+            String disposition =
+                    response.headers().firstValue("Content-Disposition").orElse("");
+            byte[] body = response.body();
+            responses.add(new Response("GET", path, response.statusCode(), "<binary:" + body.length + ">", null));
+            return new BinaryResponse(response.statusCode(), contentType, disposition, body);
+        } catch (IOException e) {
+            throw new IllegalStateException("GET " + path, e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
     }
 
     private synchronized Response request(String method, String path, String body, Map<String, String> extra) {
