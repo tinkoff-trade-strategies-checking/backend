@@ -111,6 +111,26 @@ class SessionCompareApiTest extends PostgresIntegrationTest {
         UUID ownHiddenAlgo = insertStrategy(userId, "hidden", "СкрытаяСвоя");
         insertVersion(ownHiddenAlgo, 1, "rule \"h\" when true then buy 1 lots", "[]");
 
+        UUID rangedAlgo = insertStrategy(userId, "public", "СДиапазоном");
+        insertVersion(
+                rangedAlgo,
+                1,
+                "param size_pct = 50 range 40..80\nrule \"r\" when true then buy size_pct % cash",
+                "[{\"name\":\"size_pct\",\"defaultValue\":50.0,\"rangeMin\":40.0,\"rangeMax\":80.0,\"step\":null,\"integer\":false}]");
+
+        // 0. Сравнение с 1 алгоритмом (нижняя граница) + проверка rangeMin/rangeMax для size_pct (31.0 -> clamp 40.0)
+        MvcResult oneResult = compare(sessionId, List.of(rangedAlgo));
+        assertThat(oneResult.getResponse().getStatus()).isEqualTo(200);
+        JsonNode oneBody = json.readTree(oneResult.getResponse().getContentAsString());
+        assertThat(oneBody.get("algorithms")).hasSize(1);
+        assertThat(oneBody.get("algorithms").get(0).get("algorithmId").asString())
+                .isEqualTo(rangedAlgo.toString());
+        assertThat(oneBody.get("consensus").get(0).get("total").asInt()).isEqualTo(1);
+        assertThat(worker.divergenceRequests).hasSize(1);
+        assertThat(worker.divergenceRequests.getFirst().algorithms().getFirst().paramOverrides())
+                .containsEntry("size_pct", 40.0);
+        worker.reset();
+
         // 1. Сравнение с 2 алгоритмами
         MvcResult twoResult = compare(sessionId, List.of(noParamAlgo, StrategyCatalog.SYSTEM_STRATEGY_ID));
         assertThat(twoResult.getResponse().getStatus()).isEqualTo(200);

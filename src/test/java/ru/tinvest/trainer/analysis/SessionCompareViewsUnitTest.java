@@ -44,9 +44,32 @@ import ru.tinvest.trainer.worker.WorkerTypes.TradeSide;
 import ru.tinvest.trainer.worker.WorkerTypes.UnderwaterPointData;
 import ru.tinvest.trainer.workshop.StrategyCatalog;
 import ru.tinvest.trainer.workshop.StrategyVersionView;
+import tools.jackson.databind.ObjectMapper;
 
 /** Unit-тесты {@link SessionCompareViews} без БД и Docker: разметка по алгоритмам, порядок, UUID v5 и консенсус. */
 class SessionCompareViewsUnitTest {
+
+    @Test
+    void resolveAlgoParamsClampsSizePctToDeclaredRange() {
+        ObjectMapper json = new ObjectMapper();
+        String withoutSizePct =
+                "[{\"name\":\"fast\",\"defaultValue\":20.0,\"rangeMin\":5.0,\"rangeMax\":50.0,\"step\":\"5\",\"integer\":true}]";
+        String unboundedSizePct =
+                "[{\"name\":\"size_pct\",\"defaultValue\":95.0,\"rangeMin\":null,\"rangeMax\":null,\"step\":null,\"integer\":false}]";
+        String rangedSizePct =
+                "[{\"name\":\"size_pct\",\"defaultValue\":50.0,\"rangeMin\":40.0,\"rangeMax\":80.0,\"step\":null,\"integer\":false}]";
+
+        assertThat(SessionCompareService.resolveAlgoParams(json, withoutSizePct, 31.0))
+                .isEmpty();
+        assertThat(SessionCompareService.resolveAlgoParams(json, unboundedSizePct, 31.0))
+                .containsEntry("size_pct", 31.0);
+        assertThat(SessionCompareService.resolveAlgoParams(json, rangedSizePct, 31.0))
+                .containsEntry("size_pct", 40.0);
+        assertThat(SessionCompareService.resolveAlgoParams(json, rangedSizePct, 95.0))
+                .containsEntry("size_pct", 80.0);
+        assertThat(SessionCompareService.resolveAlgoParams(json, rangedSizePct, 55.0))
+                .containsEntry("size_pct", 55.0);
+    }
 
     @Test
     @SuppressWarnings("unchecked")

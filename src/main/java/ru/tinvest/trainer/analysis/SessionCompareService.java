@@ -68,11 +68,9 @@ class SessionCompareService {
         for (UUID algorithmId : validatedIds) {
             StrategyVersionView version = strategyCatalog
                     .findLatestVersion(algorithmId, userId)
-                    .filter(v -> strategyCatalog.canAccess(v.versionId(), userId))
                     .orElseThrow(() -> new NotFoundException("Algorithm not found"));
             versions.add(version);
-            Map<String, Double> params =
-                    hasSizePctParam(version.paramDeclsJson()) ? Map.of("size_pct", sizePct) : Map.of();
+            Map<String, Double> params = resolveAlgoParams(json, version.paramDeclsJson(), sizePct);
             inputs.add(new AlgorithmInput(version.versionId().toString(), version.source(), params));
         }
 
@@ -101,16 +99,28 @@ class SessionCompareService {
         return algorithmIds;
     }
 
-    private boolean hasSizePctParam(@Nullable String raw) {
+    static Map<String, Double> resolveAlgoParams(ObjectMapper json, @Nullable String raw, double sizePct) {
         if (raw == null || raw.isBlank() || "[]".equals(raw.strip())) {
-            return false;
+            return Map.of();
         }
         StrategyParamDecl[] decls = json.readValue(raw, StrategyParamDecl[].class);
         for (StrategyParamDecl decl : decls) {
             if ("size_pct".equals(decl.name())) {
-                return true;
+                Double min = decl.rangeMin();
+                Double max = decl.rangeMax();
+                if (min != null && max != null && min > max) {
+                    return Map.of();
+                }
+                double value = sizePct;
+                if (min != null && value < min) {
+                    value = min;
+                }
+                if (max != null && value > max) {
+                    value = max;
+                }
+                return Map.of("size_pct", value);
             }
         }
-        return false;
+        return Map.of();
     }
 }
