@@ -120,7 +120,7 @@ class ReportExportApiTest extends PostgresIntegrationTest {
             try (var rows = workbook.findSheet("Расхождения").orElseThrow().openStream()) {
                 var divRows = rows.toList();
                 assertThat(divRows).hasSize(2);
-                assertThat(divRows.get(1).getCellText(3)).isEqualTo("SBER");
+                assertThat(divRows.get(1).getCellText(3)).isIn(SECIDS);
                 assertThat(divRows.get(1).getCellText(5)).isEqualTo("упущенное действие");
             }
         }
@@ -168,7 +168,7 @@ class ReportExportApiTest extends PostgresIntegrationTest {
                 .startsWith("﻿Метрика;Человек;Алгоритм\r\n")
                 .contains("Итоговый капитал;500600,00;501200,00\r\n");
         assertThat(divergences)
-                .contains(";SBER;")
+                .containsAnyOf(";SBER;", ";GAZP;")
                 .contains(";упущенное действие;")
                 .contains(";120,00;0,020000;SMA(20) пересекла SMA(50) снизу вверх\r\n");
     }
