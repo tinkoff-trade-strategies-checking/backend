@@ -144,7 +144,7 @@ class WorkshopCatalogQueries {
         }
 
         long total = queryLong(SUMMARY_CTE + "SELECT COUNT(*) " + SUMMARY_FROM + where, params);
-        int offset = (page - 1) * pageSize;
+        long offset = (long) (page - 1) * pageSize;
         String selectItems = SUMMARY_CTE + SUMMARY_SELECT + SUMMARY_FROM + where + " ORDER BY " + orderBy
                 + " LIMIT :limit OFFSET :offset";
 

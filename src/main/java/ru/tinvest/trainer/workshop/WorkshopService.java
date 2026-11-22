@@ -408,8 +408,7 @@ class WorkshopService {
         for (int attempt = 1; attempt <= 1000; attempt++) {
             String suffix = attempt == 1 ? " (копия)" : " (копия " + attempt + ")";
             int maxBase = MAX_NAME_LENGTH - suffix.length();
-            String prefix =
-                    baseName.length() > maxBase ? baseName.substring(0, maxBase).stripTrailing() : baseName;
+            String prefix = truncateUtf16Safe(baseName, maxBase).stripTrailing();
             String candidate = prefix + suffix;
             boolean exists = jdbc.sql("""
                             SELECT EXISTS(
@@ -495,7 +494,19 @@ class WorkshopService {
         if (trimmed.isEmpty()) {
             return "Автор";
         }
-        return trimmed.length() > 120 ? trimmed.substring(0, 120) : trimmed;
+        return truncateUtf16Safe(trimmed, 120);
+    }
+
+    /** Обрезает строку не длиннее {@code maxLen} UTF-16 единиц, не разрывая суррогатную пару на границе. */
+    static String truncateUtf16Safe(String s, int maxLen) {
+        if (maxLen <= 0) {
+            return "";
+        }
+        if (s.length() <= maxLen) {
+            return s;
+        }
+        int limit = Character.isHighSurrogate(s.charAt(maxLen - 1)) ? maxLen - 1 : maxLen;
+        return s.substring(0, limit);
     }
 
     private static Map<String, Double> validateOverrides(@Nullable Map<String, Double> raw) {

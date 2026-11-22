@@ -92,13 +92,13 @@ class HistoryController {
             total = found.total();
             items = mapRuns(found.items());
         } else {
-            int need = Math.min(page * pageSize, 2000);
-            SessionArchive.HistoryPage sessionsPage =
-                    sessionArchive.history(new SessionArchive.HistoryFilter(blindOnly, status, regimeFilter, 1, need));
+            long need = Math.min((long) page * pageSize, 2000L);
+            SessionArchive.HistoryPage sessionsPage = sessionArchive.history(
+                    new SessionArchive.HistoryFilter(blindOnly, status, regimeFilter, 1, (int) need));
             RunArchive.HistoryPage runsPage =
-                    runArchive.history(new RunArchive.HistoryFilter(blindOnly, status, regimeFilter, 1, need));
+                    runArchive.history(new RunArchive.HistoryFilter(blindOnly, status, regimeFilter, 1, (int) need));
             total = sessionsPage.total() + runsPage.total();
-            int offset = (page - 1) * pageSize;
+            long offset = (long) (page - 1) * pageSize;
             if (offset >= total || offset >= need) {
                 items = List.of();
             } else {
@@ -118,9 +118,10 @@ class HistoryController {
                 merged.sort(Comparator.comparing(SortableEntry::createdAt)
                         .reversed()
                         .thenComparing(SortableEntry::id, Comparator.reverseOrder()));
-                int end = Math.min(offset + pageSize, merged.size());
-                items = new ArrayList<>(end - offset);
-                for (int i = offset; i < end; i++) {
+                int start = (int) offset;
+                int end = Math.min(start + pageSize, merged.size());
+                items = new ArrayList<>(end - start);
+                for (int i = start; i < end; i++) {
                     items.add(merged.get(i).body());
                 }
             }

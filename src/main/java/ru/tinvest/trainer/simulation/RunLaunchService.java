@@ -57,7 +57,9 @@ class RunLaunchService {
                 .orElseThrow(() -> new NotFoundException("Strategy version not found"));
 
         StrategyCheck check = worker.checkStrategy(version.source(), paramOverrides);
-        if (check.lookaheadLevel() == CheckLevel.ERROR) {
+        boolean hasError = check.lookaheadLevel() == CheckLevel.ERROR
+                || check.diagnostics().stream().anyMatch(d -> d.level() == CheckLevel.ERROR);
+        if (hasError) {
             throw new RunStrategyInvalidException(check);
         }
 

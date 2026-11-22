@@ -19,6 +19,10 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.zip.ZipEntry;
@@ -119,6 +123,12 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
     @Autowired
     private RunEvents runEvents;
 
+    @Autowired
+    private RunQueue runQueue;
+
+    @Autowired
+    private Runs runs;
+
     private UserSession userA;
     private UserSession userB;
 
@@ -193,6 +203,17 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.lookaheadLevel").value("ERROR"));
 
         worker.checkLevel = CheckLevel.OK;
+        worker.checkDiagnostics = List.of(
+                new StrategyDiagnostic("E-TYPE", CheckLevel.ERROR, 1, 1, 1, 5, "Bad param override", List.of()));
+        mockMvc.perform(withAuth(userA, post("/api/v1/runs"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRunBody("custom", false)))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("STRATEGY_INVALID"))
+                .andExpect(jsonPath("$.lookaheadLevel").value("OK"))
+                .andExpect(jsonPath("$.diagnostics[0].code").value("E-TYPE"));
+
+        worker.checkDiagnostics = List.of();
         planner.rejectWith = new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", 6000, 5000);
         mockMvc.perform(withAuth(userA, post("/api/v1/runs"))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -418,6 +439,113 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
         assertThat(kinds).containsExactlyInAnyOrder("session", "algo_run");
     }
 
+    @Test
+    void concurrentSubscribeAndUnsubscribeDoNotDetachNewSubscriber() throws Exception {
+        UUID runId = createRun(userA, false, "custom");
+        awaitFinished(userA, runId);
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 50; round++) {
+                RunEvents.Sink noopSink = new RunEvents.Sink() {
+                    @Override
+                    public void send(long eventId, String type, String data) {}
+
+                    @Override
+                    public void ping() {}
+
+                    @Override
+                    public void abort() {}
+                };
+                RunEvents.Subscription existing = runEvents.subscribe(runId, null, noopSink);
+
+                CountDownLatch delivered = new CountDownLatch(1);
+                List<String> receivedTypes = new CopyOnWriteArrayList<>();
+                RunEvents.Sink survivorSink = new RunEvents.Sink() {
+                    @Override
+                    public void send(long eventId, String type, String data) {
+                        receivedTypes.add(type);
+                        delivered.countDown();
+                    }
+
+                    @Override
+                    public void ping() {}
+
+                    @Override
+                    public void abort() {}
+                };
+
+                CyclicBarrier barrier = new CyclicBarrier(2);
+                Future<?> unsubFuture = pool.submit(() -> {
+                    barrier.await(5, TimeUnit.SECONDS);
+                    existing.close();
+                    return null;
+                });
+                Future<RunEvents.Subscription> subFuture = pool.submit(() -> {
+                    barrier.await(5, TimeUnit.SECONDS);
+                    return runEvents.subscribe(runId, 0L, survivorSink);
+                });
+
+                unsubFuture.get(5, TimeUnit.SECONDS);
+                RunEvents.Subscription survivor = subFuture.get(5, TimeUnit.SECONDS);
+                try {
+                    assertThat(runEvents.subscribers(runId)).isEqualTo(1);
+                    runEvents.notifySubscribers(runId);
+                    assertThat(delivered.await(5, TimeUnit.SECONDS)).isTrue();
+                    assertThat(receivedTypes).isNotEmpty();
+                } finally {
+                    survivor.close();
+                }
+                assertThat(runEvents.subscribers(runId)).isZero();
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void restartFailsAbandonedQueuedAndRunningRuns() throws Exception {
+        LaunchPlan plan = ((LaunchPlan) planner.plan(new LaunchRequest(
+                20,
+                Timeframe.D1,
+                ru.tinvest.trainer.marketdata.Regime.CALM,
+                StartMode.CUSTOM,
+                START,
+                null,
+                List.of(Papers.id("SBER")),
+                new BigDecimal("1000000.00"))));
+
+        UUID queuedRunId = runs.createPlanned(
+                userA.id(), StrategyCatalog.SYSTEM_VERSION_ID, StartMode.CUSTOM, 20, false, plan, Map.of());
+        UUID runningRunId = runs.createPlanned(
+                userA.id(), StrategyCatalog.SYSTEM_VERSION_ID, StartMode.CUSTOM, 20, false, plan, Map.of());
+        assertThat(runs.markRunning(runningRunId)).isTrue();
+
+        UUID completedRunId = createRun(userA, false, "custom");
+        awaitFinished(userA, completedRunId);
+
+        runQueue.failAbandonedAfterRestart();
+
+        for (UUID abandonedId : List.of(queuedRunId, runningRunId)) {
+            mockMvc.perform(withAuth(userA, get("/api/v1/runs/" + abandonedId)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("failed"))
+                    .andExpect(jsonPath("$.errorCode").value("SERVICE_UNAVAILABLE"))
+                    .andExpect(jsonPath("$.finishedAt").isNotEmpty());
+
+            List<String> eventTypes = jdbc.sql(
+                            "SELECT type FROM simulation.run_event WHERE run_id = :id ORDER BY event_id")
+                    .param("id", abandonedId)
+                    .query(String.class)
+                    .list();
+            assertThat(eventTypes).contains("run_failed");
+        }
+
+        mockMvc.perform(withAuth(userA, get("/api/v1/runs/" + completedRunId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("completed"));
+    }
+
     private UUID createRun(UserSession user, boolean blind, String startMode) throws Exception {
         MvcResult result = mockMvc.perform(withAuth(user, post("/api/v1/runs"))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -484,7 +612,7 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
                 .andReturn();
         MockHttpSession session = (MockHttpSession) result.getRequest().getSession(false);
         Cookie xsrf = result.getResponse().getCookie("XSRF-TOKEN");
-        return new UserSession(session, xsrf.getValue());
+        return new UserSession(id, session, xsrf.getValue());
     }
 
     private static MockHttpServletRequestBuilder withAuth(UserSession user, MockHttpServletRequestBuilder builder) {
@@ -493,7 +621,7 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
                 .header("X-XSRF-TOKEN", user.xsrf());
     }
 
-    private record UserSession(MockHttpSession session, String xsrf) {}
+    private record UserSession(UUID id, MockHttpSession session, String xsrf) {}
 
     @TestConfiguration
     static class TestWiring {
@@ -567,6 +695,7 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
     static final class FakeRunWorker implements SimulationWorkerClient {
 
         volatile CheckLevel checkLevel = CheckLevel.OK;
+        volatile List<StrategyDiagnostic> checkDiagnostics = List.of();
         volatile StrategyRunStatus runStatus = StrategyRunStatus.COMPLETED;
         volatile boolean failRunWithUnavailable;
         volatile long nextDigest = 123_456L;
@@ -575,6 +704,7 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
 
         void reset() {
             checkLevel = CheckLevel.OK;
+            checkDiagnostics = List.of();
             runStatus = StrategyRunStatus.COMPLETED;
             failRunWithUnavailable = false;
             nextDigest = 123_456L;
@@ -617,9 +747,12 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
 
         @Override
         public StrategyCheck checkStrategy(String source, Map<String, Double> paramOverrides) {
-            List<StrategyDiagnostic> diags = checkLevel == CheckLevel.ERROR
-                    ? List.of(new StrategyDiagnostic("E001", CheckLevel.ERROR, 1, 1, 1, 5, "Bad DSL", List.of()))
-                    : List.of();
+            List<StrategyDiagnostic> diags = !checkDiagnostics.isEmpty()
+                    ? checkDiagnostics
+                    : (checkLevel == CheckLevel.ERROR
+                            ? List.of(
+                                    new StrategyDiagnostic("E001", CheckLevel.ERROR, 1, 1, 1, 5, "Bad DSL", List.of()))
+                            : List.of());
             return new StrategyCheck(checkLevel, diags, List.of());
         }
 

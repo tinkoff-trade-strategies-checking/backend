@@ -365,6 +365,16 @@ class WorkshopApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.totalPages").value(3))
                 .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.items[0].id").value(warnId.toString()));
+
+        // Большой номер страницы не переполняет int в отрицательный OFFSET
+        mockMvc.perform(get("/api/v1/workshop/algorithms")
+                        .session(authorA.session())
+                        .param("page", "30000000")
+                        .param("pageSize", "100"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.page").value(30_000_000))
+                .andExpect(jsonPath("$.pageSize").value(100))
+                .andExpect(jsonPath("$.items.length()").value(0));
     }
 
     @Test
@@ -459,6 +469,27 @@ class WorkshopApiTest extends PostgresIntegrationTest {
         mockMvc.perform(get("/api/v1/workshop/algorithms/{id}/draft", fork1Id).session(authorB.session()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.forkedFrom.versionId").value(origVersionId.toString()));
+    }
+
+    @Test
+    void forkTruncatesLongNameWithoutSplittingSurrogatePair() throws Exception {
+        // MAX_NAME_LENGTH (80) - " (копия)" (8) = 72; суррогатная пара на позициях 71-72 не должна рваться
+        String prefix = "a".repeat(71);
+        String nameWithBoundarySurrogate = prefix + "\uD83D\uDE80";
+        UUID origId =
+                UUID.fromString(json.readTree(createDraft(authorA, nameWithBoundarySurrogate, "Описание", "CLEAN_DSL")
+                                .getResponse()
+                                .getContentAsString())
+                        .get("strategyId")
+                        .asString());
+        assertThat(publish(authorA, origId, "v1").getResponse().getStatus()).isEqualTo(201);
+
+        mockMvc.perform(post("/api/v1/workshop/algorithms/{id}/fork", origId)
+                        .session(authorB.session())
+                        .cookie(authorB.xsrf())
+                        .header("X-XSRF-TOKEN", authorB.xsrf().getValue()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.name").value(prefix + " (копия)"));
     }
 
     private record UserSession(UUID id, MockHttpSession session, Cookie xsrf) {}
