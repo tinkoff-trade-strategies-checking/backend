@@ -1,6 +1,7 @@
 package ru.tinvest.trainer.workshop;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -490,6 +491,136 @@ class WorkshopApiTest extends PostgresIntegrationTest {
                         .header("X-XSRF-TOKEN", authorB.xsrf().getValue()))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.name").value(prefix + " (копия)"));
+    }
+
+    @Test
+    void softDeleteDraftHidesFromCatalogAllowsNameReuseAndRejectsFurtherEdits() throws Exception {
+        String tag = UUID.randomUUID().toString().substring(0, 8);
+        String name = "DraftDelete-" + tag;
+        UUID draftId = UUID.fromString(json.readTree(createDraft(authorA, name, "Черновик", "CLEAN_DSL")
+                        .getResponse()
+                        .getContentAsString())
+                .get("strategyId")
+                .asString());
+
+        // Чужой пользователь не может удалить (404), системный — 409
+        mockMvc.perform(delete("/api/v1/workshop/algorithms/{id}", draftId)
+                        .session(authorB.session())
+                        .cookie(authorB.xsrf())
+                        .header("X-XSRF-TOKEN", authorB.xsrf().getValue()))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(delete("/api/v1/workshop/algorithms/{id}", StrategyCatalog.SYSTEM_STRATEGY_ID)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue()))
+                .andExpect(status().isConflict());
+
+        // Владелец удаляет черновик -> 204
+        mockMvc.perform(delete("/api/v1/workshop/algorithms/{id}", draftId)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue()))
+                .andExpect(status().isNoContent());
+
+        // Повторное удаление -> 404
+        mockMvc.perform(delete("/api/v1/workshop/algorithms/{id}", draftId)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue()))
+                .andExpect(status().isNotFound());
+
+        // Карточка, черновик, правка, публикация, смена видимости больше не доступны
+        mockMvc.perform(get("/api/v1/workshop/algorithms/{id}", draftId).session(authorA.session()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("NOT_FOUND"));
+        mockMvc.perform(get("/api/v1/workshop/algorithms/{id}/draft", draftId).session(authorA.session()))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(put("/api/v1/workshop/algorithms/{id}/draft", draftId)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Other\"}"))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(post("/api/v1/workshop/algorithms/{id}/publish", draftId)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue()))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(patch("/api/v1/workshop/algorithms/{id}/visibility", draftId)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"visibility\":\"hidden\"}"))
+                .andExpect(status().isNotFound());
+
+        // Нет в каталоге и фильтре mineOnly
+        mockMvc.perform(get("/api/v1/workshop/algorithms")
+                        .session(authorA.session())
+                        .param("mineOnly", "true")
+                        .param("search", name))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(0));
+
+        // Можно заново создать стратегию с тем же именем
+        MvcResult recreated = createDraft(authorA, name, "Новый черновик", "CLEAN_DSL");
+        assertThat(recreated.getResponse().getStatus()).isEqualTo(201);
+        assertThat(json.readTree(recreated.getResponse().getContentAsString())
+                        .get("strategyId")
+                        .asString())
+                .isNotEqualTo(draftId.toString());
+    }
+
+    @Test
+    void softDeletePublishedPreservesImmutableVersionsForInv5ButBlocksNewLaunchesAndCatalog() throws Exception {
+        String tag = UUID.randomUUID().toString().substring(0, 8);
+        String name = "PublishedDelete-" + tag;
+        UUID strategyId = UUID.fromString(json.readTree(createDraft(authorA, name, "Публичный", "CLEAN_DSL")
+                        .getResponse()
+                        .getContentAsString())
+                .get("strategyId")
+                .asString());
+        UUID versionId = UUID.fromString(
+                json.readTree(publish(authorA, strategyId, "v1").getResponse().getContentAsString())
+                        .get("id")
+                        .asString());
+
+        // Автор виден в списке авторов до удаления
+        mockMvc.perform(get("/api/v1/workshop/algorithms").session(authorB.session()))
+                .andExpect(status().isOk())
+                .andExpect(
+                        jsonPath("$.authors[?(@.id=='" + authorA.id() + "')]").isNotEmpty());
+
+        mockMvc.perform(delete("/api/v1/workshop/algorithms/{id}", strategyId)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue()))
+                .andExpect(status().isNoContent());
+
+        // Пропал из каталога и из списка авторов
+        mockMvc.perform(get("/api/v1/workshop/algorithms")
+                        .session(authorB.session())
+                        .param("search", name))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(0))
+                .andExpect(
+                        jsonPath("$.authors[?(@.id=='" + authorA.id() + "')]").isEmpty());
+
+        // Форк удалённой стратегии недоступен даже владельцу
+        mockMvc.perform(post("/api/v1/workshop/algorithms/{id}/fork", strategyId)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue()))
+                .andExpect(status().isNotFound());
+
+        // Новые запуски запрещены, но неизменяемая версия (INV-5) остаётся доступной для отчётов и повторов
+        assertThat(catalog.canAccess(versionId, authorA.id())).isFalse();
+        assertThat(catalog.canAccess(versionId, authorB.id())).isFalse();
+        assertThat(catalog.canAccess(versionId, null)).isFalse();
+        assertThat(catalog.findLatestVersion(strategyId, authorA.id())).isEmpty();
+        assertThat(catalog.findLatestVersion(strategyId, null)).isEmpty();
+        assertThat(catalog.findVersion(versionId)).isPresent();
     }
 
     private record UserSession(UUID id, MockHttpSession session, Cookie xsrf) {}

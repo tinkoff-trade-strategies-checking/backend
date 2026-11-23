@@ -286,10 +286,37 @@ class WorkshopService {
             throw new InvalidRequestException("visibility must be public or hidden");
         }
         UUID ownerId = currentUser.requireId();
+        StrategyMeta meta = requireNonDeletedOwnedOrSystem(strategyId, ownerId);
+        if (meta.isSystem()) {
+            throw WorkshopConflictException.systemAlgorithmImmutable();
+        }
+
+        jdbc.sql("""
+                        UPDATE workshop.strategy
+                        SET visibility = :vis, updated_at = now()
+                        WHERE id = :id AND visibility <> 'deleted'
+                        """).param("vis", visibility).param("id", strategyId).update();
+    }
+
+    void deleteAlgorithm(UUID strategyId) {
+        UUID ownerId = currentUser.requireId();
+        StrategyMeta meta = requireNonDeletedOwnedOrSystem(strategyId, ownerId);
+        if (meta.isSystem()) {
+            throw WorkshopConflictException.systemAlgorithmImmutable();
+        }
+
+        jdbc.sql("""
+                        UPDATE workshop.strategy
+                        SET visibility = 'deleted', updated_at = now()
+                        WHERE id = :id AND visibility <> 'deleted'
+                        """).param("id", strategyId).update();
+    }
+
+    private StrategyMeta requireNonDeletedOwnedOrSystem(UUID strategyId, UUID ownerId) {
         StrategyMeta meta = jdbc.sql("""
                         SELECT id, owner_id, is_system
                         FROM workshop.strategy
-                        WHERE id = :id
+                        WHERE id = :id AND visibility <> 'deleted'
                         """)
                 .param("id", strategyId)
                 .query((rs, n) -> new StrategyMeta(
@@ -299,18 +326,10 @@ class WorkshopService {
                 .optional()
                 .orElseThrow(() -> new NotFoundException("Algorithm not found"));
 
-        if (meta.isSystem()) {
-            throw WorkshopConflictException.systemAlgorithmImmutable();
-        }
-        if (!Objects.equals(meta.ownerId(), ownerId)) {
+        if (!meta.isSystem() && !Objects.equals(meta.ownerId(), ownerId)) {
             throw new NotFoundException("Algorithm not found");
         }
-
-        jdbc.sql("""
-                        UPDATE workshop.strategy
-                        SET visibility = :vis, updated_at = now()
-                        WHERE id = :id
-                        """).param("vis", visibility).param("id", strategyId).update();
+        return meta;
     }
 
     private DraftView loadOwnedDraft(UUID strategyId, UUID ownerId) {
@@ -336,7 +355,7 @@ class WorkshopService {
                         LEFT JOIN workshop.strategy_draft d ON d.strategy_id = s.id
                         LEFT JOIN workshop.strategy_version fv ON fv.id = s.forked_from_version_id
                         LEFT JOIN workshop.strategy fs ON fs.id = fv.strategy_id
-                        WHERE s.id = :id AND s.owner_id = :owner AND NOT s.is_system
+                        WHERE s.id = :id AND s.owner_id = :owner AND NOT s.is_system AND s.visibility <> 'deleted'
                         """)
                 .param("id", strategyId)
                 .param("owner", ownerId)
@@ -350,7 +369,7 @@ class WorkshopService {
                         SELECT COALESCE(d.source, '') AS source
                         FROM workshop.strategy s
                         LEFT JOIN workshop.strategy_draft d ON d.strategy_id = s.id
-                        WHERE s.id = :id AND s.owner_id = :owner AND NOT s.is_system
+                        WHERE s.id = :id AND s.owner_id = :owner AND NOT s.is_system AND s.visibility <> 'deleted'
                         """)
                 .param("id", strategyId)
                 .param("owner", ownerId)
@@ -363,7 +382,7 @@ class WorkshopService {
         return jdbc.sql("""
                         SELECT name, description
                         FROM workshop.strategy
-                        WHERE id = :id AND owner_id = :owner AND NOT is_system
+                        WHERE id = :id AND owner_id = :owner AND NOT is_system AND visibility <> 'deleted'
                         FOR UPDATE
                         """)
                 .param("id", strategyId)
@@ -386,6 +405,7 @@ class WorkshopService {
                 FROM workshop.strategy s
                 JOIN workshop.strategy_version v ON v.strategy_id = s.id
                 WHERE s.id = :id
+                  AND s.visibility <> 'deleted'
                   AND (s.is_system OR s.visibility = 'public' OR s.owner_id = :viewerId)
                 """ + versionFilter + " ORDER BY v.version DESC LIMIT 1";
         JdbcClient.StatementSpec spec = jdbc.sql(sql).param("id", strategyId).param("viewerId", viewerId);
@@ -413,7 +433,7 @@ class WorkshopService {
             boolean exists = jdbc.sql("""
                             SELECT EXISTS(
                                 SELECT 1 FROM workshop.strategy
-                                WHERE owner_id = :owner AND lower(name) = lower(:name)
+                                WHERE owner_id = :owner AND lower(name) = lower(:name) AND visibility <> 'deleted'
                             )
                             """)
                     .param("owner", ownerId)

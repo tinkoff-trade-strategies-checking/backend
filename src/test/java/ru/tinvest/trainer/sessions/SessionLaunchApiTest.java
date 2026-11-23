@@ -398,6 +398,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
     void launchOptionsFollowContract() throws Exception {
         planner.maxDurations.put(Timeframe.H1, 357);
         planner.maxDurations.put(Timeframe.D1, 5000);
+        planner.archiveDateRange = new LaunchPlanner.DateRange(LocalDate.of(2024, 1, 3), LocalDate.of(2024, 12, 30));
 
         mockMvc.perform(get("/api/v1/launch/options").session(session))
                 .andExpect(status().isOk())
@@ -417,7 +418,9 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.minPapers").value(1))
                 .andExpect(jsonPath("$.maxPapers").value(5))
                 .andExpect(jsonPath("$.executionRules.maxBars").value(5000))
-                .andExpect(jsonPath("$.executionRules.commissionPct").value("0.3"));
+                .andExpect(jsonPath("$.executionRules.commissionPct").value("0.3"))
+                .andExpect(jsonPath("$.archiveFrom").value("2024-01-03"))
+                .andExpect(jsonPath("$.archiveTo").value("2024-12-30"));
     }
 
     @Test
@@ -685,6 +688,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
         List<PlannedPaper> papers = List.of();
         List<Timeframe> timeframes = List.of(Timeframe.D1);
         java.util.Map<Timeframe, Integer> maxDurations = new java.util.LinkedHashMap<>();
+        LaunchPlanner.DateRange archiveDateRange;
 
         void reset() {
             result = null;
@@ -693,6 +697,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
             papers = List.of();
             timeframes = List.of(Timeframe.D1);
             maxDurations = new java.util.LinkedHashMap<>();
+            archiveDateRange = null;
         }
 
         @Override
@@ -722,6 +727,11 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
         @Override
         public java.util.Map<Timeframe, Integer> maxDurations(UUID snapshotId) {
             return maxDurations;
+        }
+
+        @Override
+        public LaunchPlanner.DateRange archiveDateRange(UUID snapshotId) {
+            return archiveDateRange;
         }
     }
 

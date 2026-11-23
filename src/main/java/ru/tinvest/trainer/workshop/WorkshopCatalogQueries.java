@@ -124,7 +124,8 @@ class WorkshopCatalogQueries {
         params.put("viewerId", viewerId);
         params.put("systemAuthor", StrategyCatalog.SYSTEM_AUTHOR_ID);
 
-        StringBuilder where = new StringBuilder(" WHERE (s.visibility = 'public' OR s.owner_id = :viewerId)");
+        StringBuilder where = new StringBuilder(
+                " WHERE s.visibility <> 'deleted' AND (s.visibility = 'public' OR s.owner_id = :viewerId)");
         if (mineOnly) {
             where.append(" AND s.owner_id = :viewerId");
         } else {
@@ -159,7 +160,8 @@ class WorkshopCatalogQueries {
 
     AlgorithmSummaryView getSummary(UUID strategyId) {
         UUID viewerId = currentUser.requireId();
-        String sql = SUMMARY_CTE + SUMMARY_SELECT + SUMMARY_FROM + " WHERE s.id = :id AND s.owner_id = :viewerId";
+        String sql = SUMMARY_CTE + SUMMARY_SELECT + SUMMARY_FROM
+                + " WHERE s.id = :id AND s.owner_id = :viewerId AND s.visibility <> 'deleted'";
         List<AlgorithmSummaryView> found = querySummaries(
                 sql,
                 Map.of("id", strategyId, "viewerId", viewerId, "systemAuthor", StrategyCatalog.SYSTEM_AUTHOR_ID),
@@ -174,6 +176,7 @@ class WorkshopCatalogQueries {
         UUID viewerId = currentUser.requireId();
         String sql = SUMMARY_CTE + SUMMARY_SELECT + SUMMARY_FROM + """
                  WHERE s.id = :id
+                   AND s.visibility <> 'deleted'
                    AND (s.owner_id = :viewerId OR (s.visibility = 'public' AND lv.version IS NOT NULL))
                 """;
         List<AlgorithmSummaryView> found = querySummaries(
@@ -246,7 +249,8 @@ class WorkshopCatalogQueries {
                                s.is_system,
                                lower(s.author_name) AS author_sort
                         FROM workshop.strategy s
-                        WHERE (s.visibility = 'public' OR s.owner_id = :viewerId)
+                        WHERE s.visibility <> 'deleted'
+                          AND (s.visibility = 'public' OR s.owner_id = :viewerId)
                           AND EXISTS (SELECT 1 FROM workshop.strategy_version v WHERE v.strategy_id = s.id)
                         ORDER BY s.is_system DESC, author_sort ASC, author_id ASC
                         """)

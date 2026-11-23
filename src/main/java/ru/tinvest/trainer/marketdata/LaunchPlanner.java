@@ -1,6 +1,7 @@
 package ru.tinvest.trainer.marketdata;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -72,4 +73,12 @@ public interface LaunchPlanner {
      * {@code TOO_MANY_BARS} при запуске. Нет данных за день у шага — {@code max-bars}.
      */
     Map<Timeframe, Integer> maxDurations(@Nullable UUID snapshotId);
+
+    /** Границы доступных торговых дней архива. */
+    record DateRange(LocalDate from, LocalDate to) {}
+
+    /** Диапазон дат торговых дней архива; {@code null} — если торговых дней в снапшоте нет. */
+    default @Nullable DateRange archiveDateRange(@Nullable UUID snapshotId) {
+        return null;
+    }
 }
