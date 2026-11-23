@@ -1,10 +1,12 @@
 package ru.tinvest.trainer.marketdata;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -38,6 +40,7 @@ class LaunchCatalogController {
         MarketdataProperties.Execution e = properties.execution();
         Map<String, Integer> maxDurations = new LinkedHashMap<>();
         planner.maxDurations(null).forEach((timeframe, days) -> maxDurations.put(timeframe.code(), days));
+        LaunchPlanner.DateRange archiveRange = planner.archiveDateRange(null);
         return new LaunchOptionsResponse(
                 LaunchPlanner.DURATIONS.stream().sorted().toList(),
                 LaunchPlanner.DEFAULT_DURATION,
@@ -60,7 +63,9 @@ class LaunchCatalogController {
                         e.spreadPct(),
                         e.slippageKappa(),
                         e.liquidityLimitPct(),
-                        properties.maxBars()));
+                        properties.maxBars()),
+                archiveRange == null ? null : archiveRange.from(),
+                archiveRange == null ? null : archiveRange.to());
     }
 
     @GetMapping("/papers")
@@ -98,7 +103,9 @@ class LaunchCatalogController {
             int minPapers,
             int maxPapers,
             int defaultPaperCount,
-            ExecutionRules executionRules) {}
+            ExecutionRules executionRules,
+            @Nullable LocalDate archiveFrom,
+            @Nullable LocalDate archiveTo) {}
 
     record LaunchPaper(UUID id, String sector, String ticker, String name) {}
 }

@@ -9,6 +9,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -103,6 +104,12 @@ class WorkshopController {
     AlgorithmSummaryView changeVisibility(@PathVariable UUID id, @RequestBody VisibilityRequest body) {
         service.changeVisibility(id, body.visibility());
         return queries.getSummary(id);
+    }
+
+    @DeleteMapping("/algorithms/{id}")
+    ResponseEntity<Void> delete(@PathVariable UUID id) {
+        service.deleteAlgorithm(id);
+        return ResponseEntity.noContent().build();
     }
 
     @ExceptionHandler(WorkshopConflictException.class)

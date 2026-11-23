@@ -17,7 +17,8 @@ final class WorkshopConflictException extends RuntimeException {
     }
 
     static WorkshopConflictException systemAlgorithmImmutable() {
-        return new WorkshopConflictException(ErrorCode.CONFLICT, "System platform algorithm cannot be hidden");
+        return new WorkshopConflictException(
+                ErrorCode.CONFLICT, "System platform algorithm cannot be hidden or deleted");
     }
 
     ErrorCode code() {

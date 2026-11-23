@@ -12,6 +12,7 @@ import ru.tinvest.trainer.PostgresIntegrationTest;
 import ru.tinvest.trainer.api.NotFoundException;
 import ru.tinvest.trainer.marketdata.Snapshot;
 import ru.tinvest.trainer.marketdata.Snapshots;
+import ru.tinvest.trainer.workshop.StrategyCatalog;
 import ru.tinvest.trainer.workshop.StrategyVersion;
 import ru.tinvest.trainer.workshop.StrategyVersions;
 
@@ -29,6 +30,9 @@ class RunRepeatTest extends PostgresIntegrationTest {
 
     @Autowired
     private Snapshots snapshots;
+
+    @Autowired
+    private StrategyCatalog strategyCatalog;
 
     @Test
     void repeatUsesSameVersions() {
@@ -103,5 +107,32 @@ class RunRepeatTest extends PostgresIntegrationTest {
                         .update())
                 .isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("INV-5");
+    }
+
+    @Test
+    void repeatAndFindVersionContinueWorkingAfterStrategySoftDelete() {
+        UUID ownerId = UUID.randomUUID();
+        UUID strategyId = UUID.randomUUID();
+        jdbc.sql("""
+                        INSERT INTO workshop.strategy (id, owner_id, author_name, is_system, name, description, visibility)
+                        VALUES (:id, :owner, 'author', FALSE, :name, '', 'public')
+                        """)
+                .param("id", strategyId)
+                .param("owner", ownerId)
+                .param("name", "SoftDel-" + strategyId)
+                .update();
+        StrategyVersion v1 = versions.publish(strategyId, "buy()", "{}");
+        Snapshot snap = snapshots.register("snap-" + UUID.randomUUID(), "");
+        Run original = runs.create(v1.id(), snap.id());
+
+        jdbc.sql("UPDATE workshop.strategy SET visibility = 'deleted' WHERE id = :id")
+                .param("id", strategyId)
+                .update();
+
+        assertThat(strategyCatalog.findVersion(v1.id())).isPresent();
+        assertThat(strategyCatalog.canAccess(v1.id(), ownerId)).isFalse();
+        assertThat(strategyCatalog.findLatestVersion(strategyId, ownerId)).isEmpty();
+        Run repeated = runs.repeat(original.id());
+        assertThat(repeated.strategyVersionId()).isEqualTo(v1.id());
     }
 }

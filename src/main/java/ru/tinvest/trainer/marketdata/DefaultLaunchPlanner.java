@@ -164,6 +164,16 @@ class DefaultLaunchPlanner implements LaunchPlanner {
         return result;
     }
 
+    @Override
+    public @Nullable DateRange archiveDateRange(@Nullable UUID snapshotId) {
+        String key = resolveSnapshot(snapshotId).snapshotKey();
+        List<LocalDate> days = archive.tradingDays(key);
+        if (days.isEmpty()) {
+            return null;
+        }
+        return new DateRange(days.getFirst(), days.getLast());
+    }
+
     private record Context(
             LaunchRequest request, Snapshot snapshot, int sourceInterval, int length, List<LocalDate> days) {}
 

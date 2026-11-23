@@ -684,4 +684,16 @@ class LaunchPlannerTest {
             return maxPerDay;
         }
     }
+
+    @Test
+    void archiveDateRangeReturnsFirstAndLastTradingDayOrNullWhenEmpty() {
+        LaunchPlanner.DateRange range = planner.archiveDateRange(null);
+        assertThat(range).isNotNull();
+        assertThat(range.from()).isEqualTo(calendar.getFirst());
+        assertThat(range.to()).isEqualTo(calendar.getLast());
+        assertThat(range.from()).isBeforeOrEqualTo(range.to());
+
+        calendar.clear();
+        assertThat(planner.archiveDateRange(null)).isNull();
+    }
 }
