@@ -30,7 +30,9 @@ import ru.tinvest.trainer.marketdata.Snapshot;
             // повтор упавшей сборки отчёта: в тестах секунда вместо минуты
             "analysis.report-build.retry-interval=1s",
             // пул сборки отчётов: один поток (соединение Postgres на поток)
-            "analysis.report-build.threads=1"
+            "analysis.report-build.threads=1",
+            // отдельный случайный порт управления, чтобы кэшированные контексты не конфликтовали на 8081
+            "management.server.port=0"
         })
 public abstract class PostgresIntegrationTest {
 
