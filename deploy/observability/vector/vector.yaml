@@ -1,0 +1,62 @@
+# Конфигурация Vector: сбор JSON-логов Docker-контейнеров проекта `trainer`
+# и отправка в VictoriaLogs по внутреннему HTTP JSONLine API.
+
+data_dir: /var/lib/vector
+
+sources:
+  docker_logs:
+    type: docker_logs
+    docker_host: /var/run/docker.sock
+    include_labels:
+      - com.docker.compose.project=trainer
+    # Исключаем сам VictoriaLogs, чтобы избежать петли логирования
+    exclude_containers:
+      - victoria-logs
+
+transforms:
+  enrich_logs:
+    type: remap
+    inputs:
+      - docker_logs
+    source: |
+      .compose_service = string!(.label."com.docker.compose.service" ?? "unknown")
+      .compose_project = string!(.label."com.docker.compose.project" ?? "trainer")
+      .container_name = replace(string!(.container_name ?? "unknown"), r'^/', "")
+      .stream = string!(.stream ?? "stdout")
+
+      # Если контейнер пишет структурированный JSON, извлекаем уровень и сообщение
+      parsed, err = parse_json(.message)
+      if err == null && is_object(parsed) {
+        .level = downcase(string!(parsed.level ?? parsed.lvl ?? parsed.severity ?? "info"))
+        if exists(parsed.message) {
+          .message = string!(parsed.message)
+        } else if exists(parsed.msg) {
+          .message = string!(parsed.msg)
+        }
+        .json = parsed
+      } else {
+        if match(string!(.message), r'(?i)\b(ERROR|FATAL|PANIC)\b') {
+          .level = "error"
+        } else if match(string!(.message), r'(?i)\b(WARN|WARNING)\b') {
+          .level = "warn"
+        } else {
+          .level = "info"
+        }
+      }
+
+sinks:
+  victoria_logs:
+    type: http
+    inputs:
+      - enrich_logs
+    uri: "http://victoria-logs:9428/insert/jsonline?_stream_fields=compose_service,container_name,stream&_msg_field=message&_time_field=timestamp"
+    compression: gzip
+    encoding:
+      codec: json
+    framing:
+      method: newline_delimited
+    healthcheck:
+      enabled: false
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 2

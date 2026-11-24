@@ -1,0 +1,69 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    stack: trainer
+
+scrape_configs:
+  - job_name: backend
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["backend:8081"]
+        labels:
+          service: backend
+
+  - job_name: postgres-exporter
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels:
+          service: postgres
+
+  - job_name: clickhouse
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["clickhouse:9363"]
+        labels:
+          service: clickhouse
+
+  - job_name: caddy
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["caddy:2019"]
+        labels:
+          service: caddy
+
+  - job_name: victoria-metrics
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["victoria-metrics:8428"]
+        labels:
+          service: victoria-metrics
+
+  - job_name: victoria-logs
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["victoria-logs:9428"]
+        labels:
+          service: victoria-logs
+
+  - job_name: vmagent
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["vmagent:8429"]
+        labels:
+          service: vmagent
+
+  - job_name: vmalert
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["vmalert:8880"]
+        labels:
+          service: vmalert
+
+  - job_name: alertmanager
+    metrics_path: /alertmanager/metrics
+    static_configs:
+      - targets: ["alertmanager:9093"]
+        labels:
+          service: alertmanager

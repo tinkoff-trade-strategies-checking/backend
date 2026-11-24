@@ -1,0 +1,143 @@
+groups:
+  - name: backend-availability-and-http
+    interval: 15s
+    rules:
+      - alert: BackendDown
+        expr: up{job="backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: backend
+        annotations:
+          summary: "Backend недоступен для сбора метрик"
+          description: "Цель {{ $labels.instance }} (job={{ $labels.job }}) недоступна более 1 минуты."
+
+      - alert: BackendHigh5xxErrorRate
+        expr: |
+          (
+            sum(rate(http_server_requests_seconds_count{job="backend",status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(http_server_requests_seconds_count{job="backend"}[5m])), 0.001)
+          ) > 0.05
+          and
+          sum(rate(http_server_requests_seconds_count{job="backend"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          component: backend
+        annotations:
+          summary: "Высокая доля ответов 5xx в backend (> 5%)"
+          description: "Доля ошибок 5xx составляет {{ $value | humanizePercentage }} за последние 5 минут."
+
+      - alert: BackendHighLatencyP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(http_server_requests_seconds_bucket{job="backend",uri!~"/actuator.*"}[5m]))
+          ) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+        annotations:
+          summary: "Высокая задержка HTTP p95 в backend (> 1s)"
+          description: "95-й перцентиль времени ответа HTTP API составляет {{ $value | humanizeDuration }}."
+
+  - name: backend-jvm
+    interval: 30s
+    rules:
+      - alert: BackendJvmHeapHigh
+        expr: |
+          (
+            sum(jvm_memory_used_bytes{job="backend",area="heap"})
+            /
+            clamp_min(sum(jvm_memory_max_bytes{job="backend",area="heap"}), 1)
+          ) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+        annotations:
+          summary: "Высокое потребление JVM Heap (> 85%)"
+          description: "Использование JVM Heap в backend достигло {{ $value | humanizePercentage }}."
+
+      - alert: BackendJvmGcPauseHigh
+        expr: sum(rate(jvm_gc_pause_seconds_sum{job="backend"}[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+        annotations:
+          summary: "Высокие паузы GC в backend (> 20% времени)"
+          description: "Суммарное время пауз GC в backend составляет {{ $value | humanizePercentage }}."
+
+  - name: databases
+    interval: 15s
+    rules:
+      - alert: PostgresDown
+        expr: up{job="postgres-exporter"} == 0 or pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: postgres
+        annotations:
+          summary: "PostgreSQL недоступен"
+          description: "Экспортер PostgreSQL сообщает о недоступности БД более 1 минуты."
+
+      - alert: PostgresHighConnections
+        expr: |
+          (
+            sum(pg_stat_activity_count)
+            /
+            clamp_min(max(pg_settings_max_connections), 1)
+          ) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: postgres
+        annotations:
+          summary: "Высокое число подключений к PostgreSQL (> 85%)"
+          description: "Занято {{ $value | humanizePercentage }} от max_connections."
+
+      - alert: ClickHouseDown
+        expr: up{job="clickhouse"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: clickhouse
+        annotations:
+          summary: "ClickHouse недоступен"
+          description: "Метрики ClickHouse ({{ $labels.instance }}) недоступны более 1 минуты."
+
+  - name: observability-and-scrape-health
+    interval: 30s
+    rules:
+      - alert: ScrapeTargetDown
+        expr: up{job!="backend",job!="postgres-exporter",job!="clickhouse"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: observability
+        annotations:
+          summary: "Цель сбора метрик {{ $labels.job }} недоступна"
+          description: "Экземпляр {{ $labels.instance }} (job={{ $labels.job }}) не отвечает более 2 минут."
+
+      - alert: VmagentRemoteWriteErrors
+        expr: increase(vmagent_remotewrite_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: observability
+        annotations:
+          summary: "Ошибки отправки метрик из vmagent в VictoriaMetrics"
+          description: "Зафиксировано {{ $value }} ошибок remoteWrite за последние 5 минут."
+
+      - alert: VmalertRuleEvalErrors
+        expr: increase(vmalert_alerting_rules_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: observability
+        annotations:
+          summary: "Ошибки вычисления правил алертинга в vmalert"
+          description: "Зафиксировано {{ $value }} ошибок вычисления правил за последние 5 минут."

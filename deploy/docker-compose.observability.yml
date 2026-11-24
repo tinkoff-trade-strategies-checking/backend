@@ -1,0 +1,218 @@
+# Оверлей наблюдаемости для deploy/docker-compose.yml:
+# VictoriaMetrics (+ VMUI), VictoriaLogs (+ VLUI), vmagent, vmalert, Alertmanager, Grafana, postgres-exporter, Vector.
+#
+# Запуск совместно с базовым стеком:
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.observability.yml up -d
+#
+# INV-10: все сервисы наблюдаемости работают строго во внутренней сети `internal` (`internal: true`)
+# и не публикуют порты на хост. Весь внешний доступ к UI идёт только через Caddy по HTTPS (443).
+
+services:
+  backend:
+    environment:
+      # Выносим actuator и prometheus-метрики на внутренний порт 8081 (недоступен через /api/* на 8080).
+      MANAGEMENT_SERVER_PORT: "8081"
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,metrics,prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8081/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  clickhouse:
+    volumes:
+      - ./observability/clickhouse/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
+
+  caddy:
+    environment:
+      OBS_BASIC_AUTH_USER: ${OBS_BASIC_AUTH_USER:-admin}
+      # По умолчанию bcrypt-хеш пароля "secret" для локальной разработки; для продакшена задайте свой в deploy/.env.
+      OBS_BASIC_AUTH_HASH: ${OBS_BASIC_AUTH_HASH:-$$2a$$10$$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy}
+    volumes:
+      - ./observability/Caddyfile.observability:/etc/caddy/Caddyfile:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      grafana:
+        condition: service_healthy
+      victoria-metrics:
+        condition: service_healthy
+      victoria-logs:
+        condition: service_healthy
+      vmalert:
+        condition: service_healthy
+      alertmanager:
+        condition: service_healthy
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    environment:
+      DATA_SOURCE_URI: postgres:5432/trainer?sslmode=disable
+      DATA_SOURCE_USER: trainer
+      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в deploy/.env}
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9187/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+  victoria-metrics:
+    image: victoriametrics/victoria-metrics:v1.113.0
+    command:
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-retentionPeriod=${VM_RETENTION_PERIOD:-30d}"
+      - "-httpListenAddr=:8428"
+      - "-selfScrapeInterval=15s"
+      - "-enableTCP6=false"
+    volumes:
+      - victoria-metrics-data:/victoria-metrics-data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8428/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+  victoria-logs:
+    image: victoriametrics/victoria-logs:v1.18.0
+    command:
+      - "-storageDataPath=/victoria-logs-data"
+      - "-retentionPeriod=${VL_RETENTION_PERIOD:-14d}"
+      - "-httpListenAddr=:9428"
+      - "-enableTCP6=false"
+    volumes:
+      - victoria-logs-data:/victoria-logs-data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9428/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+  vmagent:
+    image: victoriametrics/vmagent:v1.113.0
+    command:
+      - "-promscrape.config=/etc/vmagent/scrape.yml"
+      - "-remoteWrite.url=http://victoria-metrics:8428/api/v1/write"
+      - "-remoteWrite.tmpDataPath=/vmagent-remotewrite-data"
+      - "-httpListenAddr=:8429"
+      - "-enableTCP6=false"
+    volumes:
+      - ./observability/vmagent/scrape.yml:/etc/vmagent/scrape.yml:ro
+      - vmagent-data:/vmagent-remotewrite-data
+    networks: [internal]
+    depends_on:
+      victoria-metrics:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8429/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+  vmalert:
+    image: victoriametrics/vmalert:v1.113.0
+    command:
+      - "-rule=/etc/vmalert/alerts.yml"
+      - "-datasource.url=http://victoria-metrics:8428"
+      - "-notifier.url=http://alertmanager:9093/alertmanager"
+      - "-remoteWrite.url=http://victoria-metrics:8428"
+      - "-remoteRead.url=http://victoria-metrics:8428"
+      - "-external.url=https://${SITE_ADDRESS:-localhost}/vmalert"
+      - "-evaluationInterval=15s"
+      - "-httpListenAddr=:8880"
+      - "-enableTCP6=false"
+    volumes:
+      - ./observability/vmalert/alerts.yml:/etc/vmalert/alerts.yml:ro
+    networks: [internal]
+    depends_on:
+      victoria-metrics:
+        condition: service_healthy
+      alertmanager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8880/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.external-url=https://${SITE_ADDRESS:-localhost}/alertmanager/"
+      - "--web.route-prefix=/alertmanager"
+      - "--web.listen-address=:9093"
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9093/alertmanager/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: https://${SITE_ADDRESS:-localhost}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Для оффлайн/internal-сети плагин VictoriaLogs можно предзагрузить в volume grafana-plugins (см. README).
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: victoriametrics-logs-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks: [internal]
+    depends_on:
+      victoria-metrics:
+        condition: service_healthy
+      victoria-logs:
+        condition: service_healthy
+      alertmanager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  vector:
+    image: timberio/vector:0.45.0-alpine
+    command: ["--config", "/etc/vector/vector.yaml"]
+    volumes:
+      - ./observability/vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - vector-data:/var/lib/vector
+    networks: [internal]
+    depends_on:
+      victoria-logs:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  victoria-metrics-data:
+  victoria-logs-data:
+  vmagent-data:
+  alertmanager-data:
+  grafana-data:
+  vector-data:
