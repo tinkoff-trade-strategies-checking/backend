@@ -1,0 +1,57 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default-webhook
+  group_by: ["alertname", "component", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity="critical"
+      receiver: critical-webhook
+      group_wait: 10s
+      repeat_interval: 1h
+    - matchers:
+        - severity="warning"
+      receiver: warning-webhook
+      group_wait: 1m
+      repeat_interval: 6h
+
+inhibit_rules:
+  # Критичный алерт подавляет warning того же компонента и имени
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity="warning"
+    equal: ["alertname", "component"]
+
+  # Недоступность backend подавляет производные алерты по HTTP-ошибкам и задержкам
+  - source_matchers:
+      - alertname="BackendDown"
+    target_matchers:
+      - alertname=~"BackendHigh5xxErrorRate|BackendHighLatencyP95"
+    equal: ["component"]
+
+receivers:
+  # Заглушки webhook-получателей: замените URL на реальный шлюз (Telegram/Slack/Mattermost/PagerDuty)
+  # перед использованием в продакшене. Внутри сети internal без выхода в интернет алерты остаются
+  # доступны в Alertmanager UI (https://localhost/alertmanager/) и Grafana.
+  - name: default-webhook
+    webhook_configs:
+      - url: "http://127.0.0.1:9093/alertmanager/-/healthy"
+        send_resolved: true
+        max_alerts: 20
+
+  - name: critical-webhook
+    webhook_configs:
+      - url: "http://127.0.0.1:9093/alertmanager/-/healthy"
+        send_resolved: true
+        max_alerts: 20
+
+  - name: warning-webhook
+    webhook_configs:
+      - url: "http://127.0.0.1:9093/alertmanager/-/healthy"
+        send_resolved: true
+        max_alerts: 20

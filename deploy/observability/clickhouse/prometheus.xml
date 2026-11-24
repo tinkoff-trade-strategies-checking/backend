@@ -1,0 +1,11 @@
+<clickhouse>
+    <!-- Включает встроенный Prometheus-экспортер ClickHouse во внутренней сети internal (INV-10: порт 9363 не публикуется наружу). -->
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+        <errors>true</errors>
+    </prometheus>
+</clickhouse>

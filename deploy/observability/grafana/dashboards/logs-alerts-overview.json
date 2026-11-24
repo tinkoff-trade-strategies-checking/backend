@@ -1,0 +1,70 @@
+{
+  "uid": "trainer-logs-alerts-overview",
+  "title": "Logs & Alerts Overview",
+  "tags": ["trainer", "logs", "alerts", "victorialogs", "vmalert"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active Firing Alerts",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+      "targets": [{ "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)", "refId": "A" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Scrape Targets Up",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+      "targets": [{ "expr": "count(up == 1)", "refId": "A" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Scrape Targets Down",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+      "targets": [{ "expr": "count(up == 0) or vector(0)", "refId": "A" }]
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Scrape Targets Status",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 4 },
+      "targets": [{ "expr": "up", "format": "table", "instant": true, "refId": "A" }]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Firing & Pending Alerts (vmalert)",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 4 },
+      "targets": [{ "expr": "ALERTS", "format": "table", "instant": true, "refId": "A" }]
+    },
+    {
+      "id": 6,
+      "type": "logs",
+      "title": "Container Logs (VictoriaLogs)",
+      "datasource": { "type": "victoriametrics-logs-datasource", "uid": "victorialogs" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 11 },
+      "targets": [
+        {
+          "expr": "compose_project:=\"trainer\" | sort by (_time) desc",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true
+      }
+    }
+  ]
+}

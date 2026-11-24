@@ -1,0 +1,70 @@
+# Конфигурация Caddy для запуска совместно с deploy/docker-compose.observability.yml.
+# INV-10: весь внешний трафик идёт строго по HTTPS через порт 443; админ-метрики :2019
+# доступны только внутри Docker-сети (порт 2019 не публикуется на хост).
+
+{
+	admin 0.0.0.0:2019
+	servers {
+		metrics
+	}
+}
+
+{$SITE_ADDRESS:localhost} {
+	tls internal
+
+	# Базовые маршруты приложения (совместимы с deploy/Caddyfile)
+	handle /api/* {
+		reverse_proxy backend:8080
+	}
+
+	# Grafana (собственная аутентификация Grafana)
+	redir /grafana /grafana/ 308
+	handle /grafana/* {
+		reverse_proxy grafana:3000
+	}
+
+	# VictoriaMetrics UI (VMUI) — защищено basic_auth
+	redir /vm /vm/vmui/ 308
+	redir /vm/ /vm/vmui/ 308
+	handle_path /vm/* {
+		basic_auth {
+			{$OBS_BASIC_AUTH_USER:admin} {$OBS_BASIC_AUTH_HASH:$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy}
+		}
+		reverse_proxy victoria-metrics:8428
+	}
+
+	# VictoriaLogs UI (VLUI) — защищено basic_auth
+	redir /vl /vl/select/vmui/ 308
+	redir /vl/ /vl/select/vmui/ 308
+	handle_path /vl/* {
+		basic_auth {
+			{$OBS_BASIC_AUTH_USER:admin} {$OBS_BASIC_AUTH_HASH:$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy}
+		}
+		reverse_proxy victoria-logs:9428
+	}
+
+	# vmalert UI — защищено basic_auth
+	redir /vmalert /vmalert/ 308
+	handle /vmalert/* {
+		basic_auth {
+			{$OBS_BASIC_AUTH_USER:admin} {$OBS_BASIC_AUTH_HASH:$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy}
+		}
+		reverse_proxy vmalert:8880
+	}
+
+	# Alertmanager UI — защищено basic_auth
+	redir /alertmanager /alertmanager/ 308
+	handle /alertmanager/* {
+		basic_auth {
+			{$OBS_BASIC_AUTH_USER:admin} {$OBS_BASIC_AUTH_HASH:$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy}
+		}
+		reverse_proxy alertmanager:9093
+	}
+
+	# Frontend SPA
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
+	}
+}
