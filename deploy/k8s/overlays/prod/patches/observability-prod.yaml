@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: victoriametrics
+  namespace: trainer
+spec:
+  template:
+    spec:
+      containers:
+        - name: victoriametrics
+          args:
+            - "--storageDataPath=/victoria-metrics-data"
+            - "--httpListenAddr=:8428"
+            - "--retentionPeriod=90d"
+            - "--selfScrapeInterval=0s"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: vm-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 50Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: victorialogs
+  namespace: trainer
+spec:
+  template:
+    spec:
+      containers:
+        - name: victorialogs
+          args:
+            - "--storageDataPath=/victoria-logs-data"
+            - "--httpListenAddr=:9428"
+            - "--retentionPeriod=30d"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: vl-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 50Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: trainer
+spec:
+  template:
+    spec:
+      containers:
+        - name: grafana
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: trainer
+spec:
+  resources:
+    requests:
+      storage: 10Gi

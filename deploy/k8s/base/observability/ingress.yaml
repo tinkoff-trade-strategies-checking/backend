@@ -1,0 +1,81 @@
+# INV-10: доступ к UI стека наблюдаемости только по HTTPS через выделенные поддомены.
+# В production рекомендуется защитить Ingress через oauth2-proxy / auth-url или allowlist IP-адресов VPN.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: observability-ingress
+  namespace: trainer
+  labels:
+    app.kubernetes.io/name: observability-ingress
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: trainer
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/hsts: "true"
+    # В production раскомментируйте ограничение по VPN/офисным подсетям или oauth2-proxy:
+    # nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,192.168.0.0/16"
+    # nginx.ingress.kubernetes.io/auth-url: "https://auth.example.com/oauth2/auth"
+    # nginx.ingress.kubernetes.io/auth-signin: "https://auth.example.com/oauth2/start?rd=$escaped_request_uri"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - grafana.obs.trainer.example.com
+        - vmui.obs.trainer.example.com
+        - vlui.obs.trainer.example.com
+        - alertmanager.obs.trainer.example.com
+        - vmalert.obs.trainer.example.com
+      secretName: observability-tls
+  rules:
+    - host: grafana.obs.trainer.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  name: http
+    - host: vmui.obs.trainer.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: victoriametrics
+                port:
+                  name: http
+    - host: vlui.obs.trainer.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: victorialogs
+                port:
+                  name: http
+    - host: alertmanager.obs.trainer.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: alertmanager
+                port:
+                  name: http
+    - host: vmalert.obs.trainer.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vmalert
+                port:
+                  name: http
