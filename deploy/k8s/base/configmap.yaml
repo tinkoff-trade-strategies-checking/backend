@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trainer-app-config
+  namespace: trainer
+  labels:
+    app.kubernetes.io/part-of: trainer
+data:
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/trainer"
+  SPRING_DATASOURCE_USERNAME: "trainer"
+  WORKER_ADDRESS: "simulation-worker:50051"
+  CLICKHOUSE_URL: "jdbc:clickhouse://clickhouse:8123/ttsc"
+  CLICKHOUSE_USER: "ttsc"
+  MARKETDATA_CLICKHOUSE_URL: "http://clickhouse:8123"
+  MARKETDATA_CLICKHOUSE_DATABASE: "ttsc"
+  MARKETDATA_CLICKHOUSE_USER: "ttsc"
+  MANAGEMENT_SERVER_PORT: "8081"
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,prometheus"
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
+  # Доверенные прокси для Tomcat RemoteIpValve (подсети кластера Kubernetes, RFC 1918)
+  SERVER_TOMCAT_REMOTEIP_INTERNAL_PROXIES: '10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}'
+  POSTGRES_DB: "trainer"
+  POSTGRES_USER: "trainer"
+  CLICKHOUSE_DB: "ttsc"
+  CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"

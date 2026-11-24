@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - victoriametrics.yaml
+  - victorialogs.yaml
+  - vmagent.yaml
+  - vmalert.yaml
+  - alertmanager.yaml
+  - grafana.yaml
+  - vector.yaml
+  - ingress.yaml
