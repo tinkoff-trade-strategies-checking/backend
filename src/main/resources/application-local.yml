@@ -19,5 +19,8 @@ management:
       show-details: always
 
 logging:
+  structured:
+    format:
+      console: ${LOGGING_STRUCTURED_FORMAT:}
   level:
     ru.tinvest.trainer: DEBUG

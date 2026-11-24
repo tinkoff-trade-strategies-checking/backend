@@ -62,10 +62,22 @@ worker:
   run-deadline: ${WORKER_RUN_DEADLINE:10m}
 
 management:
+  server:
+    port: ${MANAGEMENT_PORT:8081}
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,prometheus
   endpoint:
     health:
       show-details: never
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  structured:
+    format:
+      console: ${LOGGING_STRUCTURED_FORMAT:logstash}

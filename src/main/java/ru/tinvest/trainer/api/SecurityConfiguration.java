@@ -6,9 +6,12 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.web.server.servlet.context.ServletWebServerInitializedEvent;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -21,17 +24,28 @@ import org.springframework.security.web.csrf.CsrfFilter;
 import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.security.web.csrf.CsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 import tools.jackson.databind.ObjectMapper;
 
 /**
  * Безопасность HTTP API: cookie-сессия, CSRF через cookie {@code XSRF-TOKEN} и заголовок {@code X-XSRF-TOKEN}
  * (решения 19.11), все {@code /api/v1/**} кроме входа требуют аутентификации, ошибки — ProblemDetail.
+ * Метрики Prometheus ({@code /actuator/prometheus}) разрешены исключительно на отдельном внутреннем порту управления.
  */
 @Configuration
 @EnableWebSecurity
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 class SecurityConfiguration {
+
+    private final AtomicInteger managementPort = new AtomicInteger(-1);
+
+    @EventListener
+    void onWebServerInitialized(ServletWebServerInitializedEvent event) {
+        if ("management".equals(event.getApplicationContext().getServerNamespace())) {
+            managementPort.set(event.getWebServer().getPort());
+        }
+    }
 
     @Bean
     CsrfTokenRepository csrfTokenRepository() {
@@ -53,6 +67,10 @@ class SecurityConfiguration {
             ObjectMapper objectMapper)
             throws Exception {
         ProblemResponses problems = new ProblemResponses(objectMapper);
+        RequestMatcher managementPrometheus = request -> {
+            int port = managementPort.get();
+            return port > 0 && request.getLocalPort() == port && "/actuator/prometheus".equals(request.getRequestURI());
+        };
         http.csrf(csrf -> csrf.csrfTokenRepository(csrfTokenRepository)
                         // без XOR-маскировки: Angular отправляет значение cookie как есть
                         .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))
@@ -66,6 +84,8 @@ class SecurityConfiguration {
                 .authorizeHttpRequests(auth -> auth.dispatcherTypeMatchers(DispatcherType.ERROR)
                         .permitAll()
                         .requestMatchers("/api/health", "/actuator/health", "/actuator/health/**")
+                        .permitAll()
+                        .requestMatchers(managementPrometheus)
                         .permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login")
                         .permitAll()
