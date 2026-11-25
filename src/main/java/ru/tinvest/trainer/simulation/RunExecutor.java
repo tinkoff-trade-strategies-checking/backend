@@ -1,5 +1,6 @@
 package ru.tinvest.trainer.simulation;
 
+import io.grpc.StatusRuntimeException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
@@ -108,7 +109,7 @@ class RunExecutor {
             runs.finishFailed(runId, ErrorCode.SERVICE_UNAVAILABLE);
         } catch (RuntimeException e) {
             // INV-7: данные слепого прогона (тикеры, даты, суммы) в логи не попадают
-            log.error("Прогон {} завершился ошибкой ({})", runId, e.getClass().getSimpleName());
+            log.error("Прогон {} завершился ошибкой ({})", runId, failureReason(e));
             runs.finishFailed(runId, ErrorCode.INTERNAL_ERROR);
         }
     }
@@ -141,6 +142,13 @@ class RunExecutor {
                 runs.updateProgress(runId, done, total);
             }
         }
+    }
+
+    static String failureReason(RuntimeException e) {
+        if (e instanceof StatusRuntimeException sre) {
+            return sre.getClass().getSimpleName() + ": " + sre.getStatus().getCode();
+        }
+        return e.getClass().getSimpleName();
     }
 
     static Market market(RunRecord run) {
