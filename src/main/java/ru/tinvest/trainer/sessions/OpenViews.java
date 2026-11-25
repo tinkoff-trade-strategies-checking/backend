@@ -1,12 +1,15 @@
 package ru.tinvest.trainer.sessions;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.jspecify.annotations.Nullable;
+import ru.tinvest.trainer.marketdata.SecurityFundamental;
+import ru.tinvest.trainer.marketdata.SecurityFundamentals;
 import ru.tinvest.trainer.worker.WorkerTypes.BarData;
 import ru.tinvest.trainer.worker.WorkerTypes.EstimateResult;
 import ru.tinvest.trainer.worker.WorkerTypes.FillState;
@@ -256,5 +259,27 @@ final class OpenViews {
                 .filter(p -> p.secid().equals(paperKey))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("Бумага ответа воркера не входит в сессию"));
+    }
+
+    /** Фундаментальные показатели бумаг раскрытой сессии на дату курсора (INV-1). */
+    static Map<String, Object> sessionFundamentals(
+            SessionRecord session, @Nullable LocalDate asOfDate, Map<String, SecurityFundamental> byTicker) {
+        List<Object> items = new ArrayList<>(session.papers().size());
+        for (PaperRecord paper : session.papers()) {
+            SecurityFundamental snapshot = byTicker.get(SecurityFundamentals.normalizeTicker(paper.secid()));
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("paperId", paper.paperId());
+            item.put("ticker", paper.secid());
+            item.put("name", paper.displayName());
+            item.put("sector", paper.sector());
+            item.put("available", snapshot != null);
+            item.put("snapshot", snapshot == null ? null : snapshot.toSnapshotMap());
+            items.add(item);
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("hiddenByBlindMode", false);
+        out.put("asOfDate", asOfDate == null ? null : asOfDate.toString());
+        out.put("items", items);
+        return out;
     }
 }
