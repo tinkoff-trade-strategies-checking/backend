@@ -10,8 +10,8 @@ import org.jspecify.annotations.Nullable;
  * Параметры запуска ручной сессии (контракт: {@code CreateSessionRequest}).
  *
  * @param customStartDate только для {@link StartMode#CUSTOM}
- * @param paperCount только для {@link StartMode#RANDOM}: сколько бумаг выбрать случайно (1–5)
- * @param paperIds только для {@link StartMode#CUSTOM}: бумаги пользователя (1–5), см. {@link Papers#id}
+ * @param paperCount только для {@link StartMode#RANDOM}: сколько бумаг выбрать случайно (>= 1)
+ * @param paperIds только для {@link StartMode#CUSTOM}: бумаги пользователя (>= 1), см. {@link Papers#id}
  */
 public record LaunchRequest(
         int durationDays,
