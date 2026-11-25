@@ -270,9 +270,18 @@ class LaunchPlannerTest {
         assertThat(rejection(planner.plan(custom(regime, date))).field()).isEqualTo("paperIds");
         assertThat(rejection(planner.plan(custom(regime, date, "A", "A"))).field())
                 .isEqualTo("paperIds");
-        assertThat(rejection(planner.plan(custom(regime, date, "A", "B", "C", "D", "E", "F")))
-                        .field())
-                .isEqualTo("paperIds");
+        var withNull = new LaunchRequest(
+                20,
+                Timeframe.D1,
+                regime,
+                StartMode.CUSTOM,
+                date,
+                null,
+                java.util.Arrays.asList(Papers.id("A"), null),
+                CAPITAL);
+        assertThat(rejection(planner.plan(withNull)).field()).isEqualTo("paperIds");
+        LaunchPlan sixPapers = plan(planner.plan(custom(regime, date, "A", "B", "C", "D", "E", "F")));
+        assertThat(sixPapers.papers()).hasSize(6);
 
         // LATE торгуется только с дня LATE_FROM
         LaunchRejection late = rejection(planner.plan(custom(regime, date, "A", "LATE")));
@@ -305,7 +314,9 @@ class LaunchPlannerTest {
         var duration = new LaunchRequest(30, Timeframe.D1, Regime.CALM, StartMode.RANDOM, null, 2, null, CAPITAL);
         assertThat(rejection(planner.plan(duration)).field()).isEqualTo("durationDays");
         assertThat(rejection(planner.plan(random(Regime.CALM, 0))).field()).isEqualTo("paperCount");
-        assertThat(rejection(planner.plan(random(Regime.CALM, 6))).field()).isEqualTo("paperCount");
+        assertThat(rejection(planner.plan(random(Regime.CALM, -1))).field()).isEqualTo("paperCount");
+        assertThat(plan(planner.plan(random(Regime.CALM, 6), null, 1L)).papers())
+                .hasSize(6);
         var noCount = new LaunchRequest(20, Timeframe.D1, Regime.CALM, StartMode.RANDOM, null, null, null, CAPITAL);
         assertThat(rejection(planner.plan(noCount)).field()).isEqualTo("paperCount");
         for (String bad : List.of("0", "9999.99", "100000000.01", "-5", "500000.001")) {
@@ -683,6 +694,22 @@ class LaunchPlannerTest {
             lastMaxPerDaySteps = stepSecs;
             return maxPerDay;
         }
+    }
+
+    @Test
+    void manyPapersAreAcceptedInCustomAndRandomModes() {
+        List<String> extra = new ArrayList<>();
+        for (int idx = 1; idx <= 30; idx++) {
+            String secid = "SEC" + idx;
+            archive.add(secid, "Сектор" + (idx % 5), 0);
+            extra.add(secid);
+        }
+        int i = 30;
+        LaunchPlan customPlan = plan(planner.plan(custom(regimeAt(i), calendar.get(i), extra.toArray(String[]::new))));
+        assertThat(customPlan.papers()).hasSize(30);
+
+        LaunchPlan randomPlan = plan(planner.plan(random(Regime.CALM, 30), null, 1L));
+        assertThat(randomPlan.papers()).hasSize(30);
     }
 
     @Test

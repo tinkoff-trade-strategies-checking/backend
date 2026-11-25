@@ -41,6 +41,7 @@ class LaunchCatalogController {
         Map<String, Integer> maxDurations = new LinkedHashMap<>();
         planner.maxDurations(null).forEach((timeframe, days) -> maxDurations.put(timeframe.code(), days));
         LaunchPlanner.DateRange archiveRange = planner.archiveDateRange(null);
+        int maxPapers = Math.max(LaunchPlanner.MIN_PAPERS, planner.papers(null).size());
         return new LaunchOptionsResponse(
                 LaunchPlanner.DURATIONS.stream().sorted().toList(),
                 LaunchPlanner.DEFAULT_DURATION,
@@ -55,7 +56,7 @@ class LaunchCatalogController {
                 money(LaunchPlanner.DEFAULT_CAPITAL),
                 BACKGROUND_ALGORITHM,
                 LaunchPlanner.MIN_PAPERS,
-                LaunchPlanner.MAX_PAPERS,
+                maxPapers,
                 DEFAULT_PAPER_COUNT,
                 new ExecutionRules(
                         e.commissionPct(),
