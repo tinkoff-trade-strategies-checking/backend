@@ -40,6 +40,11 @@ class ArenaController {
         return arena.snapshot(sessionId);
     }
 
+    @GetMapping("/fundamentals")
+    Map<String, Object> fundamentals(@PathVariable UUID sessionId) {
+        return arena.fundamentals(sessionId);
+    }
+
     @PostMapping("/orders")
     Object place(
             @PathVariable UUID sessionId,

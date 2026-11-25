@@ -1,5 +1,8 @@
 package ru.tinvest.trainer.sessions;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -9,7 +12,10 @@ import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Service;
 import ru.tinvest.trainer.api.NotFoundException;
+import ru.tinvest.trainer.marketdata.SecurityFundamental;
+import ru.tinvest.trainer.marketdata.SecurityFundamentals;
 import ru.tinvest.trainer.worker.SimulationWorkerClient;
+import ru.tinvest.trainer.worker.WorkerTypes.BarData;
 import ru.tinvest.trainer.worker.WorkerTypes.BarInterval;
 import ru.tinvest.trainer.worker.WorkerTypes.Command;
 import ru.tinvest.trainer.worker.WorkerTypes.CommandOutcome;
@@ -43,6 +49,7 @@ class Arena {
     private final SimulationWorkerClient worker;
     private final BlindMasking masking;
     private final PlayerStates players;
+    private final SecurityFundamentals fundamentals;
 
     Arena(
             Sessions sessions,
@@ -52,7 +59,8 @@ class Arena {
             SessionEvents events,
             SimulationWorkerClient worker,
             BlindMasking masking,
-            PlayerStates players) {
+            PlayerStates players,
+            SecurityFundamentals fundamentals) {
         this.sessions = sessions;
         this.journals = journals;
         this.orderRefs = orderRefs;
@@ -61,6 +69,7 @@ class Arena {
         this.worker = worker;
         this.masking = masking;
         this.players = players;
+        this.fundamentals = fundamentals;
     }
 
     /** Условия сессии для воркера: бумаги в порядке {@code paper_index} (индекс = {@code instrument_index} ядра). */
@@ -103,6 +112,36 @@ class Arena {
         // строка, как eventId; 0 — событий ещё не было
         out.put("lastEventId", Long.toString(locked.lastEventId()));
         return out;
+    }
+
+    /**
+     * Фундаментальные показатели бумаг сессии (INV-1, INV-7). Для активной слепой сессии воркер и БД показателей не
+     * вызываются вовсе — возвращается пустой маскированный ответ. Для открытой или завершённой (раскрытой) сессии
+     * возвращаются срезы с {@code available_at <= cursorDate}.
+     */
+    Map<String, Object> fundamentals(UUID sessionId) {
+        SessionRecord session = sessions.requireOwned(sessionId);
+        if (!session.revealed()) {
+            return masking.sessionFundamentals(session, null, Map.of());
+        }
+        LocalDate asOfDate = cursorDate(session);
+        List<String> tickers = session.papers().stream().map(PaperRecord::secid).toList();
+        Map<String, SecurityFundamental> byTicker = fundamentals.findLatestAsOf(tickers, asOfDate);
+        return masking.sessionFundamentals(session, asOfDate, byTicker);
+    }
+
+    private LocalDate cursorDate(SessionRecord session) {
+        ReplayResult replay = worker.replaySession(market(session), List.of(), session.currentStep(), true, false);
+        LocalDate date = replay.history().stream()
+                .filter(b -> b.step() <= session.currentStep())
+                .mapToLong(BarData::timeUnixMs)
+                .max()
+                .stream()
+                .mapToObj(
+                        ms -> Instant.ofEpochMilli(ms).atOffset(ZoneOffset.UTC).toLocalDate())
+                .findFirst()
+                .orElse(session.periodStart());
+        return date.isAfter(session.periodEnd()) ? session.periodEnd() : date;
     }
 
     // ---------- оценка ----------

@@ -1,6 +1,7 @@
 package ru.tinvest.trainer.sessions;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Component;
 import ru.tinvest.trainer.api.ErrorCode;
 import ru.tinvest.trainer.marketdata.LaunchRejectReason;
 import ru.tinvest.trainer.marketdata.LaunchRejection;
+import ru.tinvest.trainer.marketdata.SecurityFundamental;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindBarData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindFillData;
 import ru.tinvest.trainer.worker.WorkerTypes.BlindOrderData;
@@ -335,6 +337,23 @@ class BlindMasking {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("result", finishResult);
         return out;
+    }
+
+    /**
+     * Фундаментальные показатели бумаг сессии ({@code SessionFundamentalsResponse}, INV-1, INV-7). В активной слепой
+     * сессии ({@code !session.revealed()}) полностью скрыты: {@code hiddenByBlindMode = true}, {@code asOfDate = null},
+     * {@code items = []}.
+     */
+    Map<String, Object> sessionFundamentals(
+            SessionRecord session, @Nullable LocalDate asOfDate, Map<String, SecurityFundamental> byTicker) {
+        if (!session.revealed()) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("hiddenByBlindMode", true);
+            out.put("asOfDate", null);
+            out.put("items", List.of());
+            return out;
+        }
+        return OpenViews.sessionFundamentals(session, asOfDate, byTicker);
     }
 
     private static Map<String, Object> blindCandle(BlindBarData bar, int candleInDay) {
