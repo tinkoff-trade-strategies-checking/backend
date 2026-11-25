@@ -58,8 +58,9 @@ analysis:
 
 worker:
   address: ${WORKER_ADDRESS:localhost:50051}
-  deadline: ${WORKER_DEADLINE:5s}
+  deadline: ${WORKER_DEADLINE:30s}
   run-deadline: ${WORKER_RUN_DEADLINE:10m}
+  max-inbound-message-size: ${WORKER_MAX_INBOUND_MESSAGE_BYTES:268435456}
 
 management:
   server:

@@ -15,6 +15,7 @@ class WorkerConfiguration {
         return ManagedChannelBuilder.forTarget(properties.address())
                 // внутренняя сеть, TLS вне скоупа
                 .usePlaintext()
+                .maxInboundMessageSize(properties.maxInboundMessageSize())
                 .build();
     }
 
