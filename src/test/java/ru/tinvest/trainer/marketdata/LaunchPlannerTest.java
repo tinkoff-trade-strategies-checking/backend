@@ -442,15 +442,39 @@ class LaunchPlannerTest {
         LaunchRejection rej = rejection(planner.plan(random(Regime.STRESS, 2), null, 1L));
         assertThat(rej.reason()).isEqualTo(LaunchRejectReason.NO_MATCHING_PERIOD);
 
-        // слепых бумаг (с сектором и без сплита) в пуле меньше, чем просят
+        // бумаг в пуле меньше, чем просят: смена категории не поможет - INVALID_PARAMS / paperCount
         worker.onlyCategories = null;
         LaunchPlanner small =
                 new DefaultLaunchPlanner(snapshots, archive, worker, Set.of("A", "B", "NOSECTOR"), 5000, () -> 1L);
-        // бумаг с сектором меньше, чем просят: смена категории не поможет - INVALID_PARAMS / paperCount
-        LaunchRejection few = rejection(small.plan(random(Regime.CALM, 3), null, 1L));
+        LaunchRejection few = rejection(small.plan(random(Regime.CALM, 4), null, 1L));
         assertThat(few.reason()).isEqualTo(LaunchRejectReason.INVALID_PARAMS);
         assertThat(few.field()).isEqualTo("paperCount");
-        assertThat(small.plan(random(Regime.CALM, 2), null, 1L)).isInstanceOf(LaunchPlan.class);
+        // при count <= числа бумаг с сектором бумага без сектора не попадает
+        LaunchPlan two = plan(small.plan(random(Regime.CALM, 2), null, 1L));
+        assertThat(two.papers()).extracting(PlannedPaper::secid).containsExactlyInAnyOrder("A", "B");
+        // при count > числа бумаг с сектором, но <= размера пула, набор дополняется бумагами без сектора
+        LaunchPlan three = plan(small.plan(random(Regime.CALM, 3), null, 1L));
+        assertThat(three.papers()).extracting(PlannedPaper::secid).containsExactlyInAnyOrder("A", "B", "NOSECTOR");
+    }
+
+    @Test
+    void randomModeFallsBackToPapersWithoutSectorWhenCountExceedsSectoredPool() {
+        for (int i = 1; i <= 115; i++) {
+            archive.add("EXTRA" + i, "", 0);
+        }
+        // в архиве 10 бумаг с сектором (8 без сплита/дыр/позднего старта) и 116 без сектора
+        LaunchPlan hundred = plan(planner.plan(random(Regime.MEDIUM, 100), null, 42L));
+        assertThat(hundred.papers()).hasSize(100);
+        assertThat(hundred.papers()).extracting(PlannedPaper::secid).doesNotHaveDuplicates();
+        long sectoredCount =
+                hundred.papers().stream().filter(p -> !p.sector().isBlank()).count();
+        assertThat(sectoredCount).isGreaterThanOrEqualTo(6);
+
+        // запрос сверх общего размера пула отклоняется как INVALID_PARAMS / paperCount
+        int totalPool = planner.papers(null).size();
+        LaunchRejection tooMany = rejection(planner.plan(random(Regime.MEDIUM, totalPool + 1), null, 42L));
+        assertThat(tooMany.reason()).isEqualTo(LaunchRejectReason.INVALID_PARAMS);
+        assertThat(tooMany.field()).isEqualTo("paperCount");
     }
 
     @Test

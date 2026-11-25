@@ -226,30 +226,47 @@ class DefaultLaunchPlanner implements LaunchPlanner {
                 .toList());
         Random random = new Random(seed);
         Collections.shuffle(windows, random);
-        // слепая сессия: бумаги без сектора в пул не попадают (decisions.md, «Слепой режим», 19.11.2026)
+        if (pool.size() < count) {
+            // дело в числе бумаг, а не в категории: смена категории не поможет
+            return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "paperCount");
+        }
+        // слепая сессия: приоритет у бумаг с сектором; если их не хватает на count, дополняем бумагами без сектора
         List<ArchivePaper> withSector = pool.stream()
                 .filter(p -> !p.sector().isBlank())
                 .sorted(Comparator.comparing(ArchivePaper::secid))
                 .toList();
-        if (withSector.size() < count) {
-            // дело в числе бумаг, а не в категории: смена категории не поможет (решение лида)
-            return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "paperCount");
-        }
+        List<ArchivePaper> withoutSector = pool.stream()
+                .filter(p -> p.sector().isBlank())
+                .sorted(Comparator.comparing(ArchivePaper::secid))
+                .toList();
         Map<String, List<LocalDate>> actions = archive.corporateActions(key);
         Map<String, Set<LocalDate>> candleDays = archive.candleDays(key, ctx.sourceInterval());
         int overLimit = 0;
         for (PeriodWindow window : windows) {
             List<LocalDate> windowDays = windowDays(ctx, window);
             LocalDate warmupStart = warmupStart(ctx, window);
-            List<ArchivePaper> eligible = withSector.stream()
+            List<ArchivePaper> eligibleWithSector = withSector.stream()
                     .filter(p -> !hasAction(actions, p.secid(), window, warmupStart)
                             && covers(candleDays, p.secid(), windowDays))
                     .collect(Collectors.toCollection(ArrayList::new));
-            if (eligible.size() < count) {
-                continue;
+            List<ArchivePaper> chosen;
+            if (eligibleWithSector.size() >= count) {
+                Collections.shuffle(eligibleWithSector, random);
+                chosen = eligibleWithSector.subList(0, count);
+            } else {
+                List<ArchivePaper> eligibleWithoutSector = withoutSector.stream()
+                        .filter(p -> !hasAction(actions, p.secid(), window, warmupStart)
+                                && covers(candleDays, p.secid(), windowDays))
+                        .collect(Collectors.toCollection(ArrayList::new));
+                if (eligibleWithSector.size() + eligibleWithoutSector.size() < count) {
+                    continue;
+                }
+                Collections.shuffle(eligibleWithoutSector, random);
+                chosen = new ArrayList<>(count);
+                chosen.addAll(eligibleWithSector);
+                chosen.addAll(eligibleWithoutSector.subList(0, count - eligibleWithSector.size()));
+                Collections.shuffle(chosen, random);
             }
-            Collections.shuffle(eligible, random);
-            List<ArchivePaper> chosen = eligible.subList(0, count);
             int steps = steps(ctx, windowDays, chosen);
             if (steps <= maxBars) {
                 return plan(ctx, window, classification, chosen, true, steps);
