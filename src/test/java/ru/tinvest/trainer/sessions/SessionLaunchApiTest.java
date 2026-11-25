@@ -575,7 +575,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
         List<String> byTicker = SECIDS.stream().sorted().toList();
         boolean different = false;
         for (int i = 0; i < 20; i++) {
-            UUID id = sessions.create(userId, StartMode.RANDOM, 20, plan(true, 5));
+            UUID id = sessions.create(userId, StartMode.RANDOM, 20, plan(true, SECIDS.size()));
             List<String> byIndex = jdbc.sql(
                             "SELECT secid FROM sessions.session_paper WHERE session_id = :id " + "ORDER BY paper_index")
                     .param("id", id)
