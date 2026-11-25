@@ -377,7 +377,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
                 return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "customStartDate");
             }
             Integer count = r.paperCount();
-            if (count == null || count < MIN_PAPERS || count > MAX_PAPERS) {
+            if (count == null || count < MIN_PAPERS) {
                 return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "paperCount");
             }
         } else {
@@ -390,7 +390,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
             List<UUID> ids = r.paperIds();
             if (ids == null
                     || ids.size() < MIN_PAPERS
-                    || ids.size() > MAX_PAPERS
+                    || ids.stream().anyMatch(java.util.Objects::isNull)
                     || new HashSet<>(ids).size() != ids.size()) {
                 return LaunchRejection.of(LaunchRejectReason.INVALID_PARAMS, "paperIds");
             }

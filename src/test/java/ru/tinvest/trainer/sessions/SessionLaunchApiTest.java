@@ -64,7 +64,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
     private static final String PASSWORD = "correct horse";
     private static final LocalDate START = LocalDate.of(2022, 3, 14);
     private static final LocalDate END = LocalDate.of(2022, 4, 8);
-    private static final List<String> SECIDS = List.of("SBER", "GAZP", "LKOH", "YNDX", "ROSN");
+    private static final List<String> SECIDS = List.of("SBER", "GAZP", "LKOH", "YNDX", "ROSN", "NVTK", "GMKN");
 
     @Autowired
     private Snapshots snapshots;
@@ -399,6 +399,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
         planner.maxDurations.put(Timeframe.H1, 357);
         planner.maxDurations.put(Timeframe.D1, 5000);
         planner.archiveDateRange = new LaunchPlanner.DateRange(LocalDate.of(2024, 1, 3), LocalDate.of(2024, 12, 30));
+        planner.papers = plan(false, 7).papers();
 
         mockMvc.perform(get("/api/v1/launch/options").session(session))
                 .andExpect(status().isOk())
@@ -416,7 +417,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.defaultCapital").value("1000000.00"))
                 .andExpect(jsonPath("$.backgroundAlgorithmName").value("Эталон платформы"))
                 .andExpect(jsonPath("$.minPapers").value(1))
-                .andExpect(jsonPath("$.maxPapers").value(5))
+                .andExpect(jsonPath("$.maxPapers").value(7))
                 .andExpect(jsonPath("$.executionRules.maxBars").value(5000))
                 .andExpect(jsonPath("$.executionRules.commissionPct").value("0.3"))
                 .andExpect(jsonPath("$.archiveFrom").value("2024-01-03"))

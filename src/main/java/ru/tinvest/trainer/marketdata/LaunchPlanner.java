@@ -44,7 +44,6 @@ public interface LaunchPlanner {
     BigDecimal MAX_CAPITAL = new BigDecimal("100000000");
 
     int MIN_PAPERS = 1;
-    int MAX_PAPERS = 5;
 
     /** Подбор по последнему готовому снапшоту, случайность — из генератора приложения. */
     LaunchResult plan(LaunchRequest request);

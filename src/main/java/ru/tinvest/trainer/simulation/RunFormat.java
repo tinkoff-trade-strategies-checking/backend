@@ -34,7 +34,16 @@ final class RunFormat {
     }
 
     static String label(int index) {
-        return "Бумага " + (char) ('A' + index);
+        if (index < 0) {
+            throw new IllegalArgumentException("Индекс бумаги должен быть >= 0: " + index);
+        }
+        StringBuilder letters = new StringBuilder();
+        int n = index;
+        do {
+            letters.append((char) ('A' + (n % 26)));
+            n = n / 26 - 1;
+        } while (n >= 0);
+        return "Бумага " + letters.reverse();
     }
 
     static String side(TradeSide side) {
