@@ -51,7 +51,7 @@ final class WorkshopViews {
             String summary,
             boolean immutable,
             String lookaheadLevel,
-            String source,
+            @Nullable String source,
             List<StrategyDiagnostic> diagnostics,
             List<StrategyParamDecl> params) {}
 

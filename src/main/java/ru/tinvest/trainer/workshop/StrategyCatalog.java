@@ -42,7 +42,7 @@ public class StrategyCatalog {
         }
         return queryVersion(
                 "WHERE v.strategy_id = :strategyId AND s.visibility <> 'deleted'"
-                        + " AND (s.is_system OR s.visibility = 'public'" + ownerClause + ")"
+                        + " AND (s.is_system OR s.visibility IN ('public', 'closed')" + ownerClause + ")"
                         + " ORDER BY v.version DESC LIMIT 1",
                 params);
     }
@@ -93,12 +93,13 @@ public class StrategyCatalog {
                 .orElseThrow(() -> new IllegalStateException("System default strategy version is missing"));
     }
 
-    /** Проверяет доступ пользователя к опубликованной версии: публичная, своя или системная, не удалённая. */
+    /** Проверяет доступ пользователя к опубликованной версии: публичная, закрытая, своя или системная, не удалённая. */
     public boolean canAccess(UUID versionId, @Nullable UUID userId) {
         return findVersion(versionId)
                 .filter(v -> !"deleted".equals(v.visibility()))
                 .map(v -> v.isSystem()
                         || "public".equals(v.visibility())
+                        || "closed".equals(v.visibility())
                         || (userId != null && Objects.equals(v.ownerId(), userId)))
                 .orElse(false);
     }

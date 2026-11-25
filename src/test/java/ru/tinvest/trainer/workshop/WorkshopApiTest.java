@@ -623,6 +623,177 @@ class WorkshopApiTest extends PostgresIntegrationTest {
         assertThat(catalog.findVersion(versionId)).isPresent();
     }
 
+    @Test
+    void closedVisibilityHidesSourceAndBlocksForkForNonAuthorsWhileAuthorRetainsFullAccess() throws Exception {
+        String secretV1 = "SECRET_CLOSED_DSL_V1_54321";
+        String secretV2 = "SECRET_CLOSED_DSL_V2_98765";
+        String name = "ClosedAlgo-" + UUID.randomUUID().toString().substring(0, 8);
+
+        // Невалидное значение visibility при создании -> 400
+        mockMvc.perform(post("/api/v1/workshop/algorithms")
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "name", name, "description", "test", "source", secretV1, "visibility", "unknown"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
+
+        // Создание с visibility = closed: автор видит собственный код
+        MvcResult created = mockMvc.perform(post("/api/v1/workshop/algorithms")
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "name",
+                                name,
+                                "description",
+                                "Закрытая стратегия",
+                                "source",
+                                secretV1,
+                                "visibility",
+                                "closed"))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.visibility").value("closed"))
+                .andExpect(jsonPath("$.source").value(secretV1))
+                .andReturn();
+        UUID strategyId = UUID.fromString(json.readTree(created.getResponse().getContentAsString())
+                .get("strategyId")
+                .asString());
+
+        // Автор читает и редактирует черновик и публикует v1 и v2
+        mockMvc.perform(get("/api/v1/workshop/algorithms/{id}/draft", strategyId)
+                        .session(authorA.session()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.visibility").value("closed"))
+                .andExpect(jsonPath("$.source").value(secretV1));
+
+        MvcResult v1Res = publish(authorA, strategyId, "Первая версия");
+        assertThat(v1Res.getResponse().getStatus()).isEqualTo(201);
+        UUID v1Id = UUID.fromString(json.readTree(v1Res.getResponse().getContentAsString())
+                .get("id")
+                .asString());
+
+        mockMvc.perform(put("/api/v1/workshop/algorithms/{id}/draft", strategyId)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("source", secretV2))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.source").value(secretV2));
+
+        MvcResult v2Res = publish(authorA, strategyId, "Вторая версия");
+        assertThat(v2Res.getResponse().getStatus()).isEqualTo(201);
+        UUID v2Id = UUID.fromString(json.readTree(v2Res.getResponse().getContentAsString())
+                .get("id")
+                .asString());
+
+        // Автор видит исходный код всех своих версий и может форкнуть собственный закрытый алгоритм
+        mockMvc.perform(get("/api/v1/workshop/algorithms/{id}", strategyId).session(authorA.session()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("READY"))
+                .andExpect(jsonPath("$.algorithm.visibility").value("closed"))
+                .andExpect(jsonPath("$.algorithm.isMine").value(true))
+                .andExpect(jsonPath("$.algorithm.versions[0].source").value(secretV2))
+                .andExpect(jsonPath("$.algorithm.versions[1].source").value(secretV1));
+
+        mockMvc.perform(post("/api/v1/workshop/algorithms/{id}/fork", strategyId)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.source").value(secretV2));
+
+        // Другой пользователь видит алгоритм в каталоге, но в карточке source == null для всех версий
+        mockMvc.perform(get("/api/v1/workshop/algorithms")
+                        .session(authorB.session())
+                        .param("search", name))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(1))
+                .andExpect(jsonPath("$.items[0].visibility").value("closed"));
+
+        MvcResult peerDetail = mockMvc.perform(
+                        get("/api/v1/workshop/algorithms/{id}", strategyId).session(authorB.session()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("READY"))
+                .andExpect(jsonPath("$.algorithm.visibility").value("closed"))
+                .andExpect(jsonPath("$.algorithm.isMine").value(false))
+                .andExpect(jsonPath("$.algorithm.versions.length()").value(2))
+                .andReturn();
+        String peerBody = peerDetail.getResponse().getContentAsString();
+        assertThat(peerBody).doesNotContain(secretV1).doesNotContain(secretV2);
+        JsonNode peerVersions = json.readTree(peerBody).get("algorithm").get("versions");
+        assertThat(peerVersions.get(0).get("source").isNull()).isTrue();
+        assertThat(peerVersions.get(1).get("source").isNull()).isTrue();
+
+        // Не-автор не может форкнуть закрытый алгоритм (409 CONFLICT)
+        mockMvc.perform(post("/api/v1/workshop/algorithms/{id}/fork", strategyId)
+                        .session(authorB.session())
+                        .cookie(authorB.xsrf())
+                        .header("X-XSRF-TOKEN", authorB.xsrf().getValue()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CONFLICT"));
+
+        // Но не-автор может запускать и сравнивать закрытый алгоритм через внутренний каталог
+        assertThat(catalog.canAccess(v1Id, authorB.id())).isTrue();
+        assertThat(catalog.canAccess(v2Id, authorB.id())).isTrue();
+        assertThat(catalog.findLatestVersion(strategyId, authorB.id()))
+                .isPresent()
+                .get()
+                .extracting(StrategyVersionView::source)
+                .isEqualTo(secretV2);
+
+        // Переключение closed -> hidden (Приватный): скрывает алгоритм целиком для других
+        mockMvc.perform(patch("/api/v1/workshop/algorithms/{id}/visibility", strategyId)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"visibility\":\"hidden\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.visibility").value("hidden"));
+
+        mockMvc.perform(get("/api/v1/workshop/algorithms/{id}", strategyId).session(authorB.session()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("NOT_FOUND"));
+        assertThat(catalog.canAccess(v2Id, authorB.id())).isFalse();
+
+        // Переключение hidden -> public (Публичный): открывает исходный код и форк для всех
+        mockMvc.perform(patch("/api/v1/workshop/algorithms/{id}/visibility", strategyId)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"visibility\":\"public\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.visibility").value("public"));
+
+        mockMvc.perform(get("/api/v1/workshop/algorithms/{id}", strategyId).session(authorB.session()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.algorithm.visibility").value("public"))
+                .andExpect(jsonPath("$.algorithm.versions[0].source").value(secretV2));
+
+        mockMvc.perform(post("/api/v1/workshop/algorithms/{id}/fork", strategyId)
+                        .session(authorB.session())
+                        .cookie(authorB.xsrf())
+                        .header("X-XSRF-TOKEN", authorB.xsrf().getValue()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.source").value(secretV2));
+
+        // Системный алгоритм нельзя перевести в closed (409)
+        mockMvc.perform(patch("/api/v1/workshop/algorithms/{id}/visibility", StrategyCatalog.SYSTEM_STRATEGY_ID)
+                        .session(authorA.session())
+                        .cookie(authorA.xsrf())
+                        .header("X-XSRF-TOKEN", authorA.xsrf().getValue())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"visibility\":\"closed\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CONFLICT"));
+    }
+
     private record UserSession(UUID id, MockHttpSession session, Cookie xsrf) {}
 
     static final class StubWorker implements SimulationWorkerClient {

@@ -59,11 +59,16 @@ class WorkshopService {
     }
 
     DraftView createDraft(
-            @Nullable String rawName, @Nullable String rawDescription, @Nullable String rawSource, String authorName) {
+            @Nullable String rawName,
+            @Nullable String rawDescription,
+            @Nullable String rawSource,
+            @Nullable String rawVisibility,
+            String authorName) {
         UUID ownerId = currentUser.requireId();
         String name = validateName(rawName);
         String description = validateDescription(rawDescription == null ? "" : rawDescription);
         String source = validateSource(rawSource == null ? "" : rawSource);
+        String visibility = rawVisibility == null ? "public" : validateVisibility(rawVisibility);
         String safeAuthor = normalizeAuthor(authorName);
         UUID strategyId = Uuid7.next();
 
@@ -73,13 +78,14 @@ class WorkshopService {
                                 INSERT INTO workshop.strategy (
                                     id, owner_id, author_name, is_system, name, description, visibility, license
                                 )
-                                VALUES (:id, :owner, :author, FALSE, :name, :desc, 'public', 'MIT')
+                                VALUES (:id, :owner, :author, FALSE, :name, :desc, :vis, 'MIT')
                                 """)
                         .param("id", strategyId)
                         .param("owner", ownerId)
                         .param("author", safeAuthor)
                         .param("name", name)
                         .param("desc", description)
+                        .param("vis", visibility)
                         .update();
                 jdbc.sql("INSERT INTO workshop.strategy_draft (strategy_id, source) VALUES (:id, :src)")
                         .param("id", strategyId)
@@ -235,6 +241,9 @@ class WorkshopService {
             throw new InvalidRequestException("version must be positive");
         }
         ForkTarget source = findForkTarget(sourceStrategyId, versionNumber, ownerId);
+        if ("closed".equals(source.visibility()) && !Objects.equals(source.ownerId(), ownerId)) {
+            throw WorkshopConflictException.closedAlgorithmForkForbidden();
+        }
         String explicitName = requestedName == null ? null : validateName(requestedName);
         String description =
                 requestedDescription == null ? source.description() : validateDescription(requestedDescription);
@@ -282,9 +291,7 @@ class WorkshopService {
     }
 
     void changeVisibility(UUID strategyId, @Nullable String visibility) {
-        if (!"public".equals(visibility) && !"hidden".equals(visibility)) {
-            throw new InvalidRequestException("visibility must be public or hidden");
-        }
+        String validVisibility = validateVisibility(visibility);
         UUID ownerId = currentUser.requireId();
         StrategyMeta meta = requireNonDeletedOwnedOrSystem(strategyId, ownerId);
         if (meta.isSystem()) {
@@ -295,7 +302,7 @@ class WorkshopService {
                         UPDATE workshop.strategy
                         SET visibility = :vis, updated_at = now()
                         WHERE id = :id AND visibility <> 'deleted'
-                        """).param("vis", visibility).param("id", strategyId).update();
+                        """).param("vis", validVisibility).param("id", strategyId).update();
     }
 
     void deleteAlgorithm(UUID strategyId) {
@@ -397,6 +404,8 @@ class WorkshopService {
         String sql = """
                 SELECT s.name,
                        s.description,
+                       s.owner_id,
+                       s.visibility,
                        v.id AS version_id,
                        v.source,
                        v.lookahead_level,
@@ -406,7 +415,7 @@ class WorkshopService {
                 JOIN workshop.strategy_version v ON v.strategy_id = s.id
                 WHERE s.id = :id
                   AND s.visibility <> 'deleted'
-                  AND (s.is_system OR s.visibility = 'public' OR s.owner_id = :viewerId)
+                  AND (s.is_system OR s.visibility IN ('public', 'closed') OR s.owner_id = :viewerId)
                 """ + versionFilter + " ORDER BY v.version DESC LIMIT 1";
         JdbcClient.StatementSpec spec = jdbc.sql(sql).param("id", strategyId).param("viewerId", viewerId);
         if (versionNumber != null) {
@@ -415,6 +424,8 @@ class WorkshopService {
         return spec.query((rs, n) -> new ForkTarget(
                         rs.getString("name"),
                         rs.getString("description"),
+                        rs.getObject("owner_id", UUID.class),
+                        rs.getString("visibility"),
                         rs.getObject("version_id", UUID.class),
                         rs.getString("source"),
                         rs.getString("lookahead_level"),
@@ -509,6 +520,13 @@ class WorkshopService {
         return raw;
     }
 
+    private static String validateVisibility(@Nullable String visibility) {
+        if (!"public".equals(visibility) && !"closed".equals(visibility) && !"hidden".equals(visibility)) {
+            throw new InvalidRequestException("visibility must be public, closed, or hidden");
+        }
+        return visibility;
+    }
+
     private static String normalizeAuthor(String raw) {
         String trimmed = raw.strip();
         if (trimmed.isEmpty()) {
@@ -550,6 +568,8 @@ class WorkshopService {
     private record ForkTarget(
             String name,
             String description,
+            @Nullable UUID ownerId,
+            String visibility,
             UUID versionId,
             String source,
             String lookaheadLevel,
