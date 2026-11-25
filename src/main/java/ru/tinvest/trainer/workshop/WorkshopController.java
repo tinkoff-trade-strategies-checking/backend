@@ -63,7 +63,8 @@ class WorkshopController {
 
     @PostMapping("/algorithms")
     ResponseEntity<DraftView> create(@RequestBody CreateAlgorithmRequest body) {
-        DraftView created = service.createDraft(body.name(), body.description(), body.source(), resolveAuthorName());
+        DraftView created = service.createDraft(
+                body.name(), body.description(), body.source(), body.visibility(), resolveAuthorName());
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
@@ -156,7 +157,8 @@ class WorkshopController {
     record CreateAlgorithmRequest(
             @Nullable String name,
             @Nullable String description,
-            @Nullable String source) {}
+            @Nullable String source,
+            @Nullable String visibility) {}
 
     record UpdateDraftRequest(
             @Nullable String name,

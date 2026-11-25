@@ -125,7 +125,7 @@ class WorkshopCatalogQueries {
         params.put("systemAuthor", StrategyCatalog.SYSTEM_AUTHOR_ID);
 
         StringBuilder where = new StringBuilder(
-                " WHERE s.visibility <> 'deleted' AND (s.visibility = 'public' OR s.owner_id = :viewerId)");
+                " WHERE s.visibility <> 'deleted' AND (s.visibility IN ('public', 'closed') OR s.owner_id = :viewerId)");
         if (mineOnly) {
             where.append(" AND s.owner_id = :viewerId");
         } else {
@@ -177,7 +177,7 @@ class WorkshopCatalogQueries {
         String sql = SUMMARY_CTE + SUMMARY_SELECT + SUMMARY_FROM + """
                  WHERE s.id = :id
                    AND s.visibility <> 'deleted'
-                   AND (s.owner_id = :viewerId OR (s.visibility = 'public' AND lv.version IS NOT NULL))
+                   AND (s.owner_id = :viewerId OR (s.visibility IN ('public', 'closed') AND lv.version IS NOT NULL))
                 """;
         List<AlgorithmSummaryView> found = querySummaries(
                 sql,
@@ -187,6 +187,7 @@ class WorkshopCatalogQueries {
             return new DetailNotFoundView("NOT_FOUND");
         }
         AlgorithmSummaryView summary = found.getFirst();
+        boolean hideSource = "closed".equals(summary.visibility()) && !summary.isMine();
         List<AlgorithmVersionView> versions = jdbc.sql("""
                         SELECT id,
                                version,
@@ -201,7 +202,7 @@ class WorkshopCatalogQueries {
                         ORDER BY version DESC
                         """)
                 .param("id", strategyId)
-                .query((rs, n) -> mapVersion(rs))
+                .query((rs, n) -> mapVersion(rs, hideSource))
                 .list();
 
         AlgorithmDetailView detail = new AlgorithmDetailView(
@@ -250,7 +251,7 @@ class WorkshopCatalogQueries {
                                lower(s.author_name) AS author_sort
                         FROM workshop.strategy s
                         WHERE s.visibility <> 'deleted'
-                          AND (s.visibility = 'public' OR s.owner_id = :viewerId)
+                          AND (s.visibility IN ('public', 'closed') OR s.owner_id = :viewerId)
                           AND EXISTS (SELECT 1 FROM workshop.strategy_version v WHERE v.strategy_id = s.id)
                         ORDER BY s.is_system DESC, author_sort ASC, author_id ASC
                         """)
@@ -287,7 +288,7 @@ class WorkshopCatalogQueries {
                 mapForkSource(rs));
     }
 
-    private AlgorithmVersionView mapVersion(ResultSet rs) throws SQLException {
+    private AlgorithmVersionView mapVersion(ResultSet rs, boolean hideSource) throws SQLException {
         return new AlgorithmVersionView(
                 rs.getObject("id", UUID.class),
                 rs.getInt("version"),
@@ -295,7 +296,7 @@ class WorkshopCatalogQueries {
                 rs.getString("summary"),
                 true,
                 rs.getString("lookahead_level"),
-                rs.getString("source"),
+                hideSource ? null : rs.getString("source"),
                 parseDiagnostics(rs.getString("diagnostics_json")),
                 parseParams(rs.getString("param_decls_json")));
     }

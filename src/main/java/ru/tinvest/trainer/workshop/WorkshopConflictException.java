@@ -21,6 +21,10 @@ final class WorkshopConflictException extends RuntimeException {
                 ErrorCode.CONFLICT, "System platform algorithm cannot be hidden or deleted");
     }
 
+    static WorkshopConflictException closedAlgorithmForkForbidden() {
+        return new WorkshopConflictException(ErrorCode.CONFLICT, "Closed-source algorithm cannot be forked");
+    }
+
     ErrorCode code() {
         return code;
     }
