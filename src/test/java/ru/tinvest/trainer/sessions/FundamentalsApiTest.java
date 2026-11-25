@@ -242,7 +242,7 @@ class FundamentalsApiTest extends PostgresIntegrationTest {
 
     private UUID createUser(String email) {
         UUID id = UUID.randomUUID();
-        jdbc.sql("INSERT INTO identity.user_account (id, email, password_hash, role) VALUES (:id, :e, :h, 'USER')")
+        jdbc.sql("INSERT INTO identity.user_account (id, email, password_hash) VALUES (:id, :e, :h)")
                 .param("id", id)
                 .param("e", email)
                 .param("h", encoder.encode(PASSWORD))

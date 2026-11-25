@@ -159,7 +159,7 @@ paths:
           schema: { type: string, minLength: 1, maxLength: 32 }
       responses:
         '200':
-          description: Фундаментальные показатели бумаги (или `available: false`)
+          description: 'Фундаментальные показатели бумаги (или `available: false`)'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PaperFundamentalsResponse' }
