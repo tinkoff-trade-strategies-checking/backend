@@ -683,6 +683,294 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
         assertThat(awaitFinished(userB, userBRun).get("status").asString()).isEqualTo("completed");
     }
 
+    @Test
+    void compareRunsCustomWindowCreatesIdenticalRunsAndSupportsClosedWithoutLeakingSource() throws Exception {
+        UUID publicAlgo = insertStrategy(userB.id(), "public", "Публичная");
+        insertVersion(publicAlgo, 1, "rule \"v1\" when true then buy 1 lots");
+        UUID publicLatestVer = insertVersion(publicAlgo, 2, "rule \"v2\" when true then buy 2 lots");
+
+        String closedSecret = "SECRET_CLOSED_DSL_SOURCE_XYZ";
+        UUID closedAlgo = insertStrategy(userB.id(), "closed", "Закрытая");
+        UUID closedVer = insertVersion(closedAlgo, 1, "rule \"" + closedSecret + "\" when true then buy 1 lots");
+
+        UUID ownHiddenAlgo = insertStrategy(userA.id(), "hidden", "СвояСкрытая");
+        UUID ownHiddenVer = insertVersion(ownHiddenAlgo, 1, "rule \"h\" when true then buy 1 lots");
+
+        planner.customPapers = List.of(
+                new PlannedPaper(Papers.id("SBER"), "SBER", "Финансы", 10L, new BigDecimal("0.01"), "Сбербанк"),
+                new PlannedPaper(Papers.id("GAZP"), "GAZP", "Энергетика", 10L, new BigDecimal("0.01"), "Газпром"),
+                new PlannedPaper(Papers.id("LKOH"), "LKOH", "Энергетика", 1L, new BigDecimal("0.50"), "ЛУКОЙЛ"));
+
+        List<UUID> algoIds = List.of(publicAlgo, closedAlgo, ownHiddenAlgo, StrategyCatalog.SYSTEM_STRATEGY_ID);
+        MvcResult res = mockMvc.perform(withAuth(userA, post("/api/v1/runs/compare"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(compareRunsBody(algoIds, "custom", false)))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        String raw = res.getResponse().getContentAsString();
+        assertThat(raw).doesNotContain(closedSecret);
+        assertThat(planner.planCalls.get()).isEqualTo(1);
+
+        JsonNode body = json.readTree(raw);
+        assertThat(body.get("startDate").asString()).isEqualTo(START.toString());
+        assertThat(body.get("endDate").asString()).isEqualTo(END.toString());
+        assertThat(body.get("timeframe").asString()).isEqualTo("1d");
+        assertThat(body.get("durationDays").asInt()).isEqualTo(20);
+        assertThat(body.get("initialCapital").asString()).isEqualTo("1000000.00");
+        assertThat(body.get("blind").asBoolean()).isFalse();
+        assertThat(body.get("papers")).hasSize(3);
+
+        List<String> responseTickers = new ArrayList<>();
+        for (JsonNode p : body.get("papers")) {
+            assertThat(p.get("id").isNull()).isFalse();
+            responseTickers.add(p.get("ticker").asString());
+            assertThat(p.get("name").asString()).isNotBlank();
+        }
+        assertThat(responseTickers).containsExactlyInAnyOrder("SBER", "GAZP", "LKOH");
+
+        JsonNode runsNode = body.get("runs");
+        assertThat(runsNode).hasSize(4);
+        assertThat(runsNode.get(0).get("algorithmId").asString()).isEqualTo(publicAlgo.toString());
+        assertThat(runsNode.get(0).get("versionId").asString()).isEqualTo(publicLatestVer.toString());
+        assertThat(runsNode.get(1).get("algorithmId").asString()).isEqualTo(closedAlgo.toString());
+        assertThat(runsNode.get(1).get("versionId").asString()).isEqualTo(closedVer.toString());
+        assertThat(runsNode.get(2).get("algorithmId").asString()).isEqualTo(ownHiddenAlgo.toString());
+        assertThat(runsNode.get(2).get("versionId").asString()).isEqualTo(ownHiddenVer.toString());
+        assertThat(runsNode.get(3).get("algorithmId").asString())
+                .isEqualTo(StrategyCatalog.SYSTEM_STRATEGY_ID.toString());
+        assertThat(runsNode.get(3).get("versionId").asString()).isEqualTo(StrategyCatalog.SYSTEM_VERSION_ID.toString());
+
+        List<RunRecord> stored = new ArrayList<>();
+        for (JsonNode r : runsNode) {
+            assertThat(r.get("status").asString()).isEqualTo("queued");
+            UUID runId = UUID.fromString(r.get("runId").asString());
+            stored.add(runs.findRecord(runId).orElseThrow());
+        }
+
+        RunRecord first = stored.getFirst();
+        List<String> firstTickers =
+                first.papers().stream().map(RunPaperRecord::secid).toList();
+        assertThat(firstTickers).isEqualTo(responseTickers);
+        for (RunRecord r : stored) {
+            assertThat(r.snapshotId()).isEqualTo(first.snapshotId());
+            assertThat(r.periodStart()).isEqualTo(first.periodStart());
+            assertThat(r.periodEnd()).isEqualTo(first.periodEnd());
+            assertThat(r.timeframe()).isEqualTo(first.timeframe());
+            assertThat(r.durationDays()).isEqualTo(first.durationDays());
+            assertThat(r.initialCapital()).isEqualByComparingTo(first.initialCapital());
+            assertThat(r.warmupBars()).isEqualTo(first.warmupBars());
+            assertThat(r.costs()).isEqualTo(first.costs());
+            assertThat(r.papers()).isEqualTo(first.papers());
+        }
+
+        for (RunRecord r : stored) {
+            assertThat(awaitFinished(userA, r.id()).get("status").asString()).isEqualTo("completed");
+        }
+    }
+
+    @Test
+    void compareRunsRandomWindowSharesSinglePlanAndMasksBlindResponsePerInv7() throws Exception {
+        UUID publicAlgo = insertStrategy(userB.id(), "public", "СлучайнаяПубличная");
+        insertVersion(publicAlgo, 1, "rule \"r\" when true then buy 1 lots");
+
+        planner.varyRandomDates = true;
+        planner.customPapers = List.of(
+                new PlannedPaper(Papers.id("SBER"), "SBER", "Финансы", 10L, new BigDecimal("0.01"), "Сбербанк"),
+                new PlannedPaper(Papers.id("GAZP"), "GAZP", "Энергетика", 10L, new BigDecimal("0.01"), "Газпром"));
+
+        MvcResult res = mockMvc.perform(withAuth(userA, post("/api/v1/runs/compare"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(compareRunsBody(
+                                List.of(StrategyCatalog.SYSTEM_STRATEGY_ID, publicAlgo), "random", false)))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        String raw = res.getResponse().getContentAsString();
+        assertThat(planner.planCalls.get()).isEqualTo(1);
+        assertThat(raw).doesNotContain("SBER").doesNotContain("GAZP").doesNotContain(START.toString());
+
+        JsonNode body = json.readTree(raw);
+        assertThat(body.get("blind").asBoolean()).isTrue();
+        assertThat(body.get("startDate").isNull()).isTrue();
+        assertThat(body.get("endDate").isNull()).isTrue();
+        assertThat(body.get("papers")).hasSize(2);
+        assertThat(body.get("papers").get(0).get("id").isNull()).isTrue();
+        assertThat(body.get("papers").get(0).get("ticker").asString()).isEmpty();
+        assertThat(body.get("papers").get(0).get("name").asString()).isEqualTo("Бумага A");
+        assertThat(body.get("papers").get(1).get("name").asString()).isEqualTo("Бумага B");
+
+        UUID run1Id = UUID.fromString(body.get("runs").get(0).get("runId").asString());
+        UUID run2Id = UUID.fromString(body.get("runs").get(1).get("runId").asString());
+        RunRecord r1 = runs.findRecord(run1Id).orElseThrow();
+        RunRecord r2 = runs.findRecord(run2Id).orElseThrow();
+        assertThat(r1.blind()).isTrue();
+        assertThat(r2.blind()).isTrue();
+        assertThat(r2.snapshotId()).isEqualTo(r1.snapshotId());
+        assertThat(r2.periodStart()).isEqualTo(r1.periodStart());
+        assertThat(r2.periodEnd()).isEqualTo(r1.periodEnd());
+        assertThat(r2.papers()).isEqualTo(r1.papers());
+
+        assertThat(awaitFinished(userA, run1Id).get("status").asString()).isEqualTo("completed");
+        assertThat(awaitFinished(userA, run2Id).get("status").asString()).isEqualTo("completed");
+    }
+
+    @Test
+    void compareRunsRejectsInvalidIdsUnauthorizedAlgorithmsAndEnforcesAtomicQueueLimit() throws Exception {
+        UUID publicAlgo = insertStrategy(userB.id(), "public", "ПубличнаяДляВалидации");
+        insertVersion(publicAlgo, 1, "rule \"p\" when true then buy 1 lots");
+
+        UUID otherHiddenAlgo = insertStrategy(userB.id(), "hidden", "ЧужаяСкрытая");
+        insertVersion(otherHiddenAlgo, 1, "rule \"h\" when true then buy 1 lots");
+
+        UUID unpublishedAlgo = insertStrategy(userA.id(), "public", "ЧерновикБезВерсий");
+
+        // < 2 алгоритмов -> 400
+        mockMvc.perform(withAuth(userA, post("/api/v1/runs/compare"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(compareRunsBody(List.of(StrategyCatalog.SYSTEM_STRATEGY_ID), "custom", false)))
+                .andExpect(status().isBadRequest());
+
+        // > 5 алгоритмов -> 400
+        List<UUID> sixIds = List.of(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID());
+        mockMvc.perform(withAuth(userA, post("/api/v1/runs/compare"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(compareRunsBody(sixIds, "custom", false)))
+                .andExpect(status().isBadRequest());
+
+        // дубликаты -> 400
+        mockMvc.perform(withAuth(userA, post("/api/v1/runs/compare"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(compareRunsBody(
+                                List.of(StrategyCatalog.SYSTEM_STRATEGY_ID, StrategyCatalog.SYSTEM_STRATEGY_ID),
+                                "custom",
+                                false)))
+                .andExpect(status().isBadRequest());
+
+        // null элемент -> 400
+        String withNull = """
+                {
+                  "algorithmIds": ["%s", null],
+                  "blind": false,
+                  "durationDays": 20,
+                  "timeframe": "1d",
+                  "regime": "calm",
+                  "startMode": "custom",
+                  "customStartDate": "%s",
+                  "paperCount": null,
+                  "paperIds": ["%s"],
+                  "initialCapital": "1000000.00"
+                }
+                """.formatted(StrategyCatalog.SYSTEM_STRATEGY_ID, START, Papers.id("SBER"));
+        mockMvc.perform(withAuth(userA, post("/api/v1/runs/compare"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withNull))
+                .andExpect(status().isBadRequest());
+
+        // чужой hidden алгоритм -> 404
+        mockMvc.perform(withAuth(userA, post("/api/v1/runs/compare"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(compareRunsBody(
+                                List.of(StrategyCatalog.SYSTEM_STRATEGY_ID, otherHiddenAlgo), "custom", false)))
+                .andExpect(status().isNotFound());
+
+        // неопубликованный алгоритм -> 404
+        mockMvc.perform(withAuth(userA, post("/api/v1/runs/compare"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(compareRunsBody(
+                                List.of(StrategyCatalog.SYSTEM_STRATEGY_ID, unpublishedAlgo), "custom", false)))
+                .andExpect(status().isNotFound());
+
+        // несуществующий алгоритм -> 404
+        mockMvc.perform(withAuth(userA, post("/api/v1/runs/compare"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(compareRunsBody(
+                                List.of(StrategyCatalog.SYSTEM_STRATEGY_ID, UUID.randomUUID()), "custom", false)))
+                .andExpect(status().isNotFound());
+
+        // Атомарная проверка квоты очереди: 19 в очереди + пакет из 2 (> 20) -> 429 и 0 частично созданных прогонов
+        worker.entered = new CountDownLatch(3);
+        worker.gate = new CountDownLatch(1);
+        List<UUID> created = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            created.add(createRun(userA, false, "custom"));
+        }
+        assertThat(worker.entered.await(5, TimeUnit.SECONDS)).isTrue();
+        for (int i = 0; i < 19; i++) {
+            created.add(createRun(userA, false, "custom"));
+        }
+
+        mockMvc.perform(withAuth(userA, post("/api/v1/runs/compare"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(compareRunsBody(
+                                List.of(StrategyCatalog.SYSTEM_STRATEGY_ID, publicAlgo), "custom", false)))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.code").value("TOO_MANY_REQUESTS"));
+
+        Integer queuedAfter = jdbc.sql("SELECT count(*) FROM simulation.run WHERE user_id = :u AND status = 'queued'")
+                .param("u", userA.id())
+                .query(Integer.class)
+                .single();
+        assertThat(queuedAfter).isEqualTo(19);
+
+        worker.gate.countDown();
+        for (UUID id : created) {
+            assertThat(awaitFinished(userA, id).get("status").asString()).isEqualTo("completed");
+        }
+    }
+
+    private UUID insertStrategy(UUID ownerId, String visibility, String name) {
+        UUID id = UUID.randomUUID();
+        jdbc.sql("INSERT INTO workshop.strategy (id, owner_id, author_name, is_system, name, visibility) "
+                        + "VALUES (:id, :owner, 'Author', FALSE, :name, :vis)")
+                .param("id", id)
+                .param("owner", ownerId)
+                .param("name", name + "-" + id)
+                .param("vis", visibility)
+                .update();
+        return id;
+    }
+
+    private UUID insertVersion(UUID strategyId, int version, String source) {
+        UUID id = UUID.randomUUID();
+        jdbc.sql("INSERT INTO workshop.strategy_version (id, strategy_id, version, source, params, param_decls) "
+                        + "VALUES (:id, :strategy, :ver, :src, '{}'::jsonb, '[]'::jsonb)")
+                .param("id", id)
+                .param("strategy", strategyId)
+                .param("ver", version)
+                .param("src", source)
+                .update();
+        return id;
+    }
+
+    private String compareRunsBody(List<UUID> algorithmIds, String startMode, boolean blind) {
+        String idsJson =
+                algorithmIds.stream().map(id -> "\"" + id + "\"").collect(java.util.stream.Collectors.joining(", "));
+        String customDate = "custom".equals(startMode) ? "\"" + START + "\"" : "null";
+        String paperCount = "custom".equals(startMode) ? "null" : "2";
+        String paperIds = "custom".equals(startMode) ? "[\"" + Papers.id("SBER") + "\"]" : "null";
+        return """
+                {
+                  "algorithmIds": [%s],
+                  "blind": %s,
+                  "durationDays": 20,
+                  "timeframe": "1d",
+                  "regime": "calm",
+                  "startMode": "%s",
+                  "customStartDate": %s,
+                  "paperCount": %s,
+                  "paperIds": %s,
+                  "initialCapital": "1000000.00"
+                }
+                """.formatted(idsJson, blind, startMode, customDate, paperCount, paperIds);
+    }
+
     private UUID createRun(UserSession user, boolean blind, String startMode) throws Exception {
         MvcResult result = mockMvc.perform(withAuth(user, post("/api/v1/runs"))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -779,9 +1067,15 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
     static final class StubRunPlanner implements LaunchPlanner {
 
         volatile LaunchRejection rejectWith;
+        volatile List<PlannedPaper> customPapers;
+        volatile boolean varyRandomDates;
+        final AtomicInteger planCalls = new AtomicInteger();
 
         void reset() {
             rejectWith = null;
+            customPapers = null;
+            varyRandomDates = false;
+            planCalls.set(0);
         }
 
         @Override
@@ -791,15 +1085,23 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
 
         @Override
         public LaunchResult plan(LaunchRequest request, UUID snapshotId, long seed) {
+            int callIndex = planCalls.incrementAndGet();
             if (rejectWith != null) {
                 return rejectWith;
             }
             Snapshot snap = registeredSnapshot();
+            LocalDate start =
+                    varyRandomDates && request.startMode() == StartMode.RANDOM ? START.plusDays(callIndex) : START;
+            LocalDate end = varyRandomDates && request.startMode() == StartMode.RANDOM ? END.plusDays(callIndex) : END;
+            List<PlannedPaper> papers = customPapers != null
+                    ? customPapers
+                    : List.of(new PlannedPaper(
+                            Papers.id("SBER"), "SBER", "Финансы", 10L, new BigDecimal("0.01"), "Сбербанк"));
             return new LaunchPlan(
                     snap,
                     request.startMode() == StartMode.RANDOM,
-                    START,
-                    END,
+                    start,
+                    end,
                     20,
                     request.regime(),
                     0.15,
@@ -808,8 +1110,7 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
                     0.28,
                     request.timeframe(),
                     20,
-                    List.of(new PlannedPaper(
-                            Papers.id("SBER"), "SBER", "Финансы", 10L, new BigDecimal("0.01"), "Сбербанк")),
+                    papers,
                     request.initialCapital());
         }
 

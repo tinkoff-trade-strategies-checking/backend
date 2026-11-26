@@ -57,6 +57,8 @@ public class Runs {
 
     record HistoryData(List<RunRecord> items, long total) {}
 
+    record PlannedBatch(List<UUID> runIds, List<PlannedPaper> papers) {}
+
     private final JdbcClient jdbc;
     private final StrategyVersions strategyVersions;
     private final Snapshots snapshots;
@@ -134,7 +136,41 @@ public class Runs {
             boolean blind,
             LaunchPlan plan,
             Map<String, Double> paramOverrides) {
-        acquireUserQueueSlot(userId);
+        acquireUserQueueSlots(userId, 1);
+        List<PlannedPaper> shuffled = new ArrayList<>(plan.papers());
+        Collections.shuffle(shuffled, random);
+        return insertPlannedRun(
+                userId, strategyVersionId, startMode, durationDays, blind, plan, paramOverrides, shuffled);
+    }
+
+    @Transactional
+    PlannedBatch createPlannedBatch(
+            UUID userId,
+            List<UUID> strategyVersionIds,
+            StartMode startMode,
+            int durationDays,
+            boolean blind,
+            LaunchPlan plan) {
+        acquireUserQueueSlots(userId, strategyVersionIds.size());
+        List<PlannedPaper> orderedPapers = new ArrayList<>(plan.papers());
+        Collections.shuffle(orderedPapers, random);
+        List<UUID> runIds = new ArrayList<>(strategyVersionIds.size());
+        for (UUID strategyVersionId : strategyVersionIds) {
+            runIds.add(insertPlannedRun(
+                    userId, strategyVersionId, startMode, durationDays, blind, plan, Map.of(), orderedPapers));
+        }
+        return new PlannedBatch(List.copyOf(runIds), List.copyOf(orderedPapers));
+    }
+
+    private UUID insertPlannedRun(
+            UUID userId,
+            UUID strategyVersionId,
+            StartMode startMode,
+            int durationDays,
+            boolean blind,
+            LaunchPlan plan,
+            Map<String, Double> paramOverrides,
+            List<PlannedPaper> orderedPapers) {
         UUID id = Uuid7.next();
         jdbc.sql("""
                         INSERT INTO simulation.run (
@@ -180,10 +216,8 @@ public class Runs {
                 .param("overrides", json.writeValueAsString(paramOverrides))
                 .update();
 
-        List<PlannedPaper> shuffled = new ArrayList<>(plan.papers());
-        Collections.shuffle(shuffled, random);
-        for (int index = 0; index < shuffled.size(); index++) {
-            PlannedPaper p = shuffled.get(index);
+        for (int index = 0; index < orderedPapers.size(); index++) {
+            PlannedPaper p = orderedPapers.get(index);
             insertPaper(id, index, p.id(), p.secid(), p.sector(), p.lotSize(), p.priceStep(), p.name());
         }
         return id;
@@ -191,7 +225,7 @@ public class Runs {
 
     @Transactional
     UUID repeatPlanned(UUID userId, RunRecord original) {
-        acquireUserQueueSlot(userId);
+        acquireUserQueueSlots(userId, 1);
         UUID id = Uuid7.next();
         jdbc.sql("""
                         INSERT INTO simulation.run (
@@ -331,7 +365,7 @@ public class Runs {
         return updated > 0 ? Optional.of(runId) : Optional.empty();
     }
 
-    private void acquireUserQueueSlot(UUID userId) {
+    private void acquireUserQueueSlots(UUID userId, int count) {
         jdbc.sql("SELECT pg_advisory_xact_lock(hashtext(:key))")
                 .param("key", "run-user:" + userId)
                 .query()
@@ -340,7 +374,7 @@ public class Runs {
                 .param("user", userId)
                 .query(Integer.class)
                 .single();
-        if (queued >= properties.maxQueuedPerUser()) {
+        if (queued + count > properties.maxQueuedPerUser()) {
             throw new RunQueueLimitException(
                     "Too many queued runs (max " + properties.maxQueuedPerUser() + " per user)");
         }
