@@ -3,6 +3,7 @@ package ru.tinvest.trainer.simulation;
 import jakarta.servlet.http.HttpServletResponse;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +30,7 @@ import ru.tinvest.trainer.marketdata.LaunchPlanner;
 import ru.tinvest.trainer.marketdata.LaunchRejectReason;
 import ru.tinvest.trainer.marketdata.LaunchRejection;
 import ru.tinvest.trainer.marketdata.LaunchRequest;
+import ru.tinvest.trainer.marketdata.PlannedPaper;
 import ru.tinvest.trainer.marketdata.Regime;
 import ru.tinvest.trainer.marketdata.StartMode;
 import ru.tinvest.trainer.marketdata.Timeframe;
@@ -76,6 +78,13 @@ class RunsController {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("runId", runId);
         return ResponseEntity.status(HttpStatus.CREATED).body(out);
+    }
+
+    @PostMapping("/compare")
+    ResponseEntity<Map<String, Object>> createCompare(@RequestBody CreateCompareRunsRequest body) {
+        RunLaunchService.CompareLaunchResult launched = launchService.launchCompare(
+                body.algorithmIds(), Boolean.TRUE.equals(body.blind()), body.toLaunchRequest());
+        return ResponseEntity.status(HttpStatus.CREATED).body(compareResponse(launched));
     }
 
     @GetMapping("/{runId}")
@@ -245,6 +254,83 @@ class RunsController {
         }
     }
 
+    private static Map<String, Object> compareResponse(RunLaunchService.CompareLaunchResult launched) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        boolean blind = launched.blind();
+        out.put("startDate", blind ? null : launched.plan().startDate().toString());
+        out.put("endDate", blind ? null : launched.plan().endDate().toString());
+        out.put("timeframe", launched.plan().timeframe().code());
+        out.put("durationDays", launched.durationDays());
+        out.put("initialCapital", RunFormat.money(launched.plan().capital()));
+        out.put("blind", blind);
+
+        List<Map<String, Object>> papers = new ArrayList<>(launched.papers().size());
+        for (int i = 0; i < launched.papers().size(); i++) {
+            PlannedPaper p = launched.papers().get(i);
+            Map<String, Object> item = new LinkedHashMap<>();
+            if (blind) {
+                // INV-7: в слепом режиме идентификатор, тикер и реальное название бумаги не раскрываются
+                item.put("id", null);
+                item.put("ticker", "");
+                item.put("name", RunFormat.label(i));
+            } else {
+                item.put("id", p.id());
+                item.put("ticker", p.secid());
+                item.put("name", p.name().isBlank() ? p.secid() : p.name());
+            }
+            papers.add(item);
+        }
+        out.put("papers", papers);
+
+        List<Map<String, Object>> runsList = new ArrayList<>(launched.runs().size());
+        for (RunLaunchService.CompareLaunchItem r : launched.runs()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("algorithmId", r.algorithmId());
+            item.put("algorithmName", r.algorithmName());
+            item.put("versionId", r.versionId());
+            item.put("runId", r.runId());
+            item.put("status", r.status());
+            runsList.add(item);
+        }
+        out.put("runs", runsList);
+        return out;
+    }
+
+    private static LaunchRequest parseLaunchRequest(
+            @Nullable Integer durationDays,
+            @Nullable String timeframe,
+            @Nullable String regime,
+            @Nullable String startMode,
+            @Nullable LocalDate customStartDate,
+            @Nullable Integer paperCount,
+            @Nullable List<UUID> paperIds,
+            @Nullable String initialCapital) {
+        if (durationDays == null) {
+            throw new InvalidRequestException("durationDays is required");
+        }
+        Timeframe tf = timeframe == null ? null : Timeframe.fromCode(timeframe).orElse(null);
+        if (tf == null) {
+            throw new InvalidRequestException("timeframe is invalid");
+        }
+        Regime r = regime == null ? null : Regime.fromCode(regime).orElse(null);
+        if (r == null) {
+            throw new InvalidRequestException("regime is invalid");
+        }
+        StartMode mode = switch (startMode == null ? "" : startMode) {
+            case "random" -> StartMode.RANDOM;
+            case "custom" -> StartMode.CUSTOM;
+            default -> throw new InvalidRequestException("startMode is invalid");
+        };
+        if (!LaunchPlanner.DURATIONS.contains(durationDays)) {
+            throw new InvalidRequestException("durationDays must be one of 20, 60, 120, 250");
+        }
+        if (initialCapital == null || !MONEY.matcher(initialCapital).matches()) {
+            throw new InvalidRequestException("initialCapital must be a decimal string with up to 2 digits");
+        }
+        BigDecimal capital = new BigDecimal(initialCapital);
+        return new LaunchRequest(durationDays, tf, r, mode, customStartDate, paperCount, paperIds, capital);
+    }
+
     record CreateRunRequest(
             @Nullable UUID strategyVersionId,
             @Nullable Map<String, Double> paramOverrides,
@@ -283,31 +369,26 @@ class RunsController {
         }
 
         LaunchRequest toLaunchRequest() {
-            if (durationDays == null) {
-                throw new InvalidRequestException("durationDays is required");
-            }
-            Timeframe tf =
-                    timeframe == null ? null : Timeframe.fromCode(timeframe).orElse(null);
-            if (tf == null) {
-                throw new InvalidRequestException("timeframe is invalid");
-            }
-            Regime r = regime == null ? null : Regime.fromCode(regime).orElse(null);
-            if (r == null) {
-                throw new InvalidRequestException("regime is invalid");
-            }
-            StartMode mode = switch (startMode == null ? "" : startMode) {
-                case "random" -> StartMode.RANDOM;
-                case "custom" -> StartMode.CUSTOM;
-                default -> throw new InvalidRequestException("startMode is invalid");
-            };
-            if (!LaunchPlanner.DURATIONS.contains(durationDays)) {
-                throw new InvalidRequestException("durationDays must be one of 20, 60, 120, 250");
-            }
-            if (initialCapital == null || !MONEY.matcher(initialCapital).matches()) {
-                throw new InvalidRequestException("initialCapital must be a decimal string with up to 2 digits");
-            }
-            BigDecimal capital = new BigDecimal(initialCapital);
-            return new LaunchRequest(durationDays, tf, r, mode, customStartDate, paperCount, paperIds, capital);
+            return parseLaunchRequest(
+                    durationDays, timeframe, regime, startMode, customStartDate, paperCount, paperIds, initialCapital);
+        }
+    }
+
+    record CreateCompareRunsRequest(
+            @Nullable List<UUID> algorithmIds,
+            @Nullable Boolean blind,
+            @Nullable Integer durationDays,
+            @Nullable String timeframe,
+            @Nullable String regime,
+            @Nullable String startMode,
+            @Nullable LocalDate customStartDate,
+            @Nullable Integer paperCount,
+            @Nullable List<UUID> paperIds,
+            @Nullable String initialCapital) {
+
+        LaunchRequest toLaunchRequest() {
+            return parseLaunchRequest(
+                    durationDays, timeframe, regime, startMode, customStartDate, paperCount, paperIds, initialCapital);
         }
     }
 }
