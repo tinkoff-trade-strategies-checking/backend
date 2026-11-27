@@ -202,6 +202,61 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void createRunPersistsDailyLossLimitPctAndRejectsOutOfRangeValues() throws Exception {
+        String validBody = """
+                {
+                  "strategyVersionId": "%s",
+                  "blind": false,
+                  "durationDays": 20,
+                  "timeframe": "1d",
+                  "regime": "calm",
+                  "startMode": "custom",
+                  "customStartDate": "2024-01-10",
+                  "paperCount": null,
+                  "paperIds": ["%s"],
+                  "initialCapital": "1000000.00",
+                  "dailyLossLimitPct": 7.25
+                }
+                """.formatted(StrategyCatalog.SYSTEM_VERSION_ID, Papers.id("SBER"));
+        MvcResult created = mockMvc.perform(withAuth(userA, post("/api/v1/runs"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validBody))
+                .andExpect(status().isCreated())
+                .andReturn();
+        UUID runId = UUID.fromString(json.readTree(created.getResponse().getContentAsString())
+                .get("runId")
+                .asString());
+
+        mockMvc.perform(withAuth(userA, get("/api/v1/runs/" + runId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.dailyLossLimitPct").value(7.25))
+                .andExpect(jsonPath("$.killSwitchTriggered").isBoolean());
+
+        for (String invalid : List.of("0", "-2.5", "100.01", "1.234")) {
+            String badBody = """
+                    {
+                      "strategyVersionId": "%s",
+                      "blind": false,
+                      "durationDays": 20,
+                      "timeframe": "1d",
+                      "regime": "calm",
+                      "startMode": "custom",
+                      "customStartDate": "2024-01-10",
+                      "paperCount": null,
+                      "paperIds": ["%s"],
+                      "initialCapital": "1000000.00",
+                      "dailyLossLimitPct": %s
+                    }
+                    """.formatted(StrategyCatalog.SYSTEM_VERSION_ID, Papers.id("SBER"), invalid);
+            mockMvc.perform(withAuth(userA, post("/api/v1/runs"))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(badBody))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
+        }
+    }
+
+    @Test
     void createRunRejectsInvalidStrategyWith422AndLaunchRejection() throws Exception {
         worker.checkLevel = CheckLevel.ERROR;
         mockMvc.perform(withAuth(userA, post("/api/v1/runs"))

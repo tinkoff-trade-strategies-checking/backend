@@ -1,5 +1,6 @@
 package ru.tinvest.trainer.sessions;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -28,6 +29,7 @@ import ru.tinvest.trainer.worker.WorkerTypes.OrderState;
 import ru.tinvest.trainer.worker.WorkerTypes.Paper;
 import ru.tinvest.trainer.worker.WorkerTypes.RejectCode;
 import ru.tinvest.trainer.worker.WorkerTypes.ReplayResult;
+import ru.tinvest.trainer.worker.WorkerTypes.TradeSide;
 
 /**
  * Арена: снимок сессии на курсоре, подача, отмена и замена заявок, оценка заявки. Состояние сессии — проигрывание
@@ -108,7 +110,9 @@ class Arena {
         // раскрытая сессия слепого вида у воркера не просит
         ReplayResult replay = worker.replaySession(
                 market(session), locked.journal(), session.currentStep(), true, !session.revealed());
-        Map<String, Object> out = masking.snapshot(state(session, replay, locked.seen()));
+        boolean killSwitch =
+                session.killSwitchTriggered() || isDailyLossLimitReached(session, replay, locked.journal());
+        Map<String, Object> out = masking.snapshot(state(session, replay, locked.seen(), killSwitch));
         // строка, как eventId; 0 — событий ещё не было
         out.put("lastEventId", Long.toString(locked.lastEventId()));
         return out;
@@ -191,18 +195,24 @@ class Arena {
     // ---------- команды ----------
 
     Object place(UUID sessionId, @Nullable UUID key, OrderRequest request) {
-        return runCommand(sessionId, key, "place", request.fingerprint("place"), session -> {
-            List<JournalRecord> journal = journals.records(session);
-            try {
-                long seenStep = request.requireSeenStep();
-                guard(session, seenStep);
-                List<OrderParams> legs = resolve(session, journal, request.legs(session, session.blind()));
-                Command.Place command = new Command.Place(legs.get(0), legs.size() > 1 ? legs.get(1) : null);
-                return execute(session, journal, command, seenStep);
-            } catch (FormRejection e) {
-                return rejection(session, journal, e);
-            }
-        });
+        try {
+            return runCommand(sessionId, key, "place", request.fingerprint("place"), session -> {
+                List<JournalRecord> journal = journals.records(session);
+                try {
+                    long seenStep = request.requireSeenStep();
+                    guard(session, seenStep);
+                    List<OrderParams> legs = resolve(session, journal, request.legs(session, session.blind()));
+                    guardDailyLossLimit(session, journal, legs);
+                    Command.Place command = new Command.Place(legs.get(0), legs.size() > 1 ? legs.get(1) : null);
+                    return execute(session, journal, command, seenStep);
+                } catch (FormRejection e) {
+                    return rejection(session, journal, e);
+                }
+            });
+        } catch (DailyLossLimitException e) {
+            sessions.markKillSwitchTriggered(sessionId);
+            throw e;
+        }
     }
 
     Object cancel(UUID sessionId, UUID orderId, long seenStep, @Nullable UUID key) {
@@ -220,29 +230,37 @@ class Arena {
     }
 
     Object replace(UUID sessionId, UUID orderId, @Nullable UUID key, OrderRequest request) {
-        return runCommand(sessionId, key, "replace:" + orderId, request.fingerprint("replace:" + orderId), session -> {
-            long coreId = coreId(session, orderId);
-            List<JournalRecord> journal = journals.records(session);
-            try {
-                long seenStep = request.requireSeenStep();
-                guard(session, seenStep);
-                // тип, сторона и бумага — у заменяемой заявки (в ядре); для OCO заменяется вся пара
-                ReplayResult current =
-                        worker.replaySession(market(session), journal, session.currentStep(), false, false);
-                List<OrderState> existing = legsOf(current, coreId);
-                List<OrderParams> replacements = new ArrayList<>(existing.size());
-                for (OrderState leg : existing) {
-                    replacements.add(request.replacement(leg.spec(), session.blind()));
-                }
-                replacements = resolve(session, journal, replacements);
-                Command.Replace command = new Command.Replace(
-                        coreId,
-                        new Command.Place(replacements.get(0), replacements.size() > 1 ? replacements.get(1) : null));
-                return execute(session, journal, command, seenStep);
-            } catch (FormRejection e) {
-                return rejection(session, journal, e);
-            }
-        });
+        try {
+            return runCommand(
+                    sessionId, key, "replace:" + orderId, request.fingerprint("replace:" + orderId), session -> {
+                        long coreId = coreId(session, orderId);
+                        List<JournalRecord> journal = journals.records(session);
+                        try {
+                            long seenStep = request.requireSeenStep();
+                            guard(session, seenStep);
+                            // тип, сторона и бумага — у заменяемой заявки (в ядре); для OCO заменяется вся пара
+                            ReplayResult current =
+                                    worker.replaySession(market(session), journal, session.currentStep(), false, false);
+                            List<OrderState> existing = legsOf(current, coreId);
+                            List<OrderParams> replacements = new ArrayList<>(existing.size());
+                            for (OrderState leg : existing) {
+                                replacements.add(request.replacement(leg.spec(), session.blind()));
+                            }
+                            replacements = resolve(session, journal, replacements);
+                            guardDailyLossLimit(session, journal, replacements);
+                            Command.Replace command = new Command.Replace(
+                                    coreId,
+                                    new Command.Place(
+                                            replacements.get(0), replacements.size() > 1 ? replacements.get(1) : null));
+                            return execute(session, journal, command, seenStep);
+                        } catch (FormRejection e) {
+                            return rejection(session, journal, e);
+                        }
+                    });
+        } catch (DailyLossLimitException e) {
+            sessions.markKillSwitchTriggered(sessionId);
+            throw e;
+        }
     }
 
     private Object runCommand(
@@ -374,14 +392,101 @@ class Arena {
         return resolved;
     }
 
+    // ---------- kill-switch (дневной лимит убытка) ----------
+
+    /**
+     * Блокирует новые открывающие заявки на покупку ({@code buy}), если дневная просадка достигла или превысила
+     * {@code dailyLossLimitPct} (INV-6). Заявки на продажу ({@code sell}) для закрытия позиций остаются доступными.
+     */
+    private void guardDailyLossLimit(SessionRecord session, List<JournalRecord> journal, List<OrderParams> legs) {
+        if (session.dailyLossLimitPct() == null) {
+            return;
+        }
+        boolean hasBuy = legs.stream().anyMatch(leg -> leg.side() == TradeSide.BUY);
+        if (!hasBuy) {
+            return;
+        }
+        ReplayResult current = worker.replaySession(market(session), journal, session.currentStep(), true, false);
+        if (isDailyLossLimitReached(session, current, journal)) {
+            throw new DailyLossLimitException();
+        }
+    }
+
+    private boolean isDailyLossLimitReached(
+            SessionRecord session, ReplayResult currentReplay, List<JournalRecord> journal) {
+        BigDecimal limitPct = session.dailyLossLimitPct();
+        if (limitPct == null) {
+            return false;
+        }
+        BigDecimal dayStartEquity = dayStartEquity(session, currentReplay, journal);
+        return isDailyLossExceeded(
+                limitPct, dayStartEquity, currentReplay.portfolio().equity());
+    }
+
+    private BigDecimal dayStartEquity(SessionRecord session, ReplayResult currentReplay, List<JournalRecord> journal) {
+        int currentDay = resolveCurrentDay(currentReplay, session.currentStep());
+        long prevDayLastStep = currentReplay.history().stream()
+                .filter(b -> b.step() >= 0 && b.tradingDay() < currentDay)
+                .mapToLong(BarData::step)
+                .max()
+                .orElse(-1L);
+        if (prevDayLastStep < 0) {
+            return session.initialCapital();
+        }
+        List<JournalRecord> prevJournal =
+                journal.stream().filter(r -> r.step() <= prevDayLastStep).toList();
+        ReplayResult prevReplay = worker.replaySession(market(session), prevJournal, prevDayLastStep, false, false);
+        return prevReplay.portfolio().equity();
+    }
+
+    private static int resolveCurrentDay(ReplayResult replay, long currentStep) {
+        if (replay.currentDay() > 0) {
+            return replay.currentDay();
+        }
+        return replay.history().stream()
+                .filter(b -> b.step() <= currentStep)
+                .mapToInt(BarData::tradingDay)
+                .max()
+                .orElse(1);
+    }
+
+    /**
+     * Точная проверка дневной просадки без округления (INV-6):
+     * {@code (dayStartEquity - currentEquity) * 100 >= dayStartEquity * limitPct}.
+     */
+    static boolean isDailyLossExceeded(
+            @Nullable BigDecimal limitPct, BigDecimal dayStartEquity, BigDecimal currentEquity) {
+        if (limitPct == null) {
+            return false;
+        }
+        if (dayStartEquity.signum() <= 0) {
+            return true;
+        }
+        BigDecimal loss = dayStartEquity.subtract(currentEquity);
+        if (loss.signum() <= 0) {
+            return false;
+        }
+        return loss.multiply(BigDecimal.valueOf(100)).compareTo(dayStartEquity.multiply(limitPct)) >= 0;
+    }
+
     // ---------- состояние ----------
 
     ArenaState state(SessionRecord session, ReplayResult replay, Map<Long, Long> seenSteps) {
+        return state(session, replay, seenSteps, session.killSwitchTriggered());
+    }
+
+    ArenaState state(
+            SessionRecord session, ReplayResult replay, Map<Long, Long> seenSteps, boolean killSwitchTriggered) {
         TreeSet<Long> ids = new TreeSet<>();
         replay.orders().forEach(o -> ids.add(o.id()));
         replay.fills().forEach(f -> ids.add(f.orderId()));
         return new ArenaState(
-                session, replay, orderRefs.ensure(session.id(), ids), seenSteps, players.get(session.id()));
+                session,
+                replay,
+                orderRefs.ensure(session.id(), ids),
+                seenSteps,
+                players.get(session.id()),
+                killSwitchTriggered);
     }
 
     private static List<OrderKind> commandKinds(Command command) {

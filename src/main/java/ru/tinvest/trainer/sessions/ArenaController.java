@@ -4,6 +4,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import ru.tinvest.trainer.api.ErrorCode;
 import ru.tinvest.trainer.api.InvalidRequestException;
 
 /**
@@ -82,6 +84,14 @@ class ArenaController {
     @ExceptionHandler(IdempotencyException.class)
     ProblemDetail idempotencyConflict(IdempotencyException e) {
         return SessionProblems.idempotency(e);
+    }
+
+    @ExceptionHandler(DailyLossLimitException.class)
+    ProblemDetail dailyLossLimitReached(DailyLossLimitException e) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage());
+        problem.setTitle("Unprocessable Content");
+        ErrorCode.DAILY_LOSS_LIMIT_REACHED.applyTo(problem);
+        return problem;
     }
 
     private static @Nullable UUID key(@Nullable String header) {

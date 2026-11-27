@@ -23,7 +23,17 @@ record ArenaState(
         ReplayResult replay,
         Map<Long, UUID> orderIds,
         Map<Long, Long> seenSteps,
-        PlayerStates.Row player) {
+        PlayerStates.Row player,
+        boolean killSwitchTriggered) {
+
+    ArenaState(
+            SessionRecord session,
+            ReplayResult replay,
+            Map<Long, UUID> orderIds,
+            Map<Long, Long> seenSteps,
+            PlayerStates.Row player) {
+        this(session, replay, orderIds, seenSteps, player, session.killSwitchTriggered());
+    }
 
     /** Номер команды, создавшей заявку: {@code id = seq * 2 + нога}. */
     static long seqOf(long coreOrderId) {

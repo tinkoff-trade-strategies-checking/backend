@@ -152,6 +152,8 @@ class ArenaApiTest extends PostgresIntegrationTest {
             "playing",
             "lastEventId",
             "speed",
+            "dailyLossLimitPct",
+            "killSwitchTriggered",
             "mode",
             "papers",
             "portfolio",
@@ -1475,11 +1477,91 @@ class ArenaApiTest extends PostgresIntegrationTest {
                 .single();
     }
 
+    @Test
+    void killSwitchBlocksNewBuyOrdersWhileAllowingSellAndExposesStatus() throws Exception {
+        UUID id = newSession(false, SECIDS, LocalDate.of(2022, 3, 14), new BigDecimal("5.00"));
+        setStep(id, 1);
+
+        JsonNode initialSnap = body(httpGet(id, ""));
+        assertThat(initialSnap.get("dailyLossLimitPct").decimalValue()).isEqualByComparingTo("5.00");
+        assertThat(initialSnap.get("killSwitchTriggered").asBoolean()).isFalse();
+
+        // До пробоя лимита покупка проходит
+        MvcResult okBuy = httpPost(id, "/orders", openOrder("SBER", 1, "buy", "market", 1, null), null);
+        assertThat(okBuy.getResponse().getStatus()).isEqualTo(200);
+
+        // Дневная просадка ровно 5.00% (500000 -> 475000): kill-switch срабатывает
+        worker.equityByStep = Map.of(1L, new BigDecimal("475000.00"));
+
+        JsonNode triggeredSnap = body(httpGet(id, ""));
+        assertThat(triggeredSnap.get("dailyLossLimitPct").decimalValue()).isEqualByComparingTo("5.00");
+        assertThat(triggeredSnap.get("killSwitchTriggered").asBoolean()).isTrue();
+
+        MvcResult blockedBuy = httpPost(id, "/orders", openOrder("SBER", 1, "buy", "market", 1, null), null);
+        assertThat(blockedBuy.getResponse().getStatus()).isEqualTo(422);
+        String blockedRaw = blockedBuy.getResponse().getContentAsString();
+        JsonNode problem = json.readTree(blockedRaw);
+        assertThat(problem.get("code").asString()).isEqualTo("DAILY_LOSS_LIMIT_REACHED");
+        // INV-7: в ошибке нет рублей и тикеров
+        assertThat(blockedRaw).doesNotContain("475000").doesNotContain("500000").doesNotContain("SBER");
+
+        // Закрывающая продажа (sell) остаётся доступной
+        MvcResult allowedSell = httpPost(id, "/orders", openOrder("SBER", 1, "sell", "market", 1, null), null);
+        assertThat(allowedSell.getResponse().getStatus()).isEqualTo(200);
+        assertThat(json.readTree(allowedSell.getResponse().getContentAsString())
+                        .get("accepted")
+                        .asBoolean())
+                .isTrue();
+
+        // Флаг срабатывания сохранён в БД
+        Boolean storedTriggered = jdbc.sql("SELECT kill_switch_triggered FROM sessions.session WHERE id = :id")
+                .param("id", id)
+                .query(Boolean.class)
+                .single();
+        assertThat(storedTriggered).isTrue();
+    }
+
+    @Test
+    void killSwitchDisabledByDefaultAllowsBuyAfterDrawdown() throws Exception {
+        UUID id = newSession(false);
+        setStep(id, 1);
+        worker.equityByStep = Map.of(1L, new BigDecimal("350000.00"));
+
+        JsonNode snap = body(httpGet(id, ""));
+        assertThat(snap.get("dailyLossLimitPct").isNull()).isTrue();
+        assertThat(snap.get("killSwitchTriggered").asBoolean()).isFalse();
+
+        MvcResult buy = httpPost(id, "/orders", openOrder("SBER", 1, "buy", "market", 1, null), null);
+        assertThat(buy.getResponse().getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void killSwitchResetsOnNextTradingDay() throws Exception {
+        UUID id = newSession(false, SECIDS, LocalDate.of(2022, 3, 14), new BigDecimal("5.00"));
+        // FakeWorker: шаги 0..2 — день 1, шаги 3..5 — день 2
+        worker.equityByStep = Map.of(
+                2L, new BigDecimal("470000.00"),
+                3L, new BigDecimal("465000.00"));
+
+        setStep(id, 2);
+        MvcResult day1Buy = httpPost(id, "/orders", openOrder("SBER", 2, "buy", "market", 1, null), null);
+        assertThat(day1Buy.getResponse().getStatus()).isEqualTo(422);
+
+        // На день 2 капитал начала дня = 470000, текущий = 465000 (просадка ~1.06% < 5%) -> покупка снова разрешена
+        setStep(id, 3);
+        MvcResult day2Buy = httpPost(id, "/orders", openOrder("SBER", 3, "buy", "market", 1, null), null);
+        assertThat(day2Buy.getResponse().getStatus()).isEqualTo(200);
+    }
+
     private UUID newSession(boolean blind) {
-        return newSession(blind, SECIDS, LocalDate.of(2022, 3, 14));
+        return newSession(blind, SECIDS, LocalDate.of(2022, 3, 14), null);
     }
 
     private UUID newSession(boolean blind, List<String> secids, LocalDate start) {
+        return newSession(blind, secids, start, null);
+    }
+
+    private UUID newSession(boolean blind, List<String> secids, LocalDate start, BigDecimal dailyLossLimitPct) {
         List<PlannedPaper> list = new ArrayList<>();
         for (int i = 0; i < secids.size(); i++) {
             // название из каталога; у бумаги 1 его нет (в раскрытом виде вместо него тикер)
@@ -1507,7 +1589,7 @@ class ArenaApiTest extends PostgresIntegrationTest {
                 20,
                 list,
                 new BigDecimal("500000.00"));
-        return sessions.create(userId, blind ? StartMode.RANDOM : StartMode.CUSTOM, 20, plan);
+        return sessions.create(userId, blind ? StartMode.RANDOM : StartMode.CUSTOM, 20, plan, dailyLossLimitPct);
     }
 
     @TestConfiguration

@@ -1,5 +1,6 @@
 package ru.tinvest.trainer.simulation;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -68,7 +69,11 @@ class RunLaunchService {
     }
 
     UUID launch(
-            UUID strategyVersionId, Map<String, Double> paramOverrides, boolean blindRequested, LaunchRequest request) {
+            UUID strategyVersionId,
+            Map<String, Double> paramOverrides,
+            boolean blindRequested,
+            LaunchRequest request,
+            @Nullable BigDecimal dailyLossLimitPct) {
         UUID userId = currentUser.requireId();
         StrategyVersionView version = strategyCatalog
                 .findVersion(strategyVersionId)
@@ -86,13 +91,17 @@ class RunLaunchService {
                 request.durationDays(),
                 effectiveBlind,
                 plan,
-                paramOverrides);
+                paramOverrides,
+                dailyLossLimitPct);
         queue.enqueueAfterCommit(runId);
         return runId;
     }
 
     CompareLaunchResult launchCompare(
-            @Nullable List<UUID> algorithmIds, boolean blindRequested, LaunchRequest request) {
+            @Nullable List<UUID> algorithmIds,
+            boolean blindRequested,
+            LaunchRequest request,
+            @Nullable BigDecimal dailyLossLimitPct) {
         List<UUID> validatedIds = validateCompareAlgorithmIds(algorithmIds);
         UUID userId = currentUser.requireId();
 
@@ -113,7 +122,13 @@ class RunLaunchService {
         List<UUID> versionIds =
                 versions.stream().map(StrategyVersionView::versionId).toList();
         Runs.PlannedBatch batch = runs.createPlannedBatch(
-                userId, versionIds, request.startMode(), request.durationDays(), effectiveBlind, plan);
+                userId,
+                versionIds,
+                request.startMode(),
+                request.durationDays(),
+                effectiveBlind,
+                plan,
+                dailyLossLimitPct);
 
         for (UUID runId : batch.runIds()) {
             queue.enqueueAfterCommit(runId);

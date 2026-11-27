@@ -74,7 +74,8 @@ class RunsController {
                 body.requireStrategyVersionId(),
                 body.safeParamOverrides(),
                 Boolean.TRUE.equals(body.blind()),
-                body.toLaunchRequest());
+                body.toLaunchRequest(),
+                validateDailyLossLimitPct(body.dailyLossLimitPct()));
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("runId", runId);
         return ResponseEntity.status(HttpStatus.CREATED).body(out);
@@ -83,7 +84,10 @@ class RunsController {
     @PostMapping("/compare")
     ResponseEntity<Map<String, Object>> createCompare(@RequestBody CreateCompareRunsRequest body) {
         RunLaunchService.CompareLaunchResult launched = launchService.launchCompare(
-                body.algorithmIds(), Boolean.TRUE.equals(body.blind()), body.toLaunchRequest());
+                body.algorithmIds(),
+                Boolean.TRUE.equals(body.blind()),
+                body.toLaunchRequest(),
+                validateDailyLossLimitPct(body.dailyLossLimitPct()));
         return ResponseEntity.status(HttpStatus.CREATED).body(compareResponse(launched));
     }
 
@@ -194,6 +198,8 @@ class RunsController {
                         ? null
                         : RunFormat.instant(run.finishedAt().toInstant().toEpochMilli()));
         out.put("errorCode", run.errorCode());
+        out.put("dailyLossLimitPct", run.dailyLossLimitPct());
+        out.put("killSwitchTriggered", run.killSwitchTriggered());
         out.put("diagnostics", result == null ? List.of() : json.readTree(result.diagnosticsJson()));
 
         if (!run.revealed()) {
@@ -331,6 +337,20 @@ class RunsController {
         return new LaunchRequest(durationDays, tf, r, mode, customStartDate, paperCount, paperIds, capital);
     }
 
+    private static @Nullable BigDecimal validateDailyLossLimitPct(@Nullable BigDecimal dailyLossLimitPct) {
+        if (dailyLossLimitPct == null) {
+            return null;
+        }
+        if (dailyLossLimitPct.compareTo(BigDecimal.ZERO) <= 0
+                || dailyLossLimitPct.compareTo(new BigDecimal("100")) > 0) {
+            throw new InvalidRequestException("dailyLossLimitPct must be greater than 0 and at most 100");
+        }
+        if (dailyLossLimitPct.stripTrailingZeros().scale() > 2) {
+            throw new InvalidRequestException("dailyLossLimitPct must have at most 2 decimal places");
+        }
+        return dailyLossLimitPct.setScale(2);
+    }
+
     record CreateRunRequest(
             @Nullable UUID strategyVersionId,
             @Nullable Map<String, Double> paramOverrides,
@@ -342,7 +362,8 @@ class RunsController {
             @Nullable LocalDate customStartDate,
             @Nullable Integer paperCount,
             @Nullable List<UUID> paperIds,
-            @Nullable String initialCapital) {
+            @Nullable String initialCapital,
+            @Nullable BigDecimal dailyLossLimitPct) {
 
         UUID requireStrategyVersionId() {
             if (strategyVersionId == null) {
@@ -384,7 +405,8 @@ class RunsController {
             @Nullable LocalDate customStartDate,
             @Nullable Integer paperCount,
             @Nullable List<UUID> paperIds,
-            @Nullable String initialCapital) {
+            @Nullable String initialCapital,
+            @Nullable BigDecimal dailyLossLimitPct) {
 
         LaunchRequest toLaunchRequest() {
             return parseLaunchRequest(

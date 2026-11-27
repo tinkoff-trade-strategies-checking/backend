@@ -154,6 +154,8 @@ class Replay {
                 s.costs(),
                 s.papers(),
                 s.algoVersionId(),
-                s.algoParams());
+                s.algoParams(),
+                s.dailyLossLimitPct(),
+                s.killSwitchTriggered());
     }
 }

@@ -43,11 +43,71 @@ public record SessionRecord(
         Costs costs,
         List<PaperRecord> papers,
         @Nullable UUID algoVersionId,
-        Map<String, Double> algoParams) {
+        Map<String, Double> algoParams,
+        @Nullable BigDecimal dailyLossLimitPct,
+        boolean killSwitchTriggered) {
 
     public SessionRecord {
         papers = List.copyOf(papers);
         algoParams = algoParams == null ? Map.of() : Map.copyOf(algoParams);
+    }
+
+    public SessionRecord(
+            UUID id,
+            UUID userId,
+            boolean blind,
+            String status,
+            int durationDays,
+            Timeframe timeframe,
+            Regime regime,
+            StartMode startMode,
+            UUID snapshotId,
+            String snapshotKey,
+            LocalDate periodStart,
+            LocalDate periodEnd,
+            int tradingDays,
+            int barsCount,
+            double sigma,
+            double mdd,
+            double p33,
+            double p80,
+            BigDecimal initialCapital,
+            OffsetDateTime createdAt,
+            long currentStep,
+            int warmupBars,
+            Costs costs,
+            List<PaperRecord> papers,
+            @Nullable UUID algoVersionId,
+            Map<String, Double> algoParams) {
+        this(
+                id,
+                userId,
+                blind,
+                status,
+                durationDays,
+                timeframe,
+                regime,
+                startMode,
+                snapshotId,
+                snapshotKey,
+                periodStart,
+                periodEnd,
+                tradingDays,
+                barsCount,
+                sigma,
+                mdd,
+                p33,
+                p80,
+                initialCapital,
+                createdAt,
+                currentStep,
+                warmupBars,
+                costs,
+                papers,
+                algoVersionId,
+                algoParams,
+                null,
+                false);
     }
 
     public SessionRecord(
