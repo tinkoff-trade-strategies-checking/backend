@@ -56,7 +56,12 @@ public final class WorkerTypes {
         REPLACED,
         SESSION_END,
         CANCELLED_BY_USER,
-        DAY_EXPIRED
+        DAY_EXPIRED,
+        INSUFFICIENT_MARGIN,
+        MARGIN_CALL_LIQUIDATION,
+        IMMEDIATE_OR_CANCEL,
+        FILL_OR_KILL,
+        PRICE_OUT_OF_BAND
     }
 
     public enum RunState {
