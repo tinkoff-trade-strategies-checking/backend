@@ -1533,6 +1533,11 @@ components:
         - SESSION_END
         - CANCELLED_BY_USER
         - DAY_EXPIRED
+        - INSUFFICIENT_MARGIN
+        - MARGIN_CALL_LIQUIDATION
+        - IMMEDIATE_OR_CANCEL
+        - FILL_OR_KILL
+        - PRICE_OUT_OF_BAND
     LaunchRejectReason:
       type: string
       enum: [NO_MATCHING_PERIOD, TOO_MANY_BARS, INVALID_PARAMS, CORPORATE_ACTION_ON_PERIOD]
