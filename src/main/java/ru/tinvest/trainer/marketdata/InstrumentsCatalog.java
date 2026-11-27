@@ -5,6 +5,7 @@ import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
@@ -30,6 +31,9 @@ public class InstrumentsCatalog {
 
     private static final String DIVIDEND_COLUMNS = "id, ticker, issuer_name, record_date, ex_dividend_date, "
             + "last_buy_date, payment_date, dividend_per_share_rub, yield_pct, estimated_gap_pct, currency";
+
+    private static final String MARKET_EVENT_COLUMNS =
+            "id, event_date, event_type, ticker, title, importance, description";
 
     private final JdbcClient jdbc;
 
@@ -133,6 +137,27 @@ public class InstrumentsCatalog {
                 .optional();
     }
 
+    public List<MarketEventSpec> listMarketEvents(@Nullable String eventType, @Nullable String ticker) {
+        StringBuilder sql = new StringBuilder("SELECT ")
+                .append(MARKET_EVENT_COLUMNS)
+                .append(" FROM marketdata.market_event WHERE 1=1");
+        if (eventType != null && !eventType.isBlank()) {
+            sql.append(" AND event_type = :eventType");
+        }
+        if (ticker != null && !ticker.isBlank()) {
+            sql.append(" AND UPPER(ticker) = :ticker");
+        }
+        sql.append(" ORDER BY event_date ASC, id ASC");
+        JdbcClient.StatementSpec spec = jdbc.sql(sql.toString());
+        if (eventType != null && !eventType.isBlank()) {
+            spec = spec.param("eventType", eventType);
+        }
+        if (ticker != null && !ticker.isBlank()) {
+            spec = spec.param("ticker", ticker);
+        }
+        return spec.query(InstrumentsCatalog::mapMarketEvent).list();
+    }
+
     private static BondSpec mapBond(ResultSet rs, int rowNum) throws SQLException {
         return new BondSpec(
                 rs.getString("ticker"),
@@ -211,5 +236,16 @@ public class InstrumentsCatalog {
                 rs.getBigDecimal("yield_pct"),
                 rs.getBigDecimal("estimated_gap_pct"),
                 rs.getString("currency"));
+    }
+
+    private static MarketEventSpec mapMarketEvent(ResultSet rs, int rowNum) throws SQLException {
+        return new MarketEventSpec(
+                rs.getLong("id"),
+                rs.getObject("event_date", LocalDate.class),
+                rs.getString("event_type"),
+                rs.getString("ticker"),
+                rs.getString("title"),
+                rs.getString("importance"),
+                rs.getString("description"));
     }
 }
