@@ -186,6 +186,8 @@ public final class ViewFormat {
         out.put("finished", isFinished(state));
         out.put("playing", state.player().playing() && !isFinished(state));
         out.put("speed", state.player().speed());
+        out.put("dailyLossLimitPct", session.dailyLossLimitPct());
+        out.put("killSwitchTriggered", state.killSwitchTriggered());
         return out;
     }
 

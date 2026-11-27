@@ -41,7 +41,8 @@ class SessionsController {
 
     @PostMapping("/sessions")
     ResponseEntity<Map<String, Object>> create(@RequestBody CreateSessionRequest body) {
-        UUID id = launchService.launch(body.toLaunchRequest(), body.backgroundAlgorithmId());
+        UUID id = launchService.launch(
+                body.toLaunchRequest(), body.backgroundAlgorithmId(), body.validatedDailyLossLimitPct());
         return ResponseEntity.status(HttpStatus.CREATED).body(masking.createdSession(id));
     }
 
@@ -63,7 +64,23 @@ class SessionsController {
             Integer paperCount,
             List<UUID> paperIds,
             String initialCapital,
-            @Nullable UUID backgroundAlgorithmId) {
+            @Nullable UUID backgroundAlgorithmId,
+            @Nullable BigDecimal dailyLossLimitPct) {
+
+        @Nullable
+        BigDecimal validatedDailyLossLimitPct() {
+            if (dailyLossLimitPct == null) {
+                return null;
+            }
+            if (dailyLossLimitPct.compareTo(BigDecimal.ZERO) <= 0
+                    || dailyLossLimitPct.compareTo(new BigDecimal("100")) > 0) {
+                throw new InvalidRequestException("dailyLossLimitPct must be greater than 0 and at most 100");
+            }
+            if (dailyLossLimitPct.stripTrailingZeros().scale() > 2) {
+                throw new InvalidRequestException("dailyLossLimitPct must have at most 2 decimal places");
+            }
+            return dailyLossLimitPct.setScale(2);
+        }
 
         LaunchRequest toLaunchRequest() {
             if (!"human".equals(traderKind)) {

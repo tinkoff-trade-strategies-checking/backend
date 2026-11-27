@@ -136,11 +136,32 @@ public class Runs {
             boolean blind,
             LaunchPlan plan,
             Map<String, Double> paramOverrides) {
+        return createPlanned(userId, strategyVersionId, startMode, durationDays, blind, plan, paramOverrides, null);
+    }
+
+    @Transactional
+    UUID createPlanned(
+            UUID userId,
+            UUID strategyVersionId,
+            StartMode startMode,
+            int durationDays,
+            boolean blind,
+            LaunchPlan plan,
+            Map<String, Double> paramOverrides,
+            @Nullable BigDecimal dailyLossLimitPct) {
         acquireUserQueueSlots(userId, 1);
         List<PlannedPaper> shuffled = new ArrayList<>(plan.papers());
         Collections.shuffle(shuffled, random);
         return insertPlannedRun(
-                userId, strategyVersionId, startMode, durationDays, blind, plan, paramOverrides, shuffled);
+                userId,
+                strategyVersionId,
+                startMode,
+                durationDays,
+                blind,
+                plan,
+                paramOverrides,
+                shuffled,
+                dailyLossLimitPct);
     }
 
     @Transactional
@@ -151,13 +172,33 @@ public class Runs {
             int durationDays,
             boolean blind,
             LaunchPlan plan) {
+        return createPlannedBatch(userId, strategyVersionIds, startMode, durationDays, blind, plan, null);
+    }
+
+    @Transactional
+    PlannedBatch createPlannedBatch(
+            UUID userId,
+            List<UUID> strategyVersionIds,
+            StartMode startMode,
+            int durationDays,
+            boolean blind,
+            LaunchPlan plan,
+            @Nullable BigDecimal dailyLossLimitPct) {
         acquireUserQueueSlots(userId, strategyVersionIds.size());
         List<PlannedPaper> orderedPapers = new ArrayList<>(plan.papers());
         Collections.shuffle(orderedPapers, random);
         List<UUID> runIds = new ArrayList<>(strategyVersionIds.size());
         for (UUID strategyVersionId : strategyVersionIds) {
             runIds.add(insertPlannedRun(
-                    userId, strategyVersionId, startMode, durationDays, blind, plan, Map.of(), orderedPapers));
+                    userId,
+                    strategyVersionId,
+                    startMode,
+                    durationDays,
+                    blind,
+                    plan,
+                    Map.of(),
+                    orderedPapers,
+                    dailyLossLimitPct));
         }
         return new PlannedBatch(List.copyOf(runIds), List.copyOf(orderedPapers));
     }
@@ -170,7 +211,8 @@ public class Runs {
             boolean blind,
             LaunchPlan plan,
             Map<String, Double> paramOverrides,
-            List<PlannedPaper> orderedPapers) {
+            List<PlannedPaper> orderedPapers,
+            @Nullable BigDecimal dailyLossLimitPct) {
         UUID id = Uuid7.next();
         jdbc.sql("""
                         INSERT INTO simulation.run (
@@ -179,14 +221,14 @@ public class Runs {
                             period_start, period_end, trading_days, bars_count,
                             sigma, mdd, p33, p80, initial_capital, warmup_bars,
                             commission_rate, exchange_fee_rate, spread, slippage_kappa, liquidity_share,
-                            param_overrides
+                            param_overrides, daily_loss_limit_pct
                         ) VALUES (
                             :id, :user, :sv, :sn, NULL,
                             :blind, 'queued', :duration, :timeframe, :regime, :startMode,
                             :start, :end, :days, :bars,
                             :sigma, :mdd, :p33, :p80, :capital, :warmup,
                             :commission, :exchangeFee, :spread, :kappa, :liquidity,
-                            CAST(:overrides AS jsonb)
+                            CAST(:overrides AS jsonb), :dailyLossLimitPct
                         )
                         """)
                 .param("id", id)
@@ -214,6 +256,7 @@ public class Runs {
                 .param("kappa", DEFAULT_COSTS.slippageKappa())
                 .param("liquidity", DEFAULT_COSTS.liquidityShare())
                 .param("overrides", json.writeValueAsString(paramOverrides))
+                .param("dailyLossLimitPct", dailyLossLimitPct)
                 .update();
 
         for (int index = 0; index < orderedPapers.size(); index++) {
@@ -234,14 +277,14 @@ public class Runs {
                             period_start, period_end, trading_days, bars_count,
                             sigma, mdd, p33, p80, initial_capital, warmup_bars,
                             commission_rate, exchange_fee_rate, spread, slippage_kappa, liquidity_share,
-                            param_overrides
+                            param_overrides, daily_loss_limit_pct
                         ) VALUES (
                             :id, :user, :sv, :sn, :repeatOf,
                             :blind, 'queued', :duration, :timeframe, :regime, :startMode,
                             :start, :end, :days, :bars,
                             :sigma, :mdd, :p33, :p80, :capital, :warmup,
                             :commission, :exchangeFee, :spread, :kappa, :liquidity,
-                            CAST(:overrides AS jsonb)
+                            CAST(:overrides AS jsonb), :dailyLossLimitPct
                         )
                         """)
                 .param("id", id)
@@ -270,6 +313,7 @@ public class Runs {
                 .param("kappa", original.costs().slippageKappa())
                 .param("liquidity", original.costs().liquidityShare())
                 .param("overrides", json.writeValueAsString(original.paramOverrides()))
+                .param("dailyLossLimitPct", original.dailyLossLimitPct())
                 .update();
 
         for (RunPaperRecord p : original.papers()) {
@@ -416,6 +460,41 @@ public class Runs {
             Map<String, Object> report,
             List<JournalRecord> journal,
             List<StrategyDiagnostic> diagnostics) {
+        finishSuccess(
+                runId,
+                status,
+                doneSteps,
+                totalSteps,
+                lastStep,
+                playedDays,
+                digest,
+                level,
+                netReturnPct,
+                finalEquity,
+                repeatMatch,
+                report,
+                journal,
+                diagnostics,
+                false);
+    }
+
+    @Transactional
+    void finishSuccess(
+            UUID runId,
+            String status,
+            long doneSteps,
+            long totalSteps,
+            long lastStep,
+            int playedDays,
+            long digest,
+            CheckLevel level,
+            @Nullable String netReturnPct,
+            @Nullable BigDecimal finalEquity,
+            @Nullable Boolean repeatMatch,
+            Map<String, Object> report,
+            List<JournalRecord> journal,
+            List<StrategyDiagnostic> diagnostics,
+            boolean killSwitchTriggered) {
         jdbc.sql("SELECT 1 FROM simulation.run WHERE id = :id FOR UPDATE")
                 .param("id", runId)
                 .query(Integer.class)
@@ -431,6 +510,7 @@ public class Runs {
                             final_level = :level,
                             net_return_pct = :net,
                             final_equity = :equity,
+                            kill_switch_triggered = :killSwitchTriggered,
                             finished_at = now()
                         WHERE id = :id AND status IN ('queued', 'running')
                         """)
@@ -443,6 +523,7 @@ public class Runs {
                 .param("level", level.name())
                 .param("net", netReturnPct)
                 .param("equity", finalEquity)
+                .param("killSwitchTriggered", killSwitchTriggered)
                 .param("id", runId)
                 .update();
 
@@ -642,7 +723,9 @@ public class Runs {
                 rs.getString("error_code"),
                 rs.getObject("created_at", OffsetDateTime.class),
                 rs.getObject("finished_at", OffsetDateTime.class),
-                papersOf(id));
+                papersOf(id),
+                rs.getBigDecimal("daily_loss_limit_pct"),
+                rs.getBoolean("kill_switch_triggered"));
     }
 
     private Map<String, Double> parseOverrides(@Nullable String raw) {

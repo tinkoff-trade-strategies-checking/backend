@@ -1,5 +1,6 @@
 package ru.tinvest.trainer.sessions;
 
+import java.math.BigDecimal;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -36,7 +37,7 @@ class LaunchService {
      * @throws NotFoundException выбранный фоновый алгоритм не найден, не опубликован или недоступен пользователю
      * @throws ru.tinvest.trainer.api.DependencyUnavailableException воркер, архив недоступны или нет готового снапшота
      */
-    UUID launch(LaunchRequest request, @Nullable UUID backgroundAlgorithmId) {
+    UUID launch(LaunchRequest request, @Nullable UUID backgroundAlgorithmId, @Nullable BigDecimal dailyLossLimitPct) {
         UUID userId = currentUser.requireId();
         StrategyVersionView algoVersion = backgroundAlgorithmId == null
                 ? strategyCatalog.systemDefaultVersion()
@@ -47,7 +48,8 @@ class LaunchService {
         return switch (result) {
             case LaunchRejection rejection -> throw new LaunchRejectedException(rejection);
             case LaunchPlan plan ->
-                sessions.create(userId, request.startMode(), request.durationDays(), plan, algoVersion);
+                sessions.create(
+                        userId, request.startMode(), request.durationDays(), plan, algoVersion, dailyLossLimitPct);
         };
     }
 }

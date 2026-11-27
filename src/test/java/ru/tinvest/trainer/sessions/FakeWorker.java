@@ -77,6 +77,8 @@ final class FakeWorker implements SimulationWorkerClient {
     volatile long bankruptAt = -1;
     /** Бумаги без баров до курсора (в раскрытом виде их свечей нет). */
     volatile Set<String> noBars = Set.of();
+    /** Переопределение капитала по шагу для тестов kill-switch. */
+    volatile Map<Long, BigDecimal> equityByStep = Map.of();
     /** Если задан, {@code replaySession} сообщает о входе в {@code entered} и ждёт {@code gate}. */
     volatile CountDownLatch entered;
 
@@ -101,6 +103,7 @@ final class FakeWorker implements SimulationWorkerClient {
         slowEntered = null;
         slowGate = null;
         noBars = Set.of();
+        equityByStep = Map.of();
         entered = null;
         gate = null;
         lastMarket = null;
@@ -370,9 +373,10 @@ final class FakeWorker implements SimulationWorkerClient {
                 }
             }
         }
+        BigDecimal equity = equityByStep.getOrDefault(lastStep, market.initialCash());
         PortfolioState portfolio = new PortfolioState(
-                market.initialCash(),
-                market.initialCash(),
+                equity,
+                equity,
                 List.of(),
                 new BigDecimal("0.00"),
                 new BigDecimal("0.08"),

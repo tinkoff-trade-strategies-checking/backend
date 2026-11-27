@@ -3,6 +3,8 @@ package ru.tinvest.trainer.simulation;
 import io.grpc.StatusRuntimeException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -17,6 +19,7 @@ import ru.tinvest.trainer.api.ErrorCode;
 import ru.tinvest.trainer.worker.SimulationWorkerClient;
 import ru.tinvest.trainer.worker.WorkerTypes.BarData;
 import ru.tinvest.trainer.worker.WorkerTypes.BarInterval;
+import ru.tinvest.trainer.worker.WorkerTypes.EquityPointData;
 import ru.tinvest.trainer.worker.WorkerTypes.Market;
 import ru.tinvest.trainer.worker.WorkerTypes.Paper;
 import ru.tinvest.trainer.worker.WorkerTypes.RunProgressData;
@@ -85,6 +88,7 @@ class RunExecutor {
 
             Map<String, Object> report =
                     RunReportViews.algoRunReport(run, version.strategyName(), status, playedDays, repeatMatch, output);
+            boolean killSwitchTriggered = isDailyLossBreached(run, output);
 
             runs.finishSuccess(
                     runId,
@@ -100,7 +104,8 @@ class RunExecutor {
                     repeatMatch,
                     report,
                     output.journal(),
-                    output.diagnostics());
+                    output.diagnostics(),
+                    killSwitchTriggered);
         } catch (DependencyUnavailableException e) {
             log.warn(
                     "Прогон {} не выполнен: воркер недоступен ({})",
@@ -226,5 +231,49 @@ class RunExecutor {
             return output.totalSteps() > 0 ? Math.min(output.totalSteps(), completed) : completed;
         }
         return 0L;
+    }
+
+    /**
+     * Проверяет по кривой капитала прогона, была ли превышена дневная просадка {@code dailyLossLimitPct} (INV-6).
+     */
+    static boolean isDailyLossBreached(RunRecord run, StrategyRunOutput output) {
+        BigDecimal limitPct = run.dailyLossLimitPct();
+        if (limitPct == null || output.report() == null) {
+            return false;
+        }
+        List<EquityPointData> equityPoints = output.report().equity();
+        if (equityPoints.isEmpty()) {
+            return false;
+        }
+        Map<Long, Integer> dayByStep = new HashMap<>();
+        for (BarData bar : output.history()) {
+            if (bar.step() >= 0) {
+                dayByStep.putIfAbsent(bar.step(), bar.tradingDay());
+            }
+        }
+        List<EquityPointData> sorted = equityPoints.stream()
+                .sorted(Comparator.comparingLong(EquityPointData::step))
+                .toList();
+        BigDecimal dayStartEquity = run.initialCapital();
+        BigDecimal prevEquity = run.initialCapital();
+        int currentDay = -1;
+        for (EquityPointData point : sorted) {
+            int day = dayByStep.getOrDefault(point.step(), currentDay < 0 ? 1 : currentDay);
+            if (currentDay >= 0 && day != currentDay) {
+                dayStartEquity = prevEquity;
+            }
+            currentDay = day;
+            BigDecimal equity = point.equity();
+            if (dayStartEquity.signum() <= 0) {
+                return true;
+            }
+            BigDecimal loss = dayStartEquity.subtract(equity);
+            if (loss.signum() > 0
+                    && loss.multiply(BigDecimal.valueOf(100)).compareTo(dayStartEquity.multiply(limitPct)) >= 0) {
+                return true;
+            }
+            prevEquity = equity;
+        }
+        return false;
     }
 }

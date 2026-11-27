@@ -244,6 +244,56 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void dailyLossLimitPctIsOptionalPersistedAndValidated() throws Exception {
+        planner.result = plan(true, 3);
+        String withLimit = """
+                {
+                  "traderKind": "human",
+                  "durationDays": 20,
+                  "timeframe": "1d",
+                  "regime": "calm",
+                  "startMode": "random",
+                  "customStartDate": null,
+                  "paperCount": 3,
+                  "paperIds": null,
+                  "initialCapital": "500000.00",
+                  "dailyLossLimitPct": 5.5
+                }
+                """;
+        MvcResult ok = launch(withLimit);
+        assertThat(ok.getResponse().getStatus()).isEqualTo(201);
+        UUID id = UUID.fromString(json.readTree(ok.getResponse().getContentAsString())
+                .get("sessionId")
+                .asString());
+        BigDecimal stored = jdbc.sql("SELECT daily_loss_limit_pct FROM sessions.session WHERE id = :id")
+                .param("id", id)
+                .query(BigDecimal.class)
+                .single();
+        assertThat(stored).isEqualByComparingTo("5.50");
+
+        for (String invalid : List.of("0", "-1", "100.01", "2.123")) {
+            String badBody = """
+                    {
+                      "traderKind": "human",
+                      "durationDays": 20,
+                      "timeframe": "1d",
+                      "regime": "calm",
+                      "startMode": "random",
+                      "customStartDate": null,
+                      "paperCount": 3,
+                      "paperIds": null,
+                      "initialCapital": "500000.00",
+                      "dailyLossLimitPct": %s
+                    }
+                    """.formatted(invalid);
+            MvcResult bad = launch(badBody);
+            assertThat(bad.getResponse().getStatus())
+                    .as("dailyLossLimitPct=%s", invalid)
+                    .isEqualTo(400);
+        }
+    }
+
+    @Test
     void customDateLaunchCreatesOpenSession() throws Exception {
         planner.result = plan(false, 2);
 

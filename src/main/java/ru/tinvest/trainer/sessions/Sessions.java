@@ -90,7 +90,20 @@ public class Sessions {
      */
     @Transactional
     UUID create(UUID userId, StartMode startMode, int durationDays, LaunchPlan plan) {
-        return create(userId, startMode, durationDays, plan, strategyCatalog.systemDefaultVersion());
+        return create(userId, startMode, durationDays, plan, strategyCatalog.systemDefaultVersion(), null);
+    }
+
+    /**
+     * Создаёт сессию по подобранному плану с фоновым алгоритмом по умолчанию и необязательным лимитом дневного убытка.
+     */
+    @Transactional
+    UUID create(
+            UUID userId,
+            StartMode startMode,
+            int durationDays,
+            LaunchPlan plan,
+            @Nullable BigDecimal dailyLossLimitPct) {
+        return create(userId, startMode, durationDays, plan, strategyCatalog.systemDefaultVersion(), dailyLossLimitPct);
     }
 
     /**
@@ -98,6 +111,21 @@ public class Sessions {
      */
     @Transactional
     UUID create(UUID userId, StartMode startMode, int durationDays, LaunchPlan plan, StrategyVersionView algoVersion) {
+        return create(userId, startMode, durationDays, plan, algoVersion, null);
+    }
+
+    /**
+     * Создаёт сессию по подобранному плану с указанной опубликованной версией фонового алгоритма и необязательным
+     * лимитом дневного убытка (kill-switch).
+     */
+    @Transactional
+    UUID create(
+            UUID userId,
+            StartMode startMode,
+            int durationDays,
+            LaunchPlan plan,
+            StrategyVersionView algoVersion,
+            @Nullable BigDecimal dailyLossLimitPct) {
         UUID id = Uuid7.next();
         Map<String, Double> algoParams = algoVersion.isSystem()
                 ? Map.of("size_pct", (double) Math.max(1, 95 / plan.papers().size()))
@@ -105,11 +133,11 @@ public class Sessions {
         jdbc.sql("INSERT INTO sessions.session (id, user_id, blind, status, trader_kind, duration_days, timeframe, "
                         + "regime, start_mode, snapshot_id, period_start, period_end, trading_days, bars_count, "
                         + "sigma, mdd, p33, p80, initial_capital, warmup_bars, commission_rate, exchange_fee_rate, spread, "
-                        + "slippage_kappa, liquidity_share, algo_version_id, algo_params) "
+                        + "slippage_kappa, liquidity_share, algo_version_id, algo_params, daily_loss_limit_pct) "
                         + "VALUES (:id, :user, :blind, :status, 'human', "
                         + ":duration, :timeframe, :regime, :startMode, :snapshot, :start, :end, :days, :bars, "
                         + ":sigma, :mdd, :p33, :p80, :capital, :warmup, :commission, :exchangeFee, :spread, "
-                        + ":kappa, :liquidity, :algoVersionId, CAST(:algoParams AS jsonb))")
+                        + ":kappa, :liquidity, :algoVersionId, CAST(:algoParams AS jsonb), :dailyLossLimitPct)")
                 .param("id", id)
                 .param("user", userId)
                 .param("blind", plan.blind())
@@ -136,6 +164,7 @@ public class Sessions {
                 .param("liquidity", DEFAULT_COSTS.liquidityShare())
                 .param("algoVersionId", algoVersion.versionId())
                 .param("algoParams", json.writeValueAsString(algoParams))
+                .param("dailyLossLimitPct", dailyLossLimitPct)
                 .update();
         List<PlannedPaper> shuffled = new ArrayList<>(plan.papers());
         Collections.shuffle(shuffled, random);
@@ -203,6 +232,15 @@ public class Sessions {
                 .update();
     }
 
+    /** Фиксирует факт срабатывания kill-switch для идущей сессии. */
+    @Transactional
+    void markKillSwitchTriggered(UUID sessionId) {
+        jdbc.sql("UPDATE sessions.session SET kill_switch_triggered = TRUE "
+                        + "WHERE id = :id AND status = 'running' AND NOT kill_switch_triggered")
+                .param("id", sessionId)
+                .update();
+    }
+
     /**
      * Сессия по идентификатору без проверки владельца: только для фоновых задач по событию (отчёт после завершения),
      * идентификатор приходит из системы, не от клиента.
@@ -252,7 +290,9 @@ public class Sessions {
                                 rs.getBigDecimal("liquidity_share")),
                         papers(sessionId),
                         rs.getObject("algo_version_id", UUID.class),
-                        parseAlgoParams(rs.getString("algo_params"))))
+                        parseAlgoParams(rs.getString("algo_params")),
+                        rs.getBigDecimal("daily_loss_limit_pct"),
+                        rs.getBoolean("kill_switch_triggered")))
                 .optional();
     }
 
