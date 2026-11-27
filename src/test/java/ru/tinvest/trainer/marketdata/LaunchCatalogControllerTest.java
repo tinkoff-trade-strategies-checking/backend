@@ -36,6 +36,8 @@ class LaunchCatalogControllerTest {
         LaunchCatalogController manyController = new LaunchCatalogController(stubPlanner(many), props);
         assertThat(manyController.options().minPapers()).isEqualTo(1);
         assertThat(manyController.options().maxPapers()).isEqualTo(120);
+        assertThat(manyController.papers()).isNotEmpty();
+        assertThat(manyController.papers().getFirst().assetClass()).isEqualTo("EQUITY");
     }
 
     private static LaunchPlanner stubPlanner(List<PlannedPaper> papers) {

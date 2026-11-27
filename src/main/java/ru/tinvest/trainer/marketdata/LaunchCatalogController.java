@@ -108,5 +108,9 @@ class LaunchCatalogController {
             @Nullable LocalDate archiveFrom,
             @Nullable LocalDate archiveTo) {}
 
-    record LaunchPaper(UUID id, String sector, String ticker, String name) {}
+    record LaunchPaper(UUID id, String sector, String ticker, String name, String assetClass) {
+        LaunchPaper(UUID id, String sector, String ticker, String name) {
+            this(id, sector, ticker, name, "EQUITY");
+        }
+    }
 }
