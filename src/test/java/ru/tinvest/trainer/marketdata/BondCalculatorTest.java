@@ -119,8 +119,14 @@ class BondCalculatorTest {
         when(catalog.findBond("UNKNOWN")).thenReturn(Optional.empty());
         when(catalog.listBonds()).thenReturn(List.of(bond));
 
-        InstrumentsController controller =
-                new InstrumentsController(catalog, calculator, new FuturesCalculator(), new OptionGreeksCalculator());
+        InstrumentsController controller = new InstrumentsController(
+                catalog,
+                calculator,
+                new FuturesCalculator(),
+                new OptionGreeksCalculator(),
+                new DividendCalculator(),
+                new TaxCalculator(),
+                new DcaCalculator());
 
         assertThat(controller.listBonds()).hasSize(1);
         BondCalculator.BondCalculationResponse resp = controller.calculateBond(" su26248rmfs3 ", "85.50", "2027-04-02");

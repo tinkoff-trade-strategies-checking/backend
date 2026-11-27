@@ -136,8 +136,14 @@ class OptionGreeksCalculatorTest {
         when(catalog.findOption("UNKNOWN")).thenReturn(Optional.empty());
         when(catalog.listOptions()).thenReturn(List.of(callSpec));
 
-        InstrumentsController controller =
-                new InstrumentsController(catalog, new BondCalculator(), new FuturesCalculator(), calculator);
+        InstrumentsController controller = new InstrumentsController(
+                catalog,
+                new BondCalculator(),
+                new FuturesCalculator(),
+                calculator,
+                new DividendCalculator(),
+                new TaxCalculator(),
+                new DcaCalculator());
 
         assertThat(controller.listOptions()).hasSize(1);
         OptionGreeksCalculator.OptionGreeksResponse resp =
