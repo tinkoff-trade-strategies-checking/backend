@@ -45,6 +45,20 @@ public class SecurityFundamentals {
                 .optional();
     }
 
+    /** Последний доступный срез фундаментальных показателей по всем тикерам в базе (для скринера MOEX). */
+    public Map<String, SecurityFundamental> findAllLatest() {
+        List<SecurityFundamental> rows = jdbc.sql("SELECT DISTINCT ON (ticker) " + COLUMNS
+                        + " FROM marketdata.security_fundamentals "
+                        + "ORDER BY ticker, available_at DESC, report_date DESC")
+                .query(SecurityFundamentals::mapRow)
+                .list();
+        Map<String, SecurityFundamental> byTicker = new LinkedHashMap<>();
+        for (SecurityFundamental row : rows) {
+            byTicker.put(row.ticker(), row);
+        }
+        return byTicker;
+    }
+
     /**
      * Point-in-time срезы на дату {@code asOfDate} для набора тикеров (INV-1): для каждого тикера выбирается самый
      * свежий срез с {@code available_at <= asOfDate}. Будущая отчётность никогда не возвращается.
