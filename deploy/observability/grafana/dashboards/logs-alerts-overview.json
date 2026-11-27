@@ -43,10 +43,17 @@
     {
       "id": 5,
       "type": "table",
-      "title": "Firing & Pending Alerts (vmalert)",
+      "title": "Alert Rules Status (vmalert)",
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 4 },
-      "targets": [{ "expr": "ALERTS", "format": "table", "instant": true, "refId": "A" }]
+      "targets": [{ "expr": "max by (group, alertname) (vmalert_alerts_firing)", "format": "table", "instant": true, "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "OK", "color": "green" }, "1": { "text": "FIRING", "color": "red" } } }
+          ]
+        }
+      }
     },
     {
       "id": 6,

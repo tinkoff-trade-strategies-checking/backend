@@ -33,15 +33,51 @@ groups:
         expr: |
           histogram_quantile(
             0.95,
-            sum by (le) (rate(http_server_requests_seconds_bucket{job="backend",uri!~"/actuator.*"}[5m]))
+            sum by (le) (rate(caddy_http_request_duration_seconds_bucket{job="caddy",handler="subroute"}[5m]))
           ) > 1.0
         for: 5m
         labels:
           severity: warning
           component: backend
         annotations:
-          summary: "Высокая задержка HTTP p95 в backend (> 1s)"
+          summary: "Высокая задержка HTTP p95 (> 1s)"
           description: "95-й перцентиль времени ответа HTTP API составляет {{ $value | humanizeDuration }}."
+
+  - name: slo-burn-rate
+    interval: 15s
+    rules:
+      - alert: SLOFastBurnRate
+        expr: |
+          (
+            (
+              (sum(rate(http_server_requests_seconds_count{job="backend",status=~"5.."}[5m])) or vector(0))
+              /
+              clamp_min(sum(rate(http_server_requests_seconds_count{job="backend"}[5m])), 0.001)
+            ) / 0.001
+          ) > 6
+          and
+          sum(rate(http_server_requests_seconds_count{job="backend"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: slo
+        annotations:
+          summary: "Быстрое сжигание Error Budget (> 6x от 30d SLO 99.9%)"
+          description: "Текущая скорость сжигания error budget составляет {{ $value | printf \"%.2f\" }}x за последние 5 минут."
+
+      - alert: SLOLatencyBreach
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(caddy_http_request_duration_seconds_bucket{job="caddy",handler="subroute"}[5m]))
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: slo
+        annotations:
+          summary: "Нарушение SLO по задержке HTTP p95 (> 500ms)"
+          description: "95-й перцентиль времени ответа HTTP API составляет {{ $value | humanizeDuration }} (порог 500ms)."
 
   - name: backend-jvm
     interval: 30s
