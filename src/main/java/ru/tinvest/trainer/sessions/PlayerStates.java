@@ -1,6 +1,11 @@
 package ru.tinvest.trainer.sessions;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -38,21 +43,38 @@ class PlayerStates {
         return jdbc.sql("SELECT playing, speed, total_steps, cursor_step, cursor_day, cursor_candle "
                         + "FROM sessions.player_state WHERE session_id = :id")
                 .param("id", sessionId)
-                .query((rs, n) -> {
-                    long total = rs.getLong("total_steps");
-                    OptionalLong totalSteps = rs.wasNull() ? OptionalLong.empty() : OptionalLong.of(total);
-                    long cursor = rs.getLong("cursor_step");
-                    OptionalLong cursorStep = rs.wasNull() ? OptionalLong.empty() : OptionalLong.of(cursor);
-                    return new Row(
-                            rs.getBoolean("playing"),
-                            rs.getInt("speed"),
-                            totalSteps,
-                            cursorStep,
-                            rs.getInt("cursor_day"),
-                            rs.getInt("cursor_candle"));
-                })
+                .query(PlayerStates::mapRow)
                 .optional()
                 .orElse(Row.DEFAULT);
+    }
+
+    /** Батчевое чтение состояний плеера для списка сессий (для истории без N+1). */
+    Map<UUID, Row> getAll(Collection<UUID> sessionIds) {
+        if (sessionIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, Row> out = new HashMap<>(sessionIds.size());
+        jdbc.sql("SELECT session_id, playing, speed, total_steps, cursor_step, cursor_day, cursor_candle "
+                        + "FROM sessions.player_state WHERE session_id IN (:ids)")
+                .param("ids", sessionIds)
+                .query(rs -> {
+                    out.put(rs.getObject("session_id", UUID.class), mapRow(rs, 0));
+                });
+        return out;
+    }
+
+    private static Row mapRow(ResultSet rs, int rowNum) throws SQLException {
+        long total = rs.getLong("total_steps");
+        OptionalLong totalSteps = rs.wasNull() ? OptionalLong.empty() : OptionalLong.of(total);
+        long cursor = rs.getLong("cursor_step");
+        OptionalLong cursorStep = rs.wasNull() ? OptionalLong.empty() : OptionalLong.of(cursor);
+        return new Row(
+                rs.getBoolean("playing"),
+                rs.getInt("speed"),
+                totalSteps,
+                cursorStep,
+                rs.getInt("cursor_day"),
+                rs.getInt("cursor_candle"));
     }
 
     /** Запоминает день и номер свечи в дне на шаге курсора. */

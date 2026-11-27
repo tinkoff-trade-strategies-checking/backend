@@ -2,6 +2,7 @@ package ru.tinvest.trainer.marketdata;
 
 import java.time.LocalDate;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,33 +23,58 @@ import java.util.function.Supplier;
  *       ({@link CompletableFuture}), а провал (например, таймаут) не кэшируется — следующий вызов читает заново.
  *   <li>Одновременных чтений из ClickHouse не больше {@code maxConcurrentLoads}: первый скан свечей снапшота тяжёлый.
  *   <li>Готовность кэшируется только когда она получена ({@code true}).
+ *   <li>Число шагов {@link #sessionSteps} для дневного шага ({@code >= 86400 с}) вычисляется в памяти из
+ *       закэшированного {@link #candleDays}, а для внутридневных шагов кэшируется в ограниченном LRU-кэше на снапшот.
  * </ul>
  */
 final class CachingArchiveCatalog implements ArchiveCatalog {
+
+    private static final int DAY_SECONDS = 86_400;
+    private static final int DEFAULT_MAX_STEPS_ENTRIES = 512;
+
+    private record StepsKey(int sourceIntervalSec, int stepSec, List<String> secids, List<LocalDate> windowDays) {}
 
     /** Данные одного снапшота. */
     private static final class Entry {
         volatile boolean ready;
         final Map<String, CompletableFuture<?>> inflight = new ConcurrentHashMap<>();
         final Map<String, Object> values = new ConcurrentHashMap<>();
+        final Map<StepsKey, CompletableFuture<Integer>> stepsInflight = new ConcurrentHashMap<>();
+        final Map<StepsKey, Integer> stepsCache;
+
+        Entry(int maxStepsEntries) {
+            this.stepsCache = new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<StepsKey, Integer> eldest) {
+                    return size() > maxStepsEntries;
+                }
+            };
+        }
     }
 
     private final ArchiveCatalog delegate;
     private final int maxSnapshots;
+    private final int maxStepsEntries;
     private final Semaphore loads;
     private final Map<String, Entry> entries = new LinkedHashMap<>(4, 0.75f, true);
 
     CachingArchiveCatalog(ArchiveCatalog delegate, int maxSnapshots, int maxConcurrentLoads) {
-        if (maxSnapshots < 1 || maxConcurrentLoads < 1) {
-            throw new IllegalArgumentException("Кэш каталога: число снапшотов и загрузок должно быть не меньше 1");
+        this(delegate, maxSnapshots, maxConcurrentLoads, DEFAULT_MAX_STEPS_ENTRIES);
+    }
+
+    CachingArchiveCatalog(ArchiveCatalog delegate, int maxSnapshots, int maxConcurrentLoads, int maxStepsEntries) {
+        if (maxSnapshots < 1 || maxConcurrentLoads < 1 || maxStepsEntries < 1) {
+            throw new IllegalArgumentException(
+                    "Кэш каталога: число снапшотов, загрузок и записей шагов должно быть не меньше 1");
         }
         this.delegate = delegate;
         this.maxSnapshots = maxSnapshots;
+        this.maxStepsEntries = maxStepsEntries;
         this.loads = new Semaphore(maxConcurrentLoads);
     }
 
     private synchronized Entry entry(String snapshotKey) {
-        Entry entry = entries.computeIfAbsent(snapshotKey, k -> new Entry());
+        Entry entry = entries.computeIfAbsent(snapshotKey, k -> new Entry(maxStepsEntries));
         while (entries.size() > maxSnapshots) {
             String eldest = entries.keySet().iterator().next();
             entries.remove(eldest);
@@ -173,7 +199,61 @@ final class CachingArchiveCatalog implements ArchiveCatalog {
             int stepSec,
             Collection<String> secids,
             List<LocalDate> windowDays) {
-        return delegate.sessionSteps(snapshotKey, sourceIntervalSec, stepSec, secids, windowDays);
+        if (secids.isEmpty() || windowDays.isEmpty()) {
+            return 0;
+        }
+        // Для дневного шага (1d) достаточно объединить уже закэшированные даты свечей по бумагам: 0 запросов в
+        // ClickHouse.
+        if (stepSec >= DAY_SECONDS && !secids.contains("IMOEX")) {
+            Map<String, Set<LocalDate>> bySecid = candleDays(snapshotKey, sourceIntervalSec);
+            Set<LocalDate> distinctWindow = new HashSet<>(windowDays);
+            int count = 0;
+            for (LocalDate day : distinctWindow) {
+                for (String secid : secids) {
+                    Set<LocalDate> days = bySecid.get(secid);
+                    if (days != null && days.contains(day)) {
+                        count++;
+                        break;
+                    }
+                }
+            }
+            return count;
+        }
+        List<String> sortedSecids = secids.stream().distinct().sorted().toList();
+        StepsKey key = new StepsKey(sourceIntervalSec, stepSec, sortedSecids, List.copyOf(windowDays));
+        Entry entry = entry(snapshotKey);
+        synchronized (entry.stepsCache) {
+            Integer cached = entry.stepsCache.get(key);
+            if (cached != null) {
+                return cached;
+            }
+        }
+        CompletableFuture<Integer> mine = new CompletableFuture<>();
+        CompletableFuture<Integer> existing = entry.stepsInflight.putIfAbsent(key, mine);
+        if (existing != null) {
+            return await(existing);
+        }
+        try {
+            synchronized (entry.stepsCache) {
+                Integer late = entry.stepsCache.get(key);
+                if (late != null) {
+                    mine.complete(late);
+                    return late;
+                }
+            }
+            int value = loadLimited(
+                    () -> delegate.sessionSteps(snapshotKey, sourceIntervalSec, stepSec, sortedSecids, windowDays));
+            synchronized (entry.stepsCache) {
+                entry.stepsCache.put(key, value);
+            }
+            mine.complete(value);
+            return value;
+        } catch (RuntimeException | Error e) {
+            mine.completeExceptionally(e);
+            throw e;
+        } finally {
+            entry.stepsInflight.remove(key);
+        }
     }
 
     @Override

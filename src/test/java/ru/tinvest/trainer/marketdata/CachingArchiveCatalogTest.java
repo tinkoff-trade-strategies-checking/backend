@@ -121,9 +121,9 @@ class CachingArchiveCatalogTest {
     }
 
     @Test
-    void readinessIsCachedOnlyWhenTrueAndStepsAreNot() {
+    void readinessIsCachedOnlyWhenTrueAndIntradayStepsAreCachedInBoundedLru() {
         var delegate = new Counting();
-        var cache = new CachingArchiveCatalog(delegate, 2, 2);
+        var cache = new CachingArchiveCatalog(delegate, 2, 2, 2);
         assertThat(cache.isReady("a")).isFalse();
         assertThat(cache.isReady("a")).isFalse();
         assertThat(delegate.ready).hasValue(2);
@@ -132,9 +132,61 @@ class CachingArchiveCatalogTest {
         assertThat(cache.isReady("a")).isTrue();
         assertThat(delegate.ready).hasValue(3);
 
-        var d = List.of(LocalDate.of(2024, 1, 1));
-        assertThat(cache.sessionSteps("a", 60, 60, List.of("X"), d)).isEqualTo(1);
-        assertThat(cache.sessionSteps("a", 60, 60, List.of("X"), d)).isEqualTo(2);
+        var d1 = List.of(LocalDate.of(2024, 1, 1));
+        var d2 = List.of(LocalDate.of(2024, 1, 2));
+        var d3 = List.of(LocalDate.of(2024, 1, 3));
+        // Повторный вызов и перестановка secids попадают в кэш
+        assertThat(cache.sessionSteps("a", 60, 900, List.of("SBER", "GAZP"), d1))
+                .isEqualTo(1);
+        assertThat(cache.sessionSteps("a", 60, 900, List.of("GAZP", "SBER", "SBER"), d1))
+                .isEqualTo(1);
+        assertThat(delegate.steps).hasValue(1);
+
+        // Заполняем LRU (лимит 2) и вытесняем d2 (d1 освежён)
+        assertThat(cache.sessionSteps("a", 60, 900, List.of("SBER"), d2)).isEqualTo(2);
+        assertThat(cache.sessionSteps("a", 60, 900, List.of("SBER", "GAZP"), d1))
+                .isEqualTo(1);
+        assertThat(cache.sessionSteps("a", 60, 900, List.of("SBER"), d3)).isEqualTo(3);
+        assertThat(delegate.steps).hasValue(3);
+
+        // d1 остался в кэше, d2 вытеснен и перечитывается
+        assertThat(cache.sessionSteps("a", 60, 900, List.of("SBER", "GAZP"), d1))
+                .isEqualTo(1);
+        assertThat(delegate.steps).hasValue(3);
+        assertThat(cache.sessionSteps("a", 60, 900, List.of("SBER"), d2)).isEqualTo(4);
+        assertThat(delegate.steps).hasValue(4);
+    }
+
+    @Test
+    void dailySessionStepsAreComputedInMemoryFromCachedCandleDaysWithoutDelegateCall() {
+        LocalDate d1 = LocalDate.of(2024, 1, 10);
+        LocalDate d2 = LocalDate.of(2024, 1, 11);
+        LocalDate d3 = LocalDate.of(2024, 1, 12);
+        LocalDate d4 = LocalDate.of(2024, 1, 15);
+        var delegate = new Counting() {
+            @Override
+            public Map<String, Set<LocalDate>> candleDays(String k, int i) {
+                candleDays.incrementAndGet();
+                return Map.of(
+                        "SBER", Set.of(d1, d2),
+                        "GAZP", Set.of(d2, d3));
+            }
+        };
+        var cache = new CachingArchiveCatalog(delegate, 2, 2);
+
+        // Объединение {d1, d2} U {d2, d3} пересечённое с [d1, d2, d3, d4] = 3 дня (d4 нет ни у одной бумаги)
+        assertThat(cache.sessionSteps("a", 60, 86_400, List.of("SBER", "GAZP"), List.of(d1, d2, d3, d4)))
+                .isEqualTo(3);
+        // Только SBER в окне [d1, d3, d4] = 1 день (d1)
+        assertThat(cache.sessionSteps("a", 60, 86_400, List.of("SBER"), List.of(d1, d3, d4)))
+                .isEqualTo(1);
+        // Пустые аргументы -> 0 без обращений
+        assertThat(cache.sessionSteps("a", 60, 86_400, List.of(), List.of(d1))).isZero();
+        assertThat(cache.sessionSteps("a", 60, 86_400, List.of("SBER"), List.of()))
+                .isZero();
+
+        assertThat(delegate.steps).hasValue(0);
+        assertThat(delegate.candleDays).hasValue(1);
     }
 
     @Test

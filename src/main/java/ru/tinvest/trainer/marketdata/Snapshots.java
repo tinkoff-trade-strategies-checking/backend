@@ -2,8 +2,10 @@ package ru.tinvest.trainer.marketdata;
 
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import ru.tinvest.trainer.config.Uuid7;
@@ -13,6 +15,8 @@ import ru.tinvest.trainer.config.Uuid7;
 public class Snapshots {
 
     private final JdbcClient jdbc;
+    /** Снапшоты неизменяемы (INV-5): найденные записи кэшируются по id, чтобы не ходить в БД на каждую сессию. */
+    private final Map<UUID, Snapshot> byId = new ConcurrentHashMap<>();
 
     Snapshots(JdbcClient jdbc) {
         this.jdbc = jdbc;
@@ -35,7 +39,11 @@ public class Snapshots {
     }
 
     public Optional<Snapshot> find(UUID id) {
-        return jdbc.sql(
+        Snapshot cached = byId.get(id);
+        if (cached != null) {
+            return Optional.of(cached);
+        }
+        Optional<Snapshot> loaded = jdbc.sql(
                         "SELECT id, snapshot_key, loaded_at, description, data_hash FROM marketdata.snapshot WHERE id = :id")
                 .param("id", id)
                 .query((rs, n) -> new Snapshot(
@@ -45,6 +53,8 @@ public class Snapshots {
                         rs.getString("description"),
                         rs.getString("data_hash")))
                 .optional();
+        loaded.ifPresent(s -> byId.put(id, s));
+        return loaded;
     }
 
     public Optional<Snapshot> findByKey(String snapshotKey) {

@@ -18,14 +18,21 @@ import org.springframework.stereotype.Service;
 public class BondCalculator {
 
     private static final MathContext MC = MathContext.DECIMAL128;
+    private static final MathContext YTM_MC = new MathContext(20, RoundingMode.HALF_EVEN);
     private static final BigDecimal HUNDRED = new BigDecimal("100");
     private static final BigDecimal DAYS_IN_YEAR = new BigDecimal("365");
     private static final BigDecimal TWO = new BigDecimal("2");
     private static final BigDecimal HALF = new BigDecimal("0.5");
     private static final BigDecimal YTM_LOW = new BigDecimal("-0.90");
     private static final BigDecimal YTM_HIGH = new BigDecimal("5.00");
-    private static final int BISECTION_ITERATIONS = 64;
+    private static final double YTM_LOW_DOUBLE = -0.90;
+    private static final double YTM_HIGH_DOUBLE = 5.00;
+    private static final int NEWTON_DOUBLE_MAX_ITER = 32;
+    private static final int NEWTON_BD_MAX_ITER = 4;
     private static final BigDecimal SERIES_EPSILON = new BigDecimal("1E-22");
+    private static final BigDecimal YTM_SERIES_EPSILON = new BigDecimal("1E-16");
+    private static final BigDecimal YTM_STEP_TOLERANCE = new BigDecimal("1E-12");
+    private static final BigDecimal YTM_PV_TOLERANCE = new BigDecimal("1E-10");
 
     public BondCalculation calculate(BondSpec bond, BigDecimal pricePct, LocalDate asOfDate) {
         if (pricePct == null || pricePct.compareTo(BigDecimal.ZERO) <= 0) {
@@ -158,88 +165,189 @@ public class BondCalculator {
     }
 
     private static BigDecimal solveYtm(List<Cashflow> cashflows, BigDecimal targetDirtyPrice) {
-        BigDecimal low = YTM_LOW;
-        BigDecimal high = YTM_HIGH;
-        for (int i = 0; i < BISECTION_ITERATIONS; i++) {
-            BigDecimal mid = low.add(high, MC).multiply(HALF, MC);
-            BigDecimal pv = presentValue(cashflows, mid);
-            int cmp = pv.compareTo(targetDirtyPrice);
-            if (cmp > 0) {
-                low = mid;
-            } else if (cmp < 0) {
-                high = mid;
-            } else {
-                return mid;
+        double guess = solveYtmDouble(cashflows, targetDirtyPrice.doubleValue());
+        BigDecimal y = BigDecimal.valueOf(guess);
+        if (y.compareTo(YTM_LOW) < 0) {
+            y = YTM_LOW;
+        } else if (y.compareTo(YTM_HIGH) > 0) {
+            y = YTM_HIGH;
+        }
+        // Точное уточнение в BigDecimal методом Ньютона–Рафсона (INV-6): обычно 1–2 итерации.
+        for (int i = 0; i < NEWTON_BD_MAX_ITER; i++) {
+            BigDecimal[] pvAndDeriv = presentValueAndDerivative(cashflows, y, YTM_MC, YTM_SERIES_EPSILON);
+            BigDecimal diff = pvAndDeriv[0].subtract(targetDirtyPrice, YTM_MC);
+            if (diff.abs().compareTo(YTM_PV_TOLERANCE) <= 0) {
+                return y;
+            }
+            BigDecimal deriv = pvAndDeriv[1];
+            if (deriv.signum() == 0) {
+                return y;
+            }
+            BigDecimal step = diff.divide(deriv, YTM_MC);
+            BigDecimal next = y.subtract(step, YTM_MC);
+            if (next.compareTo(YTM_LOW) <= 0) {
+                if (y.compareTo(YTM_LOW) == 0) {
+                    return YTM_LOW;
+                }
+                y = YTM_LOW;
+                continue;
+            }
+            if (next.compareTo(YTM_HIGH) >= 0) {
+                if (y.compareTo(YTM_HIGH) == 0) {
+                    return YTM_HIGH;
+                }
+                y = YTM_HIGH;
+                continue;
+            }
+            y = next;
+            if (step.abs().compareTo(YTM_STEP_TOLERANCE) <= 0) {
+                return y;
             }
         }
-        return low.add(high, MC).multiply(HALF, MC);
+        return y;
     }
 
-    private static BigDecimal presentValue(List<Cashflow> cashflows, BigDecimal ytm) {
-        BigDecimal onePlusY = BigDecimal.ONE.add(ytm, MC);
-        BigDecimal lnOnePlusY = ln(onePlusY);
-        BigDecimal sum = BigDecimal.ZERO;
-        for (Cashflow cf : cashflows) {
-            // (1 + y)^(-t) = exp(-t * ln(1 + y))
-            BigDecimal discount = exp(lnOnePlusY.multiply(cf.years(), MC).negate());
-            sum = sum.add(cf.amount().multiply(discount, MC), MC);
+    /** Быстрое начальное приближение YTM в {@code double} методом Ньютона–Рафсона с защитой границами [lo, hi]. */
+    private static double solveYtmDouble(List<Cashflow> cashflows, double target) {
+        int n = cashflows.size();
+        double[] years = new double[n];
+        double[] amounts = new double[n];
+        for (int i = 0; i < n; i++) {
+            Cashflow cf = cashflows.get(i);
+            years[i] = cf.years().doubleValue();
+            amounts[i] = cf.amount().doubleValue();
+        }
+        double lo = YTM_LOW_DOUBLE;
+        double hi = YTM_HIGH_DOUBLE;
+        if (presentValueDouble(years, amounts, lo) <= target) {
+            return lo;
+        }
+        if (presentValueDouble(years, amounts, hi) >= target) {
+            return hi;
+        }
+        double y = 0.10;
+        for (int i = 0; i < NEWTON_DOUBLE_MAX_ITER; i++) {
+            double onePlusY = 1.0 + y;
+            double lnOnePlusY = Math.log1p(y);
+            double pv = 0.0;
+            double weightedPv = 0.0;
+            for (int j = 0; j < n; j++) {
+                double disc = Math.exp(-years[j] * lnOnePlusY);
+                double term = amounts[j] * disc;
+                pv += term;
+                weightedPv += years[j] * term;
+            }
+            double diff = pv - target;
+            if (diff > 0.0) {
+                lo = y;
+            } else if (diff < 0.0) {
+                hi = y;
+            } else {
+                return y;
+            }
+            if (Math.abs(diff) <= 1e-12 * Math.max(1.0, target)) {
+                return y;
+            }
+            double deriv = -weightedPv / onePlusY;
+            double next = deriv != 0.0 ? y - diff / deriv : 0.5 * (lo + hi);
+            if (!Double.isFinite(next) || next <= lo || next >= hi) {
+                next = 0.5 * (lo + hi);
+            }
+            if (Math.abs(next - y) <= 1e-13) {
+                return next;
+            }
+            y = next;
+        }
+        return y;
+    }
+
+    private static double presentValueDouble(double[] years, double[] amounts, double ytm) {
+        double lnOnePlusY = Math.log1p(ytm);
+        double sum = 0.0;
+        for (int i = 0; i < years.length; i++) {
+            sum += amounts[i] * Math.exp(-years[i] * lnOnePlusY);
         }
         return sum;
     }
 
+    private static BigDecimal[] presentValueAndDerivative(
+            List<Cashflow> cashflows, BigDecimal ytm, MathContext mc, BigDecimal epsilon) {
+        BigDecimal onePlusY = BigDecimal.ONE.add(ytm, mc);
+        BigDecimal lnOnePlusY = ln(onePlusY, mc, epsilon);
+        BigDecimal pv = BigDecimal.ZERO;
+        BigDecimal weightedPv = BigDecimal.ZERO;
+        for (Cashflow cf : cashflows) {
+            // (1 + y)^(-t) = exp(-t * ln(1 + y))
+            BigDecimal discount = exp(lnOnePlusY.multiply(cf.years(), mc).negate(), mc, epsilon);
+            BigDecimal term = cf.amount().multiply(discount, mc);
+            pv = pv.add(term, mc);
+            weightedPv = weightedPv.add(cf.years().multiply(term, mc), mc);
+        }
+        BigDecimal deriv = weightedPv.negate().divide(onePlusY, mc);
+        return new BigDecimal[] {pv, deriv};
+    }
+
     /** Натуральный логарифм для x > 0 полностью на BigDecimal через редукцию аргумента и ряд atanh. */
     static BigDecimal ln(BigDecimal x) {
+        return ln(x, MC, SERIES_EPSILON);
+    }
+
+    private static BigDecimal ln(BigDecimal x, MathContext mc, BigDecimal epsilon) {
         if (x.compareTo(BigDecimal.ZERO) <= 0) {
             throw new IllegalArgumentException("ln argument must be positive");
         }
         int reductions = 0;
         BigDecimal v = x;
         while (v.compareTo(TWO) > 0) {
-            v = v.sqrt(MC);
+            v = v.sqrt(mc);
             reductions++;
         }
         while (v.compareTo(HALF) < 0) {
-            v = v.sqrt(MC);
+            v = v.sqrt(mc);
             reductions++;
         }
-        BigDecimal u = v.subtract(BigDecimal.ONE, MC).divide(v.add(BigDecimal.ONE, MC), MC);
-        BigDecimal u2 = u.multiply(u, MC);
+        BigDecimal u = v.subtract(BigDecimal.ONE, mc).divide(v.add(BigDecimal.ONE, mc), mc);
+        BigDecimal u2 = u.multiply(u, mc);
         BigDecimal term = u;
         BigDecimal sum = u;
         for (int k = 3; k < 200; k += 2) {
-            term = term.multiply(u2, MC);
-            BigDecimal delta = term.divide(BigDecimal.valueOf(k), MC);
-            sum = sum.add(delta, MC);
-            if (delta.abs().compareTo(SERIES_EPSILON) < 0) {
+            term = term.multiply(u2, mc);
+            BigDecimal delta = term.divide(BigDecimal.valueOf(k), mc);
+            sum = sum.add(delta, mc);
+            if (delta.abs().compareTo(epsilon) < 0) {
                 break;
             }
         }
-        BigDecimal result = sum.multiply(TWO, MC);
+        BigDecimal result = sum.multiply(TWO, mc);
         for (int i = 0; i < reductions; i++) {
-            result = result.multiply(TWO, MC);
+            result = result.multiply(TWO, mc);
         }
         return result;
     }
 
     /** Экспонента полностью на BigDecimal через масштабирование z / 2^m и ряд Тейлора. */
     static BigDecimal exp(BigDecimal z) {
+        return exp(z, MC, SERIES_EPSILON);
+    }
+
+    private static BigDecimal exp(BigDecimal z, MathContext mc, BigDecimal epsilon) {
         int halvings = 0;
         BigDecimal scaled = z;
         while (scaled.abs().compareTo(HALF) > 0) {
-            scaled = scaled.multiply(HALF, MC);
+            scaled = scaled.multiply(HALF, mc);
             halvings++;
         }
         BigDecimal sum = BigDecimal.ONE;
         BigDecimal term = BigDecimal.ONE;
         for (int k = 1; k < 120; k++) {
-            term = term.multiply(scaled, MC).divide(BigDecimal.valueOf(k), MC);
-            sum = sum.add(term, MC);
-            if (term.abs().compareTo(SERIES_EPSILON) < 0) {
+            term = term.multiply(scaled, mc).divide(BigDecimal.valueOf(k), mc);
+            sum = sum.add(term, mc);
+            if (term.abs().compareTo(epsilon) < 0) {
                 break;
             }
         }
         for (int i = 0; i < halvings; i++) {
-            sum = sum.multiply(sum, MC);
+            sum = sum.multiply(sum, mc);
         }
         return sum;
     }
