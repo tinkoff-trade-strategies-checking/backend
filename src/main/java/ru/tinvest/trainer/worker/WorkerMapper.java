@@ -695,6 +695,11 @@ final class WorkerMapper {
             case SESSION_END -> RejectCode.SESSION_END;
             case CANCELLED_BY_USER -> RejectCode.CANCELLED_BY_USER;
             case DAY_EXPIRED -> RejectCode.DAY_EXPIRED;
+            case INSUFFICIENT_MARGIN -> RejectCode.INSUFFICIENT_MARGIN;
+            case MARGIN_CALL_LIQUIDATION -> RejectCode.MARGIN_CALL_LIQUIDATION;
+            case IMMEDIATE_OR_CANCEL -> RejectCode.IMMEDIATE_OR_CANCEL;
+            case FILL_OR_KILL -> RejectCode.FILL_OR_KILL;
+            case PRICE_OUT_OF_BAND -> RejectCode.PRICE_OUT_OF_BAND;
             default -> throw new IllegalStateException("Воркер вернул неизвестную причину: " + reason);
         };
     }

@@ -137,8 +137,14 @@ class FuturesCalculatorTest {
         when(catalog.findFutures("UNKNOWN")).thenReturn(Optional.empty());
         when(catalog.listFutures()).thenReturn(List.of(si));
 
-        InstrumentsController controller =
-                new InstrumentsController(catalog, new BondCalculator(), calculator, new OptionGreeksCalculator());
+        InstrumentsController controller = new InstrumentsController(
+                catalog,
+                new BondCalculator(),
+                calculator,
+                new OptionGreeksCalculator(),
+                new DividendCalculator(),
+                new TaxCalculator(),
+                new DcaCalculator());
 
         assertThat(controller.listFutures()).hasSize(1);
         FuturesCalculator.FuturesCalculationResponse resp =

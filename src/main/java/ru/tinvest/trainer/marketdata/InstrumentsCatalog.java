@@ -28,6 +28,9 @@ public class InstrumentsCatalog {
     private static final String OPTION_COLUMNS = "ticker, name, underlying, option_type, strike, expiration_date, "
             + "underlying_price, implied_vol_pct, risk_free_rate_pct, contract_size, initial_margin_rub";
 
+    private static final String DIVIDEND_COLUMNS = "id, ticker, issuer_name, record_date, ex_dividend_date, "
+            + "last_buy_date, payment_date, dividend_per_share_rub, yield_pct, estimated_gap_pct, currency";
+
     private final JdbcClient jdbc;
 
     InstrumentsCatalog(JdbcClient jdbc) {
@@ -97,6 +100,39 @@ public class InstrumentsCatalog {
                 .optional();
     }
 
+    public List<DividendEventSpec> listDividends() {
+        return jdbc.sql("SELECT " + DIVIDEND_COLUMNS
+                        + " FROM marketdata.dividend_event ORDER BY record_date DESC, ticker ASC, id ASC")
+                .query(InstrumentsCatalog::mapDividend)
+                .list();
+    }
+
+    public List<DividendEventSpec> listDividendsByTicker(String ticker) {
+        String normalized = SecurityFundamentals.normalizeTicker(ticker);
+        if (normalized.isEmpty()) {
+            return List.of();
+        }
+        return jdbc.sql("SELECT " + DIVIDEND_COLUMNS
+                        + " FROM marketdata.dividend_event WHERE UPPER(ticker) = :ticker"
+                        + " ORDER BY record_date DESC, id ASC")
+                .param("ticker", normalized)
+                .query(InstrumentsCatalog::mapDividend)
+                .list();
+    }
+
+    public Optional<DividendEventSpec> findLatestDividend(String ticker) {
+        String normalized = SecurityFundamentals.normalizeTicker(ticker);
+        if (normalized.isEmpty()) {
+            return Optional.empty();
+        }
+        return jdbc.sql("SELECT " + DIVIDEND_COLUMNS
+                        + " FROM marketdata.dividend_event WHERE UPPER(ticker) = :ticker"
+                        + " ORDER BY record_date DESC, id DESC LIMIT 1")
+                .param("ticker", normalized)
+                .query(InstrumentsCatalog::mapDividend)
+                .optional();
+    }
+
     private static BondSpec mapBond(ResultSet rs, int rowNum) throws SQLException {
         return new BondSpec(
                 rs.getString("ticker"),
@@ -160,5 +196,20 @@ public class InstrumentsCatalog {
                 rs.getBigDecimal("risk_free_rate_pct"),
                 rs.getInt("contract_size"),
                 rs.getBigDecimal("initial_margin_rub"));
+    }
+
+    private static DividendEventSpec mapDividend(ResultSet rs, int rowNum) throws SQLException {
+        return new DividendEventSpec(
+                rs.getLong("id"),
+                rs.getString("ticker"),
+                rs.getString("issuer_name"),
+                rs.getObject("record_date", LocalDate.class),
+                rs.getObject("ex_dividend_date", LocalDate.class),
+                rs.getObject("last_buy_date", LocalDate.class),
+                rs.getObject("payment_date", LocalDate.class),
+                rs.getBigDecimal("dividend_per_share_rub"),
+                rs.getBigDecimal("yield_pct"),
+                rs.getBigDecimal("estimated_gap_pct"),
+                rs.getString("currency"));
     }
 }
