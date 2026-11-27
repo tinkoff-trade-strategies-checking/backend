@@ -680,15 +680,27 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
 
     @Test
     void historyTakesTheDayFromThePlayerAndDoesNotNeedTheWorker() throws Exception {
-        UUID id = newSession(false);
-        setStep(id, 4);
-        players.setCursor(id, 4, 2, 2);
+        UUID fresh = newSession(false);
+        UUID progressed = newSession(false);
+        setStep(progressed, 4);
+        players.setCursor(progressed, 4, 2, 2);
+        // имитация старой сессии без строки player_state — история всё равно не должна ходить в воркер
+        UUID legacyRunning = newSession(true);
+        jdbc.sql("DELETE FROM sessions.player_state WHERE session_id = :id")
+                .param("id", legacyRunning)
+                .update();
         worker.down = true;
 
         JsonNode page = body(httpGet("/api/v1/history"));
 
-        assertThat(page.get("items")).hasSize(1);
-        assertThat(page.get("items").get(0).get("playedDays").asInt()).isEqualTo(2);
+        assertThat(page.get("items")).hasSize(3);
+        Map<String, Integer> daysById = new HashMap<>();
+        page.get("items")
+                .forEach(item -> daysById.put(
+                        item.get("id").asString(), item.get("playedDays").asInt()));
+        assertThat(daysById.get(fresh.toString())).isEqualTo(1);
+        assertThat(daysById.get(progressed.toString())).isEqualTo(2);
+        assertThat(daysById.get(legacyRunning.toString())).isEqualTo(1);
         assertThat(worker.dayRequests).isEmpty();
     }
 
@@ -793,9 +805,8 @@ class ReportHistoryReplayApiTest extends PostgresIntegrationTest {
         builder.buildAndStore(blindDone);
         worker.dayRequests.clear();
         JsonNode page = body(httpGet("/api/v1/history"));
-        // лёгкий вызов только для идущей сессии без строки плеера; открытая — из player_state, завершённая — из
-        // хранилища
-        assertThat(worker.dayRequests).hasSize(1);
+        // история полностью читается из БД без синхронного RPC в воркер (backend#104)
+        assertThat(worker.dayRequests).isEmpty();
         assertThat(worker.reportRequests).hasSize(1);
 
         Map<String, JsonNode> byId = new HashMap<>();

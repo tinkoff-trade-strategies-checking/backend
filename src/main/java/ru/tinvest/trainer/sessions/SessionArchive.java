@@ -2,6 +2,7 @@ package ru.tinvest.trainer.sessions;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
@@ -93,7 +94,7 @@ public class SessionArchive {
         return journals.log(session);
     }
 
-    /** Страница истории сессий текущего пользователя. */
+    /** Страница истории сессий текущего пользователя (строго по БД, без N+1 и без синхронного RPC в воркер). */
     public HistoryPage history(HistoryFilter filter) {
         UUID userId = currentUser.requireId();
         StringBuilder where = new StringBuilder(" WHERE user_id = :user");
@@ -109,20 +110,47 @@ public class SessionArchive {
         long total = bind(jdbc.sql("SELECT count(*) FROM sessions.session" + where), userId, filter)
                 .query(Long.class)
                 .single();
-        List<UUID> ids = bind(
-                        jdbc.sql("SELECT id FROM sessions.session" + where
+        if (total == 0) {
+            return new HistoryPage(List.of(), 0);
+        }
+        List<SessionRecord> rawSessions = bind(
+                        jdbc.sql("SELECT * FROM sessions.session" + where
                                 + " ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset"),
                         userId,
                         filter)
                 .param("limit", filter.pageSize())
                 .param("offset", (long) (filter.page() - 1) * filter.pageSize())
-                .query(UUID.class)
+                .query((rs, n) -> sessions.mapSession(rs, List.of()))
                 .list();
-        List<SessionLookup> items = new ArrayList<>(ids.size());
-        for (UUID id : ids) {
-            items.add(resolve(sessions.requireOwned(id)));
+        if (rawSessions.isEmpty()) {
+            return new HistoryPage(List.of(), total);
+        }
+        List<SessionRecord> pageSessions = sessions.attachPapers(rawSessions);
+        List<UUID> runningIds = pageSessions.stream()
+                .filter(s -> "running".equals(s.status()))
+                .map(SessionRecord::id)
+                .toList();
+        Map<UUID, PlayerStates.Row> playerStates = players.getAll(runningIds);
+        List<SessionLookup> items = new ArrayList<>(pageSessions.size());
+        for (SessionRecord session : pageSessions) {
+            if ("running".equals(session.status())) {
+                items.add(new SessionLookup.Unfinished(session, playedDaysFromDb(playerStates.get(session.id()))));
+            } else {
+                items.add(new SessionLookup.Finished(session));
+            }
         }
         return new HistoryPage(items, total);
+    }
+
+    /**
+     * День курсора для истории без синхронного вызова воркера: используется сохранённый {@code player_state.cursor_day}
+     * (при создании сессии на шаге 0 инициализируется значением 1, как в {@link Player}).
+     */
+    private static int playedDaysFromDb(PlayerStates.@Nullable Row row) {
+        if (row != null && row.cursorStep().isPresent()) {
+            return row.cursorDay();
+        }
+        return 1;
     }
 
     private static JdbcClient.StatementSpec bind(JdbcClient.StatementSpec spec, UUID userId, HistoryFilter filter) {

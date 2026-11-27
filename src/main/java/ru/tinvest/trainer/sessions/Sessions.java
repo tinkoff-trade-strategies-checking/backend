@@ -2,10 +2,14 @@ package ru.tinvest.trainer.sessions;
 
 import java.math.BigDecimal;
 import java.security.SecureRandom;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -15,6 +19,7 @@ import java.util.UUID;
 import java.util.random.RandomGenerator;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -53,6 +58,7 @@ public class Sessions {
             new BigDecimal("0.1"));
 
     private final JdbcClient jdbc;
+    private final @Nullable JdbcOperations jdbcOps;
     private final CurrentUser currentUser;
     private final Snapshots snapshots;
     private final StrategyCatalog strategyCatalog;
@@ -62,11 +68,12 @@ public class Sessions {
     @Autowired
     Sessions(
             JdbcClient jdbc,
+            JdbcOperations jdbcOps,
             CurrentUser currentUser,
             Snapshots snapshots,
             StrategyCatalog strategyCatalog,
             ObjectMapper json) {
-        this(jdbc, currentUser, snapshots, strategyCatalog, json, new SecureRandom());
+        this(jdbc, jdbcOps, currentUser, snapshots, strategyCatalog, json, new SecureRandom());
     }
 
     Sessions(
@@ -76,8 +83,20 @@ public class Sessions {
             StrategyCatalog strategyCatalog,
             ObjectMapper json,
             RandomGenerator random) {
+        this(jdbc, null, currentUser, snapshots, strategyCatalog, json, random);
+    }
+
+    private Sessions(
+            JdbcClient jdbc,
+            @Nullable JdbcOperations jdbcOps,
+            CurrentUser currentUser,
+            Snapshots snapshots,
+            StrategyCatalog strategyCatalog,
+            ObjectMapper json,
+            RandomGenerator random) {
         this.snapshots = snapshots;
         this.jdbc = jdbc;
+        this.jdbcOps = jdbcOps;
         this.currentUser = currentUser;
         this.strategyCatalog = strategyCatalog;
         this.json = json;
@@ -168,22 +187,38 @@ public class Sessions {
                 .update();
         List<PlannedPaper> shuffled = new ArrayList<>(plan.papers());
         Collections.shuffle(shuffled, random);
+        insertPapers(id, shuffled);
+        // На шаге 0 сессия стоит на первой свече первого дня (согласовано с Player.cursor): история не ходит в воркер.
+        jdbc.sql("INSERT INTO sessions.player_state (session_id, cursor_step, cursor_day, cursor_candle) "
+                        + "VALUES (:id, 0, 1, 1) ON CONFLICT (session_id) DO NOTHING")
+                .param("id", id)
+                .update();
+        return id;
+    }
+
+    private void insertPapers(UUID sessionId, List<PlannedPaper> shuffled) {
+        if (shuffled.isEmpty()) {
+            return;
+        }
+        String sql = "INSERT INTO sessions.session_paper (session_id, paper_index, paper_id, secid, sector, "
+                + "lot_size, price_step, name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        if (jdbcOps != null) {
+            List<Object[]> batch = new ArrayList<>(shuffled.size());
+            for (int index = 0; index < shuffled.size(); index++) {
+                PlannedPaper p = shuffled.get(index);
+                batch.add(new Object[] {
+                    sessionId, index, p.id(), p.secid(), p.sector(), p.lotSize(), p.priceStep(), p.name()
+                });
+            }
+            jdbcOps.batchUpdate(sql, batch);
+            return;
+        }
         for (int index = 0; index < shuffled.size(); index++) {
             PlannedPaper p = shuffled.get(index);
-            jdbc.sql(
-                            "INSERT INTO sessions.session_paper (session_id, paper_index, paper_id, secid, sector, "
-                                    + "lot_size, price_step, name) VALUES (:session, :idx, :paper, :secid, :sector, :lot, :step, :name)")
-                    .param("session", id)
-                    .param("idx", index)
-                    .param("paper", p.id())
-                    .param("secid", p.secid())
-                    .param("sector", p.sector())
-                    .param("lot", p.lotSize())
-                    .param("step", p.priceStep())
-                    .param("name", p.name())
+            jdbc.sql(sql)
+                    .params(sessionId, index, p.id(), p.secid(), p.sector(), p.lotSize(), p.priceStep(), p.name())
                     .update();
         }
-        return id;
     }
 
     /**
@@ -259,41 +294,113 @@ public class Sessions {
     private Optional<SessionRecord> find(UUID sessionId, boolean lock) {
         return jdbc.sql("SELECT * FROM sessions.session WHERE id = :id" + (lock ? " FOR UPDATE" : ""))
                 .param("id", sessionId)
-                .query((rs, n) -> new SessionRecord(
-                        rs.getObject("id", UUID.class),
-                        rs.getObject("user_id", UUID.class),
-                        rs.getBoolean("blind"),
-                        rs.getString("status"),
-                        rs.getInt("duration_days"),
-                        Timeframe.fromCode(rs.getString("timeframe")).orElseThrow(),
-                        Regime.fromCode(rs.getString("regime")).orElseThrow(),
-                        StartMode.valueOf(rs.getString("start_mode").toUpperCase(Locale.ROOT)),
-                        rs.getObject("snapshot_id", UUID.class),
-                        snapshotKey(rs.getObject("snapshot_id", UUID.class)),
-                        rs.getObject("period_start", LocalDate.class),
-                        rs.getObject("period_end", LocalDate.class),
-                        rs.getInt("trading_days"),
-                        rs.getInt("bars_count"),
-                        rs.getDouble("sigma"),
-                        rs.getDouble("mdd"),
-                        rs.getDouble("p33"),
-                        rs.getDouble("p80"),
-                        rs.getObject("initial_capital", BigDecimal.class),
-                        rs.getObject("created_at", OffsetDateTime.class),
-                        rs.getLong("current_step"),
-                        rs.getInt("warmup_bars"),
-                        new Costs(
-                                rs.getBigDecimal("commission_rate"),
-                                rs.getBigDecimal("exchange_fee_rate"),
-                                rs.getBigDecimal("spread"),
-                                rs.getBigDecimal("slippage_kappa"),
-                                rs.getBigDecimal("liquidity_share")),
-                        papers(sessionId),
-                        rs.getObject("algo_version_id", UUID.class),
-                        parseAlgoParams(rs.getString("algo_params")),
-                        rs.getBigDecimal("daily_loss_limit_pct"),
-                        rs.getBoolean("kill_switch_triggered")))
+                .query((rs, n) -> mapSession(rs, papers(sessionId)))
                 .optional();
+    }
+
+    /** Подставляет батчем загруженные бумаги в список сессий (1 SQL-запрос вместо N). */
+    List<SessionRecord> attachPapers(List<SessionRecord> rawSessions) {
+        if (rawSessions.isEmpty()) {
+            return List.of();
+        }
+        List<UUID> ids = rawSessions.stream().map(SessionRecord::id).toList();
+        Map<UUID, List<PaperRecord>> bySession = papersBySession(ids);
+        List<SessionRecord> out = new ArrayList<>(rawSessions.size());
+        for (SessionRecord s : rawSessions) {
+            out.add(new SessionRecord(
+                    s.id(),
+                    s.userId(),
+                    s.blind(),
+                    s.status(),
+                    s.durationDays(),
+                    s.timeframe(),
+                    s.regime(),
+                    s.startMode(),
+                    s.snapshotId(),
+                    s.snapshotKey(),
+                    s.periodStart(),
+                    s.periodEnd(),
+                    s.tradingDays(),
+                    s.barsCount(),
+                    s.sigma(),
+                    s.mdd(),
+                    s.p33(),
+                    s.p80(),
+                    s.initialCapital(),
+                    s.createdAt(),
+                    s.currentStep(),
+                    s.warmupBars(),
+                    s.costs(),
+                    bySession.getOrDefault(s.id(), List.of()),
+                    s.algoVersionId(),
+                    s.algoParams(),
+                    s.dailyLossLimitPct(),
+                    s.killSwitchTriggered()));
+        }
+        return out;
+    }
+
+    /** Батчевая загрузка бумаг для списка сессий одним SQL-запросом (для истории без N+1). */
+    Map<UUID, List<PaperRecord>> papersBySession(Collection<UUID> sessionIds) {
+        if (sessionIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, List<PaperRecord>> bySession = new HashMap<>(sessionIds.size());
+        jdbc.sql("SELECT session_id, paper_index, paper_id, secid, sector, lot_size, price_step, name "
+                        + "FROM sessions.session_paper WHERE session_id IN (:ids) ORDER BY session_id, paper_index")
+                .param("ids", sessionIds)
+                .query(rs -> {
+                    UUID sid = rs.getObject("session_id", UUID.class);
+                    bySession
+                            .computeIfAbsent(sid, k -> new ArrayList<>())
+                            .add(new PaperRecord(
+                                    rs.getInt("paper_index"),
+                                    rs.getObject("paper_id", UUID.class),
+                                    rs.getString("secid"),
+                                    rs.getString("sector"),
+                                    rs.getLong("lot_size"),
+                                    rs.getBigDecimal("price_step"),
+                                    rs.getString("name")));
+                });
+        return bySession;
+    }
+
+    SessionRecord mapSession(ResultSet rs, List<PaperRecord> sessionPapers) throws SQLException {
+        UUID snapshotId = rs.getObject("snapshot_id", UUID.class);
+        return new SessionRecord(
+                rs.getObject("id", UUID.class),
+                rs.getObject("user_id", UUID.class),
+                rs.getBoolean("blind"),
+                rs.getString("status"),
+                rs.getInt("duration_days"),
+                Timeframe.fromCode(rs.getString("timeframe")).orElseThrow(),
+                Regime.fromCode(rs.getString("regime")).orElseThrow(),
+                StartMode.valueOf(rs.getString("start_mode").toUpperCase(Locale.ROOT)),
+                snapshotId,
+                snapshotKey(snapshotId),
+                rs.getObject("period_start", LocalDate.class),
+                rs.getObject("period_end", LocalDate.class),
+                rs.getInt("trading_days"),
+                rs.getInt("bars_count"),
+                rs.getDouble("sigma"),
+                rs.getDouble("mdd"),
+                rs.getDouble("p33"),
+                rs.getDouble("p80"),
+                rs.getObject("initial_capital", BigDecimal.class),
+                rs.getObject("created_at", OffsetDateTime.class),
+                rs.getLong("current_step"),
+                rs.getInt("warmup_bars"),
+                new Costs(
+                        rs.getBigDecimal("commission_rate"),
+                        rs.getBigDecimal("exchange_fee_rate"),
+                        rs.getBigDecimal("spread"),
+                        rs.getBigDecimal("slippage_kappa"),
+                        rs.getBigDecimal("liquidity_share")),
+                sessionPapers,
+                rs.getObject("algo_version_id", UUID.class),
+                parseAlgoParams(rs.getString("algo_params")),
+                rs.getBigDecimal("daily_loss_limit_pct"),
+                rs.getBoolean("kill_switch_triggered"));
     }
 
     private Map<String, Double> parseAlgoParams(@Nullable String raw) {

@@ -4,6 +4,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -62,13 +65,29 @@ public class InstrumentsCatalog {
         return loaded;
     }
 
+    private record IndexedCatalog<T>(List<T> items, Map<String, T> byTicker) {}
+
+    private record DividendsCache(
+            List<DividendEventSpec> all,
+            Map<String, List<DividendEventSpec>> byTicker,
+            Map<String, DividendEventSpec> latestByTicker) {}
+
+    private IndexedCatalog<BondSpec> bondsCatalog() {
+        return cached("bonds", () -> {
+            List<BondSpec> list = jdbc.sql("SELECT " + BOND_COLUMNS
+                            + " FROM marketdata.bond_spec ORDER BY bond_type DESC, maturity_date ASC, ticker ASC")
+                    .query(InstrumentsCatalog::mapBond)
+                    .list();
+            Map<String, BondSpec> byTicker = new HashMap<>(list.size() * 2);
+            for (BondSpec b : list) {
+                byTicker.put(SecurityFundamentals.normalizeTicker(b.ticker()), b);
+            }
+            return new IndexedCatalog<>(List.copyOf(list), Map.copyOf(byTicker));
+        });
+    }
+
     public List<BondSpec> listBonds() {
-        return cached(
-                "bonds",
-                () -> jdbc.sql("SELECT " + BOND_COLUMNS
-                                + " FROM marketdata.bond_spec ORDER BY bond_type DESC, maturity_date ASC, ticker ASC")
-                        .query(InstrumentsCatalog::mapBond)
-                        .list());
+        return bondsCatalog().items();
     }
 
     public Optional<BondSpec> findBond(String ticker) {
@@ -76,29 +95,35 @@ public class InstrumentsCatalog {
         if (normalized.isEmpty()) {
             return Optional.empty();
         }
-        return jdbc.sql("SELECT " + BOND_COLUMNS + " FROM marketdata.bond_spec WHERE ticker = :ticker")
-                .param("ticker", normalized)
-                .query(InstrumentsCatalog::mapBond)
-                .optional();
+        return Optional.ofNullable(bondsCatalog().byTicker().get(normalized));
     }
 
     public List<EtfSpec> listEtfs() {
         return cached(
                 "etfs",
-                () -> jdbc.sql(
+                () -> List.copyOf(jdbc.sql(
                                 "SELECT " + ETF_COLUMNS
                                         + " FROM marketdata.etf_spec ORDER BY tracks_ruonia DESC, asset_class ASC, category ASC, ticker ASC")
                         .query(InstrumentsCatalog::mapEtf)
-                        .list());
+                        .list()));
+    }
+
+    private IndexedCatalog<FuturesSpec> futuresCatalog() {
+        return cached("futures", () -> {
+            List<FuturesSpec> list = jdbc.sql("SELECT " + FUTURES_COLUMNS
+                            + " FROM marketdata.futures_spec ORDER BY expiration_date ASC, ticker ASC")
+                    .query(InstrumentsCatalog::mapFutures)
+                    .list();
+            Map<String, FuturesSpec> byTicker = new HashMap<>(list.size() * 2);
+            for (FuturesSpec f : list) {
+                byTicker.put(SecurityFundamentals.normalizeTicker(f.ticker()), f);
+            }
+            return new IndexedCatalog<>(List.copyOf(list), Map.copyOf(byTicker));
+        });
     }
 
     public List<FuturesSpec> listFutures() {
-        return cached(
-                "futures",
-                () -> jdbc.sql("SELECT " + FUTURES_COLUMNS
-                                + " FROM marketdata.futures_spec ORDER BY expiration_date ASC, ticker ASC")
-                        .query(InstrumentsCatalog::mapFutures)
-                        .list());
+        return futuresCatalog().items();
     }
 
     public Optional<FuturesSpec> findFutures(String ticker) {
@@ -106,20 +131,26 @@ public class InstrumentsCatalog {
         if (normalized.isEmpty()) {
             return Optional.empty();
         }
-        return jdbc.sql("SELECT " + FUTURES_COLUMNS + " FROM marketdata.futures_spec WHERE UPPER(ticker) = :ticker")
-                .param("ticker", normalized)
-                .query(InstrumentsCatalog::mapFutures)
-                .optional();
+        return Optional.ofNullable(futuresCatalog().byTicker().get(normalized));
+    }
+
+    private IndexedCatalog<OptionSpec> optionsCatalog() {
+        return cached("options", () -> {
+            List<OptionSpec> list = jdbc.sql(
+                            "SELECT " + OPTION_COLUMNS
+                                    + " FROM marketdata.option_spec ORDER BY underlying ASC, option_type ASC, strike ASC, ticker ASC")
+                    .query(InstrumentsCatalog::mapOption)
+                    .list();
+            Map<String, OptionSpec> byTicker = new HashMap<>(list.size() * 2);
+            for (OptionSpec o : list) {
+                byTicker.put(SecurityFundamentals.normalizeTicker(o.ticker()), o);
+            }
+            return new IndexedCatalog<>(List.copyOf(list), Map.copyOf(byTicker));
+        });
     }
 
     public List<OptionSpec> listOptions() {
-        return cached(
-                "options",
-                () -> jdbc.sql(
-                                "SELECT " + OPTION_COLUMNS
-                                        + " FROM marketdata.option_spec ORDER BY underlying ASC, option_type ASC, strike ASC, ticker ASC")
-                        .query(InstrumentsCatalog::mapOption)
-                        .list());
+        return optionsCatalog().items();
     }
 
     public Optional<OptionSpec> findOption(String ticker) {
@@ -127,19 +158,32 @@ public class InstrumentsCatalog {
         if (normalized.isEmpty()) {
             return Optional.empty();
         }
-        return jdbc.sql("SELECT " + OPTION_COLUMNS + " FROM marketdata.option_spec WHERE UPPER(ticker) = :ticker")
-                .param("ticker", normalized)
-                .query(InstrumentsCatalog::mapOption)
-                .optional();
+        return Optional.ofNullable(optionsCatalog().byTicker().get(normalized));
+    }
+
+    private DividendsCache dividendsCache() {
+        return cached("dividends", () -> {
+            List<DividendEventSpec> list = jdbc.sql("SELECT " + DIVIDEND_COLUMNS
+                            + " FROM marketdata.dividend_event ORDER BY record_date DESC, ticker ASC, id ASC")
+                    .query(InstrumentsCatalog::mapDividend)
+                    .list();
+            Map<String, List<DividendEventSpec>> grouped = new HashMap<>();
+            Map<String, DividendEventSpec> latest = new HashMap<>();
+            Comparator<DividendEventSpec> latestOrder =
+                    Comparator.comparing(DividendEventSpec::recordDate).thenComparingLong(DividendEventSpec::id);
+            for (DividendEventSpec d : list) {
+                String key = SecurityFundamentals.normalizeTicker(d.ticker());
+                grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(d);
+                latest.merge(key, d, (a, b) -> latestOrder.compare(a, b) >= 0 ? a : b);
+            }
+            Map<String, List<DividendEventSpec>> immutableByTicker = new HashMap<>(grouped.size() * 2);
+            grouped.forEach((k, v) -> immutableByTicker.put(k, List.copyOf(v)));
+            return new DividendsCache(List.copyOf(list), Map.copyOf(immutableByTicker), Map.copyOf(latest));
+        });
     }
 
     public List<DividendEventSpec> listDividends() {
-        return cached(
-                "dividends",
-                () -> jdbc.sql("SELECT " + DIVIDEND_COLUMNS
-                                + " FROM marketdata.dividend_event ORDER BY record_date DESC, ticker ASC, id ASC")
-                        .query(InstrumentsCatalog::mapDividend)
-                        .list());
+        return dividendsCache().all();
     }
 
     public List<DividendEventSpec> listDividendsByTicker(String ticker) {
@@ -147,12 +191,7 @@ public class InstrumentsCatalog {
         if (normalized.isEmpty()) {
             return List.of();
         }
-        return jdbc.sql("SELECT " + DIVIDEND_COLUMNS
-                        + " FROM marketdata.dividend_event WHERE UPPER(ticker) = :ticker"
-                        + " ORDER BY record_date DESC, id ASC")
-                .param("ticker", normalized)
-                .query(InstrumentsCatalog::mapDividend)
-                .list();
+        return dividendsCache().byTicker().getOrDefault(normalized, List.of());
     }
 
     public Optional<DividendEventSpec> findLatestDividend(String ticker) {
@@ -160,41 +199,36 @@ public class InstrumentsCatalog {
         if (normalized.isEmpty()) {
             return Optional.empty();
         }
-        return jdbc.sql("SELECT " + DIVIDEND_COLUMNS
-                        + " FROM marketdata.dividend_event WHERE UPPER(ticker) = :ticker"
-                        + " ORDER BY record_date DESC, id DESC LIMIT 1")
-                .param("ticker", normalized)
-                .query(InstrumentsCatalog::mapDividend)
-                .optional();
+        return Optional.ofNullable(dividendsCache().latestByTicker().get(normalized));
     }
 
     public List<MarketEventSpec> listMarketEvents(@Nullable String eventType, @Nullable String ticker) {
-        if ((eventType == null || eventType.isBlank()) && (ticker == null || ticker.isBlank())) {
-            return cached(
-                    "market_events_all",
-                    () -> jdbc.sql("SELECT " + MARKET_EVENT_COLUMNS
-                                    + " FROM marketdata.market_event ORDER BY event_date ASC, id ASC")
-                            .query(InstrumentsCatalog::mapMarketEvent)
-                            .list());
+        List<MarketEventSpec> all = cached(
+                "market_events_all",
+                () -> List.copyOf(jdbc.sql("SELECT " + MARKET_EVENT_COLUMNS
+                                + " FROM marketdata.market_event ORDER BY event_date ASC, id ASC")
+                        .query(InstrumentsCatalog::mapMarketEvent)
+                        .list()));
+        boolean hasType = eventType != null && !eventType.isBlank();
+        boolean hasTicker = ticker != null && !ticker.isBlank();
+        if (!hasType && !hasTicker) {
+            return all;
         }
-        StringBuilder sql = new StringBuilder("SELECT ")
-                .append(MARKET_EVENT_COLUMNS)
-                .append(" FROM marketdata.market_event WHERE 1=1");
-        if (eventType != null && !eventType.isBlank()) {
-            sql.append(" AND event_type = :eventType");
+        String normalizedTicker = hasTicker ? SecurityFundamentals.normalizeTicker(ticker) : "";
+        List<MarketEventSpec> filtered = new ArrayList<>();
+        for (MarketEventSpec e : all) {
+            if (hasType && !eventType.equals(e.eventType())) {
+                continue;
+            }
+            if (hasTicker) {
+                String itemTicker = e.ticker() == null ? "" : SecurityFundamentals.normalizeTicker(e.ticker());
+                if (!normalizedTicker.equals(itemTicker)) {
+                    continue;
+                }
+            }
+            filtered.add(e);
         }
-        if (ticker != null && !ticker.isBlank()) {
-            sql.append(" AND UPPER(ticker) = :ticker");
-        }
-        sql.append(" ORDER BY event_date ASC, id ASC");
-        JdbcClient.StatementSpec spec = jdbc.sql(sql.toString());
-        if (eventType != null && !eventType.isBlank()) {
-            spec = spec.param("eventType", eventType);
-        }
-        if (ticker != null && !ticker.isBlank()) {
-            spec = spec.param("ticker", ticker);
-        }
-        return spec.query(InstrumentsCatalog::mapMarketEvent).list();
+        return List.copyOf(filtered);
     }
 
     private static BondSpec mapBond(ResultSet rs, int rowNum) throws SQLException {
