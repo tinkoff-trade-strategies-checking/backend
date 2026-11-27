@@ -22,6 +22,12 @@ public class InstrumentsCatalog {
     private static final String ETF_COLUMNS = "ticker, name, asset_class, category, underlying_index, "
             + "tracks_ruonia, expense_ratio_pct, nav_price_rub, currency, description";
 
+    private static final String FUTURES_COLUMNS = "ticker, name, underlying, contract_size, price_step, "
+            + "step_price_rub, initial_margin_rub, last_price, expiration_date, settlement_type, currency";
+
+    private static final String OPTION_COLUMNS = "ticker, name, underlying, option_type, strike, expiration_date, "
+            + "underlying_price, implied_vol_pct, risk_free_rate_pct, contract_size, initial_margin_rub";
+
     private final JdbcClient jdbc;
 
     InstrumentsCatalog(JdbcClient jdbc) {
@@ -52,6 +58,43 @@ public class InstrumentsCatalog {
                                 + " FROM marketdata.etf_spec ORDER BY tracks_ruonia DESC, asset_class ASC, category ASC, ticker ASC")
                 .query(InstrumentsCatalog::mapEtf)
                 .list();
+    }
+
+    public List<FuturesSpec> listFutures() {
+        return jdbc.sql("SELECT " + FUTURES_COLUMNS
+                        + " FROM marketdata.futures_spec ORDER BY expiration_date ASC, ticker ASC")
+                .query(InstrumentsCatalog::mapFutures)
+                .list();
+    }
+
+    public Optional<FuturesSpec> findFutures(String ticker) {
+        String normalized = SecurityFundamentals.normalizeTicker(ticker);
+        if (normalized.isEmpty()) {
+            return Optional.empty();
+        }
+        return jdbc.sql("SELECT " + FUTURES_COLUMNS + " FROM marketdata.futures_spec WHERE UPPER(ticker) = :ticker")
+                .param("ticker", normalized)
+                .query(InstrumentsCatalog::mapFutures)
+                .optional();
+    }
+
+    public List<OptionSpec> listOptions() {
+        return jdbc.sql(
+                        "SELECT " + OPTION_COLUMNS
+                                + " FROM marketdata.option_spec ORDER BY underlying ASC, option_type ASC, strike ASC, ticker ASC")
+                .query(InstrumentsCatalog::mapOption)
+                .list();
+    }
+
+    public Optional<OptionSpec> findOption(String ticker) {
+        String normalized = SecurityFundamentals.normalizeTicker(ticker);
+        if (normalized.isEmpty()) {
+            return Optional.empty();
+        }
+        return jdbc.sql("SELECT " + OPTION_COLUMNS + " FROM marketdata.option_spec WHERE UPPER(ticker) = :ticker")
+                .param("ticker", normalized)
+                .query(InstrumentsCatalog::mapOption)
+                .optional();
     }
 
     private static BondSpec mapBond(ResultSet rs, int rowNum) throws SQLException {
@@ -87,5 +130,35 @@ public class InstrumentsCatalog {
                 rs.getBigDecimal("nav_price_rub"),
                 rs.getString("currency"),
                 rs.getString("description"));
+    }
+
+    private static FuturesSpec mapFutures(ResultSet rs, int rowNum) throws SQLException {
+        return new FuturesSpec(
+                rs.getString("ticker"),
+                rs.getString("name"),
+                rs.getString("underlying"),
+                rs.getInt("contract_size"),
+                rs.getBigDecimal("price_step"),
+                rs.getBigDecimal("step_price_rub"),
+                rs.getBigDecimal("initial_margin_rub"),
+                rs.getBigDecimal("last_price"),
+                rs.getObject("expiration_date", LocalDate.class),
+                rs.getString("settlement_type"),
+                rs.getString("currency"));
+    }
+
+    private static OptionSpec mapOption(ResultSet rs, int rowNum) throws SQLException {
+        return new OptionSpec(
+                rs.getString("ticker"),
+                rs.getString("name"),
+                rs.getString("underlying"),
+                rs.getString("option_type"),
+                rs.getBigDecimal("strike"),
+                rs.getObject("expiration_date", LocalDate.class),
+                rs.getBigDecimal("underlying_price"),
+                rs.getBigDecimal("implied_vol_pct"),
+                rs.getBigDecimal("risk_free_rate_pct"),
+                rs.getInt("contract_size"),
+                rs.getBigDecimal("initial_margin_rub"));
     }
 }
