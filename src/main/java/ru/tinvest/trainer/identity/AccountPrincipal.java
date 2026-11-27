@@ -15,10 +15,16 @@ final class AccountPrincipal extends User {
     static final String ROLE = "USER";
 
     private final UUID id;
+    private final boolean guest;
 
     AccountPrincipal(UUID id, String email, String passwordHash) {
+        this(id, email, passwordHash, false);
+    }
+
+    AccountPrincipal(UUID id, String email, String passwordHash, boolean guest) {
         super(email, passwordHash, List.of(new SimpleGrantedAuthority("ROLE_" + ROLE)));
         this.id = id;
+        this.guest = guest;
     }
 
     UUID id() {
@@ -27,5 +33,9 @@ final class AccountPrincipal extends User {
 
     String email() {
         return getUsername();
+    }
+
+    boolean guest() {
+        return guest;
     }
 }

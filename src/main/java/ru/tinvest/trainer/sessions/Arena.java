@@ -179,17 +179,89 @@ class Arena {
                 }
             }
             EstimateResult first = results.getFirst().amounts();
+            LotSizing sizing = computeLotSizing(session, journal, legs.getFirst(), first);
             return masking.estimate(
                     session,
                     failed == null
-                            ? new ArenaState.EstimateView(true, null, null, first, results)
-                            : new ArenaState.EstimateView(false, failed.reason(), failed.field(), first, results));
+                            ? new ArenaState.EstimateView(
+                                    true, null, null, first, results, sizing.maxLots(), sizing.presetLots())
+                            : new ArenaState.EstimateView(
+                                    false,
+                                    failed.reason(),
+                                    failed.field(),
+                                    first,
+                                    results,
+                                    sizing.maxLots(),
+                                    sizing.presetLots()));
         } catch (FormRejection e) {
             return masking.estimate(
                     session,
                     new ArenaState.EstimateView(
                             false, e.reason(), e.field(), ArenaState.EstimateView.zeros(), List.of()));
         }
+    }
+
+    record LotSizing(@Nullable Long maxLots, ArenaState.@Nullable PresetLots presetLots) {}
+
+    /**
+     * Серверный расчёт {@code maxLots} и пресетов {@code 25% / 50% / 100%} на {@link java.math.BigDecimal} (backend#87,
+     * INV-6): для покупки — по свободному кэшу и полной стоимости лота (с учётом комиссий и спреда из {@code core}),
+     * для продажи — по текущей длинной позиции. Наружу отдаются только целые числа лотов (INV-7).
+     */
+    private LotSizing computeLotSizing(
+            SessionRecord session, List<JournalRecord> journal, OrderParams leg, EstimateResult first) {
+        if (leg.lots() <= 0) {
+            return new LotSizing(null, null);
+        }
+        ReplayResult replay = worker.replaySession(market(session), journal, session.currentStep(), false, false);
+        if (leg.side() == ru.tinvest.trainer.worker.WorkerTypes.TradeSide.SELL) {
+            long posLots = replay.portfolio().positions().stream()
+                    .filter(p -> p.paperKey().equals(leg.paperKey()))
+                    .mapToLong(p -> Math.max(0L, p.lots()))
+                    .findFirst()
+                    .orElse(0L);
+            return new LotSizing(posLots, new ArenaState.PresetLots(posLots / 4, posLots / 2, posLots));
+        }
+        java.math.BigDecimal requiredCash = first.requiredCash();
+        java.math.BigDecimal availableCash = replay.portfolio().cash();
+        if (requiredCash.compareTo(java.math.BigDecimal.ZERO) <= 0
+                || availableCash.compareTo(java.math.BigDecimal.ZERO) <= 0) {
+            return new LotSizing(0L, new ArenaState.PresetLots(0L, 0L, 0L));
+        }
+        return buyLotSizing(availableCash, requiredCash, leg.lots());
+    }
+
+    static LotSizing buyLotSizing(
+            java.math.BigDecimal availableCash, java.math.BigDecimal requiredCashForLots, long requestedLots) {
+        if (requestedLots <= 0
+                || requiredCashForLots.compareTo(java.math.BigDecimal.ZERO) <= 0
+                || availableCash.compareTo(java.math.BigDecimal.ZERO) <= 0) {
+            return new LotSizing(0L, new ArenaState.PresetLots(0L, 0L, 0L));
+        }
+        java.math.BigDecimal costPerLot =
+                requiredCashForLots.divide(java.math.BigDecimal.valueOf(requestedLots), 10, java.math.RoundingMode.UP);
+        long maxLots = Math.max(
+                0L,
+                availableCash
+                        .divide(costPerLot, 0, java.math.RoundingMode.FLOOR)
+                        .longValue());
+        long pct25 = Math.min(
+                maxLots,
+                Math.max(
+                        0L,
+                        availableCash
+                                .multiply(new java.math.BigDecimal("0.25"))
+                                .divide(costPerLot, 0, java.math.RoundingMode.FLOOR)
+                                .longValue()));
+        long pct50 = Math.min(
+                maxLots,
+                Math.max(
+                        0L,
+                        availableCash
+                                .multiply(new java.math.BigDecimal("0.50"))
+                                .divide(costPerLot, 0, java.math.RoundingMode.FLOOR)
+                                .longValue()));
+        return new LotSizing(maxLots, new ArenaState.PresetLots(pct25, pct50, maxLots));
     }
 
     // ---------- команды ----------

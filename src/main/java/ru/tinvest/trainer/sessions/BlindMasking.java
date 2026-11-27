@@ -152,6 +152,16 @@ class BlindMasking {
         out.put("commissionPct", ViewFormat.number(view.amounts().commissionPct()));
         out.put("exchangeFeePct", ViewFormat.number(view.amounts().exchangeFeePct()));
         out.put("requiredCashPct", ViewFormat.number(view.amounts().requiredCashPct()));
+        out.put("maxLots", view.maxLots());
+        if (view.presetLots() == null) {
+            out.put("presetLots", null);
+        } else {
+            Map<String, Object> presets = new LinkedHashMap<>();
+            presets.put("pct25", view.presetLots().pct25());
+            presets.put("pct50", view.presetLots().pct50());
+            presets.put("pct100", view.presetLots().pct100());
+            out.put("presetLots", presets);
+        }
         List<Object> legs = new ArrayList<>();
         for (ArenaState.EstimateLeg leg : view.legs()) {
             Map<String, Object> item = new LinkedHashMap<>();

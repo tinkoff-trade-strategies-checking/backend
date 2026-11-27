@@ -65,6 +65,9 @@ record ArenaState(
             @Nullable String field,
             EstimateResult amounts) {}
 
+    /** Быстрые пресеты лотов от доступного капитала (для покупки) или позиции (для продажи) (backend#87, INV-6/INV-7). */
+    record PresetLots(long pct25, long pct50, long pct100) {}
+
     /**
      * Итог оценки заявки: {@code amounts} — суммы первой ноги, {@code canPlace} — по всем ногам; {@code legs} — оценка
      * каждой ноги, пусто, если оценки нет (отказ до воркера, сессия не активна — суммы нулевые).
@@ -74,7 +77,18 @@ record ArenaState(
             @Nullable RejectCode reason,
             @Nullable String field,
             EstimateResult amounts,
-            List<EstimateLeg> legs) {
+            List<EstimateLeg> legs,
+            @Nullable Long maxLots,
+            @Nullable PresetLots presetLots) {
+
+        EstimateView(
+                boolean canPlace,
+                @Nullable RejectCode reason,
+                @Nullable String field,
+                EstimateResult amounts,
+                List<EstimateLeg> legs) {
+            this(canPlace, reason, field, amounts, legs, null, null);
+        }
 
         static EstimateResult zeros() {
             BigDecimal zero = BigDecimal.ZERO;

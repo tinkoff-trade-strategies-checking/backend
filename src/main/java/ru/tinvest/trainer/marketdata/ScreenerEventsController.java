@@ -1,5 +1,6 @@
 package ru.tinvest.trainer.marketdata;
 
+import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -25,10 +26,14 @@ class ScreenerEventsController {
 
     private static final int MAX_TICKER_LENGTH = 32;
     private static final Set<String> ALLOWED_EVENT_TYPES = Set.of("CBR_RATE", "EARNINGS", "DIVIDEND", "MACRO");
+    private static final long SCREENER_CACHE_TTL_NANOS = Duration.ofMinutes(5).toNanos();
+
+    private record CachedScreener(List<ScreenerPaper> items, long expiresAtNanos) {}
 
     private final LaunchPlanner launchPlanner;
     private final SecurityFundamentals fundamentals;
     private final InstrumentsCatalog catalog;
+    private volatile @Nullable CachedScreener cachedScreener;
 
     ScreenerEventsController(
             LaunchPlanner launchPlanner, SecurityFundamentals fundamentals, InstrumentsCatalog catalog) {
@@ -39,6 +44,17 @@ class ScreenerEventsController {
 
     @GetMapping("/screener")
     List<ScreenerPaper> listScreenerPapers() {
+        long now = System.nanoTime();
+        CachedScreener cached = cachedScreener;
+        if (cached != null && cached.expiresAtNanos() > now) {
+            return cached.items();
+        }
+        List<ScreenerPaper> items = loadScreenerPapers();
+        cachedScreener = new CachedScreener(items, now + SCREENER_CACHE_TTL_NANOS);
+        return items;
+    }
+
+    private List<ScreenerPaper> loadScreenerPapers() {
         Map<String, SecurityFundamental> latestByTicker = fundamentals.findAllLatest();
         List<PlannedPaper> papers;
         try {

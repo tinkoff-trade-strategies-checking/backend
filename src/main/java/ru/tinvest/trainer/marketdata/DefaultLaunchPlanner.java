@@ -43,12 +43,28 @@ class DefaultLaunchPlanner implements LaunchPlanner {
     /** Свечи с этим интервалом core агрегирует в любой шаг (core/AGENTS.md, {@code ClickHouseBarSource}). */
     private static final int BASE_INTERVAL_SEC = 60;
 
+    /** Размер LRU-кэша результатов {@code classifyPeriods} по неизменяемому снапшоту (INV-5). */
+    private static final int MAX_CLASSIFY_CACHE_ENTRIES = 16;
+
+    private record ClassifyKey(
+            String snapshotKey,
+            int windowLength,
+            LocalDate from,
+            LocalDate to,
+            @Nullable LocalDate startDate) {}
+
     private final Snapshots snapshots;
     private final ArchiveCatalog archive;
     private final SimulationWorkerClient worker;
     private final Set<String> pool;
     private final int maxBars;
     private final LongSupplier seeds;
+    private final Map<ClassifyKey, PeriodClassification> classifyCache = new LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<ClassifyKey, PeriodClassification> eldest) {
+            return size() > MAX_CLASSIFY_CACHE_ENTRIES;
+        }
+    };
 
     DefaultLaunchPlanner(
             Snapshots snapshots,
@@ -194,7 +210,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
             chosen.add(paper);
         }
         String key = ctx.snapshot().snapshotKey();
-        PeriodClassification classification = worker.classifyPeriods(
+        PeriodClassification classification = classifyCached(
                 key, ctx.length(), ctx.days().getFirst(), ctx.days().getLast(), date);
         PeriodWindow window = classification.windows().stream()
                 .filter(w -> w.startDate().equals(date))
@@ -219,7 +235,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
         LaunchRequest request = ctx.request();
         String key = ctx.snapshot().snapshotKey();
         int count = request.paperCount();
-        PeriodClassification classification = worker.classifyPeriods(
+        PeriodClassification classification = classifyCached(
                 key, ctx.length(), ctx.days().getFirst(), ctx.days().getLast(), null);
         List<PeriodWindow> windows = new ArrayList<>(classification.windows().stream()
                 .filter(w -> regime(w.category()) == request.regime())
@@ -429,6 +445,29 @@ class DefaultLaunchPlanner implements LaunchPlanner {
                 .findFirst()
                 .orElseThrow(() -> new DependencyUnavailableException(
                         "Архив данных не готов: нет ни одного готового снапшота", null));
+    }
+
+    private PeriodClassification classifyCached(
+            String snapshotKey, int windowLength, LocalDate from, LocalDate to, @Nullable LocalDate startDate) {
+        ClassifyKey exactKey = new ClassifyKey(snapshotKey, windowLength, from, to, startDate);
+        synchronized (classifyCache) {
+            PeriodClassification hit = classifyCache.get(exactKey);
+            if (hit != null) {
+                return hit;
+            }
+            if (startDate != null) {
+                PeriodClassification full =
+                        classifyCache.get(new ClassifyKey(snapshotKey, windowLength, from, to, null));
+                if (full != null) {
+                    return full;
+                }
+            }
+        }
+        PeriodClassification loaded = worker.classifyPeriods(snapshotKey, windowLength, from, to, startDate);
+        synchronized (classifyCache) {
+            classifyCache.put(exactKey, loaded);
+        }
+        return loaded;
     }
 
     private List<ArchivePaper> poolPapers(String key) {
