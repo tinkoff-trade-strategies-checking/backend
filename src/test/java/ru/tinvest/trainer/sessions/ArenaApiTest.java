@@ -181,6 +181,11 @@ class ArenaApiTest extends PostgresIntegrationTest {
             "costsPct",
             "positions",
             "lots",
+            "maxLots",
+            "presetLots",
+            "pct25",
+            "pct50",
+            "pct100",
             "avgPrice",
             "valuePct",
             "id",
@@ -618,7 +623,9 @@ class ArenaApiTest extends PostgresIntegrationTest {
                         "amountPct",
                         "commissionPct",
                         "exchangeFeePct",
-                        "requiredCashPct");
+                        "requiredCashPct",
+                        "maxLots",
+                        "presetLots");
         assertThat(tooMuch.get("canPlace").asBoolean()).isFalse();
         assertThat(tooMuch.get("reason").asString()).isEqualTo("INSUFFICIENT_CASH");
         assertThat(journalRows(open)).isEmpty();

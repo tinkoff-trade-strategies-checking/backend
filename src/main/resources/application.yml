@@ -10,6 +10,11 @@ spring:
     password: ${SPRING_DATASOURCE_PASSWORD}
 
 server:
+  compression:
+    enabled: true
+    min-response-size: 1024
+    # SSE (text/event-stream) намеренно исключён, чтобы события не буферизовались
+    mime-types: application/json,application/problem+json,text/plain
   # Tomcat RemoteIpValve: IP клиента из X-Forwarded-For от Caddy (внутренняя сеть, INV-10); нужен ограничителю входа
   forward-headers-strategy: native
   tomcat:

@@ -80,6 +80,10 @@ final class LeakScanner {
     private static final Set<String> COUNT_FIELDS = Set.of(
             "lots",
             "filledlots",
+            "maxlots",
+            "pct25",
+            "pct50",
+            "pct100",
             "barscount",
             "maxbars",
             "step",

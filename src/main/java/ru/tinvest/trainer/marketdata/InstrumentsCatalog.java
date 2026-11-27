@@ -2,9 +2,13 @@ package ru.tinvest.trainer.marketdata;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -35,17 +39,36 @@ public class InstrumentsCatalog {
     private static final String MARKET_EVENT_COLUMNS =
             "id, event_date, event_type, ticker, title, importance, description";
 
+    private static final long CACHE_TTL_NANOS = Duration.ofMinutes(5).toNanos();
+
+    private record CachedValue(Object value, long expiresAtNanos) {}
+
     private final JdbcClient jdbc;
+    private final Map<String, CachedValue> cache = new ConcurrentHashMap<>();
 
     InstrumentsCatalog(JdbcClient jdbc) {
         this.jdbc = jdbc;
     }
 
+    @SuppressWarnings("unchecked")
+    private <T> T cached(String key, Supplier<T> loader) {
+        long now = System.nanoTime();
+        CachedValue entry = cache.get(key);
+        if (entry != null && entry.expiresAtNanos() > now) {
+            return (T) entry.value();
+        }
+        T loaded = loader.get();
+        cache.put(key, new CachedValue(loaded, now + CACHE_TTL_NANOS));
+        return loaded;
+    }
+
     public List<BondSpec> listBonds() {
-        return jdbc.sql("SELECT " + BOND_COLUMNS
-                        + " FROM marketdata.bond_spec ORDER BY bond_type DESC, maturity_date ASC, ticker ASC")
-                .query(InstrumentsCatalog::mapBond)
-                .list();
+        return cached(
+                "bonds",
+                () -> jdbc.sql("SELECT " + BOND_COLUMNS
+                                + " FROM marketdata.bond_spec ORDER BY bond_type DESC, maturity_date ASC, ticker ASC")
+                        .query(InstrumentsCatalog::mapBond)
+                        .list());
     }
 
     public Optional<BondSpec> findBond(String ticker) {
@@ -60,18 +83,22 @@ public class InstrumentsCatalog {
     }
 
     public List<EtfSpec> listEtfs() {
-        return jdbc.sql(
-                        "SELECT " + ETF_COLUMNS
-                                + " FROM marketdata.etf_spec ORDER BY tracks_ruonia DESC, asset_class ASC, category ASC, ticker ASC")
-                .query(InstrumentsCatalog::mapEtf)
-                .list();
+        return cached(
+                "etfs",
+                () -> jdbc.sql(
+                                "SELECT " + ETF_COLUMNS
+                                        + " FROM marketdata.etf_spec ORDER BY tracks_ruonia DESC, asset_class ASC, category ASC, ticker ASC")
+                        .query(InstrumentsCatalog::mapEtf)
+                        .list());
     }
 
     public List<FuturesSpec> listFutures() {
-        return jdbc.sql("SELECT " + FUTURES_COLUMNS
-                        + " FROM marketdata.futures_spec ORDER BY expiration_date ASC, ticker ASC")
-                .query(InstrumentsCatalog::mapFutures)
-                .list();
+        return cached(
+                "futures",
+                () -> jdbc.sql("SELECT " + FUTURES_COLUMNS
+                                + " FROM marketdata.futures_spec ORDER BY expiration_date ASC, ticker ASC")
+                        .query(InstrumentsCatalog::mapFutures)
+                        .list());
     }
 
     public Optional<FuturesSpec> findFutures(String ticker) {
@@ -86,11 +113,13 @@ public class InstrumentsCatalog {
     }
 
     public List<OptionSpec> listOptions() {
-        return jdbc.sql(
-                        "SELECT " + OPTION_COLUMNS
-                                + " FROM marketdata.option_spec ORDER BY underlying ASC, option_type ASC, strike ASC, ticker ASC")
-                .query(InstrumentsCatalog::mapOption)
-                .list();
+        return cached(
+                "options",
+                () -> jdbc.sql(
+                                "SELECT " + OPTION_COLUMNS
+                                        + " FROM marketdata.option_spec ORDER BY underlying ASC, option_type ASC, strike ASC, ticker ASC")
+                        .query(InstrumentsCatalog::mapOption)
+                        .list());
     }
 
     public Optional<OptionSpec> findOption(String ticker) {
@@ -105,10 +134,12 @@ public class InstrumentsCatalog {
     }
 
     public List<DividendEventSpec> listDividends() {
-        return jdbc.sql("SELECT " + DIVIDEND_COLUMNS
-                        + " FROM marketdata.dividend_event ORDER BY record_date DESC, ticker ASC, id ASC")
-                .query(InstrumentsCatalog::mapDividend)
-                .list();
+        return cached(
+                "dividends",
+                () -> jdbc.sql("SELECT " + DIVIDEND_COLUMNS
+                                + " FROM marketdata.dividend_event ORDER BY record_date DESC, ticker ASC, id ASC")
+                        .query(InstrumentsCatalog::mapDividend)
+                        .list());
     }
 
     public List<DividendEventSpec> listDividendsByTicker(String ticker) {
@@ -138,6 +169,14 @@ public class InstrumentsCatalog {
     }
 
     public List<MarketEventSpec> listMarketEvents(@Nullable String eventType, @Nullable String ticker) {
+        if ((eventType == null || eventType.isBlank()) && (ticker == null || ticker.isBlank())) {
+            return cached(
+                    "market_events_all",
+                    () -> jdbc.sql("SELECT " + MARKET_EVENT_COLUMNS
+                                    + " FROM marketdata.market_event ORDER BY event_date ASC, id ASC")
+                            .query(InstrumentsCatalog::mapMarketEvent)
+                            .list());
+        }
         StringBuilder sql = new StringBuilder("SELECT ")
                 .append(MARKET_EVENT_COLUMNS)
                 .append(" FROM marketdata.market_event WHERE 1=1");

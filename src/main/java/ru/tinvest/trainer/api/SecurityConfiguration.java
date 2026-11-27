@@ -87,7 +87,7 @@ class SecurityConfiguration {
                         .permitAll()
                         .requestMatchers(managementPrometheus)
                         .permitAll()
-                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/login")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/login", "/api/v1/auth/guest")
                         .permitAll()
                         .requestMatchers("/api/v1/**")
                         .authenticated()
