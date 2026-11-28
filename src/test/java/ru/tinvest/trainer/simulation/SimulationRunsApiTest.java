@@ -278,13 +278,15 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.diagnostics[0].code").value("E-TYPE"));
 
         worker.checkDiagnostics = List.of();
-        planner.rejectWith = new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", 6000, 5000);
+        planner.rejectWith = new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", 260000, 250000);
+        int runPlanBefore = planner.runPlanCalls.get();
         mockMvc.perform(withAuth(userA, post("/api/v1/runs"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(createRunBody("custom", false)))
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.code").value("TOO_MANY_BARS"))
-                .andExpect(jsonPath("$.maxBars").value(5000));
+                .andExpect(jsonPath("$.maxBars").value(250000));
+        assertThat(planner.runPlanCalls.get()).isEqualTo(runPlanBefore + 1);
     }
 
     @Test
@@ -1125,12 +1127,20 @@ class SimulationRunsApiTest extends PostgresIntegrationTest {
         volatile List<PlannedPaper> customPapers;
         volatile boolean varyRandomDates;
         final AtomicInteger planCalls = new AtomicInteger();
+        final AtomicInteger runPlanCalls = new AtomicInteger();
 
         void reset() {
             rejectWith = null;
             customPapers = null;
             varyRandomDates = false;
             planCalls.set(0);
+            runPlanCalls.set(0);
+        }
+
+        @Override
+        public LaunchResult planForRun(LaunchRequest request) {
+            runPlanCalls.incrementAndGet();
+            return plan(request, null, 1L);
         }
 
         @Override

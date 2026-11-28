@@ -42,7 +42,13 @@ class MarketdataConfiguration {
             Snapshots snapshots, ArchiveCatalog archive, SimulationWorkerClient worker, MarketdataProperties props) {
         SecureRandom random = new SecureRandom();
         return new DefaultLaunchPlanner(
-                snapshots, archive, worker, Set.copyOf(props.pool()), props.maxBars(), random::nextLong);
+                snapshots,
+                archive,
+                worker,
+                Set.copyOf(props.pool()),
+                props.maxBars(),
+                props.runMaxBars(),
+                random::nextLong);
     }
 
     /**

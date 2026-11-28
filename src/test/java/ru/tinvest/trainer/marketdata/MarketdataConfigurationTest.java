@@ -84,7 +84,9 @@ class MarketdataConfigurationTest {
                     assertThat(context).hasNotFailed();
                     assertThat(context).hasSingleBean(LaunchPlanner.class);
                     assertThat(context.getBean(MarketdataProperties.class).maxBars())
-                            .isEqualTo(5000);
+                            .isEqualTo(25000);
+                    assertThat(context.getBean(MarketdataProperties.class).runMaxBars())
+                            .isEqualTo(250000);
                 });
     }
 

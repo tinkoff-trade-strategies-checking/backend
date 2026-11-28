@@ -747,4 +747,37 @@ class LaunchPlannerTest {
         calendar.clear();
         assertThat(planner.archiveDateRange(null)).isNull();
     }
+
+    @Test
+    void splitBarsLimitsAllowWorkshopRunsAboveManualCap() {
+        LaunchPlanner split = new DefaultLaunchPlanner(snapshots, archive, worker, Set.of(), 25_000, 250_000, () -> 1L);
+        archive.maxPerDay = Map.of(60, 840, 300, 168, 900, 56, 3600, 14, 86400, 1);
+
+        Map<Timeframe, Integer> manualDurations = split.maxDurations(null);
+        Map<Timeframe, Integer> runDurations = split.runMaxDurations(null);
+        assertThat(manualDurations.get(Timeframe.M1)).isEqualTo(25_000 / 840);
+        assertThat(manualDurations.get(Timeframe.M5)).isEqualTo(25_000 / 168);
+        assertThat(runDurations.get(Timeframe.M1)).isEqualTo(250_000 / 840);
+        assertThat(runDurations.get(Timeframe.D1)).isEqualTo(250_000);
+
+        // 1m × 60d: minBars = 60 * 525 = 31_500 > 25_000 (ручная Арена отклоняет), <= 250_000 (прогон проходит)
+        var m1Sixty = new LaunchRequest(60, Timeframe.M1, Regime.CALM, StartMode.RANDOM, null, 2, null, CAPITAL);
+        archive.steps = 50_400;
+        LaunchRejection manualRej = rejection(split.plan(m1Sixty, null, 1L));
+        assertThat(manualRej.reason()).isEqualTo(LaunchRejectReason.TOO_MANY_BARS);
+        assertThat(manualRej.maxBars()).isEqualTo(25_000);
+
+        LaunchPlan runOk = plan(split.planForRun(m1Sixty, null, 1L));
+        assertThat(runOk.barsCount()).isEqualTo(50_400);
+
+        // 1m × 250d проходит при <= 250_000 и отклоняется при > 250_000 с maxBars = 250_000
+        var m1Year = new LaunchRequest(250, Timeframe.M1, Regime.CALM, StartMode.RANDOM, null, 2, null, CAPITAL);
+        archive.steps = 210_000;
+        assertThat(plan(split.planForRun(m1Year, null, 1L)).barsCount()).isEqualTo(210_000);
+
+        archive.steps = 250_001;
+        LaunchRejection runRej = rejection(split.planForRun(m1Year, null, 1L));
+        assertThat(runRej.reason()).isEqualTo(LaunchRejectReason.TOO_MANY_BARS);
+        assertThat(runRej.maxBars()).isEqualTo(250_000);
+    }
 }

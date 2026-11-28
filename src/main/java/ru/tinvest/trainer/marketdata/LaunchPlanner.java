@@ -45,16 +45,28 @@ public interface LaunchPlanner {
 
     int MIN_PAPERS = 1;
 
-    /** Подбор по последнему готовому снапшоту, случайность — из генератора приложения. */
+    /** Подбор по последнему готовому снапшоту с лимитом ручной сессии, случайность — из генератора приложения. */
     LaunchResult plan(LaunchRequest request);
 
     /**
+     * Подбор для ручной сессии с лимитом {@code maxBars}.
+     *
      * @param snapshotId снапшот или {@code null} — последний готовый
      * @param seed зерно случайного выбора окна и бумаг слепой сессии
      * @throws ru.tinvest.trainer.api.NotFoundException снапшот с этим id не найден или не готов
      * @throws ru.tinvest.trainer.api.DependencyUnavailableException нет ни одного готового снапшота
      */
     LaunchResult plan(LaunchRequest request, @Nullable UUID snapshotId, long seed);
+
+    /** Подбор для прогона или сравнения алгоритмов в Мастерской с лимитом {@code runMaxBars}. */
+    default LaunchResult planForRun(LaunchRequest request) {
+        return plan(request);
+    }
+
+    /** Подбор для прогона или сравнения алгоритмов в Мастерской с лимитом {@code runMaxBars}. */
+    default LaunchResult planForRun(LaunchRequest request, @Nullable UUID snapshotId, long seed) {
+        return plan(request, snapshotId, seed);
+    }
 
     /** Читает в кэш каталога данные последнего готового снапшота (вызывается в фоне при старте). */
     default void warmUp() {}
@@ -72,6 +84,14 @@ public interface LaunchPlanner {
      * {@code TOO_MANY_BARS} при запуске. Нет данных за день у шага — {@code max-bars}.
      */
     Map<Timeframe, Integer> maxDurations(@Nullable UUID snapshotId);
+
+    /**
+     * Для каждого доступного шага — наибольшая длительность в торговых днях для прогонов алгоритмов в Мастерской
+     * (по лимиту {@code run-max-bars}).
+     */
+    default Map<Timeframe, Integer> runMaxDurations(@Nullable UUID snapshotId) {
+        return maxDurations(snapshotId);
+    }
 
     /** Границы доступных торговых дней архива. */
     record DateRange(LocalDate from, LocalDate to) {}
