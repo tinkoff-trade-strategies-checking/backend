@@ -169,7 +169,7 @@ class RunLaunchService {
     }
 
     private LaunchPlan planOrThrow(LaunchRequest request) {
-        LaunchResult result = planner.plan(request);
+        LaunchResult result = planner.planForRun(request);
         return switch (result) {
             case LaunchRejection rejection -> throw new RunLaunchRejectedException(rejection);
             case LaunchPlan p -> p;

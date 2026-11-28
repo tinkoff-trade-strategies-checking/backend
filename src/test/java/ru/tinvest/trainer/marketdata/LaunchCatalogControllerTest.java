@@ -16,7 +16,8 @@ class LaunchCatalogControllerTest {
     void maxPapersReflectsCatalogSizeWithMinimumOfOne() {
         MarketdataProperties props = new MarketdataProperties(
                 List.of(),
-                5000,
+                25000,
+                250000,
                 2,
                 2,
                 false,
@@ -27,6 +28,10 @@ class LaunchCatalogControllerTest {
         LaunchCatalogController emptyController = new LaunchCatalogController(stubPlanner(empty), props);
         assertThat(emptyController.options().minPapers()).isEqualTo(1);
         assertThat(emptyController.options().maxPapers()).isEqualTo(1);
+        assertThat(emptyController.options().executionRules().maxBars()).isEqualTo(25000);
+        assertThat(emptyController.options().executionRules().runMaxBars()).isEqualTo(250000);
+        assertThat(emptyController.options().maxDurationDaysByTimeframe()).containsEntry("1d", 25000);
+        assertThat(emptyController.options().runMaxDurationDaysByTimeframe()).containsEntry("1d", 250000);
 
         List<PlannedPaper> many = new ArrayList<>();
         for (int i = 1; i <= 120; i++) {
@@ -64,7 +69,12 @@ class LaunchCatalogControllerTest {
 
             @Override
             public Map<Timeframe, Integer> maxDurations(UUID snapshotId) {
-                return Map.of(Timeframe.D1, 5000);
+                return Map.of(Timeframe.D1, 25000);
+            }
+
+            @Override
+            public Map<Timeframe, Integer> runMaxDurations(UUID snapshotId) {
+                return Map.of(Timeframe.D1, 250000);
             }
 
             @Override

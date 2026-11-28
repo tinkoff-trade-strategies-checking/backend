@@ -58,6 +58,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
     private final SimulationWorkerClient worker;
     private final Set<String> pool;
     private final int maxBars;
+    private final int runMaxBars;
     private final LongSupplier seeds;
     private final Map<ClassifyKey, PeriodClassification> classifyCache = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
@@ -73,29 +74,55 @@ class DefaultLaunchPlanner implements LaunchPlanner {
             Set<String> pool,
             int maxBars,
             LongSupplier seeds) {
+        this(snapshots, archive, worker, pool, maxBars, maxBars, seeds);
+    }
+
+    DefaultLaunchPlanner(
+            Snapshots snapshots,
+            ArchiveCatalog archive,
+            SimulationWorkerClient worker,
+            Set<String> pool,
+            int maxBars,
+            int runMaxBars,
+            LongSupplier seeds) {
         this.snapshots = snapshots;
         this.archive = archive;
         this.worker = worker;
         this.pool = pool;
         this.maxBars = maxBars;
+        this.runMaxBars = runMaxBars;
         this.seeds = seeds;
     }
 
     @Override
     public LaunchResult plan(LaunchRequest request) {
-        return plan(request, null, seeds.getAsLong());
+        return planWithLimit(request, null, seeds.getAsLong(), maxBars);
     }
 
     @Override
     public LaunchResult plan(LaunchRequest request, @Nullable UUID snapshotId, long seed) {
+        return planWithLimit(request, snapshotId, seed, maxBars);
+    }
+
+    @Override
+    public LaunchResult planForRun(LaunchRequest request) {
+        return planWithLimit(request, null, seeds.getAsLong(), runMaxBars);
+    }
+
+    @Override
+    public LaunchResult planForRun(LaunchRequest request, @Nullable UUID snapshotId, long seed) {
+        return planWithLimit(request, snapshotId, seed, runMaxBars);
+    }
+
+    private LaunchResult planWithLimit(LaunchRequest request, @Nullable UUID snapshotId, long seed, int barsLimit) {
         LaunchRejection invalid = validate(request);
         if (invalid != null) {
             return invalid;
         }
         // ранний отсев по нижней границе числа свечей; точное число шагов — по архиву после выбора окна и бумаг
         int minBars = request.durationDays() * request.timeframe().minCandlesPerDay();
-        if (minBars > maxBars) {
-            return new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", minBars, maxBars);
+        if (minBars > barsLimit) {
+            return new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", minBars, barsLimit);
         }
         Snapshot snapshot = resolveSnapshot(snapshotId);
         String key = snapshot.snapshotKey();
@@ -123,7 +150,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
             return LaunchRejection.of(LaunchRejectReason.NO_MATCHING_PERIOD, "durationDays");
         }
         List<ArchivePaper> papers = poolPapers(key);
-        Context ctx = new Context(request, snapshot, source, length, days);
+        Context ctx = new Context(request, snapshot, source, length, days, barsLimit);
         return request.startMode() == StartMode.CUSTOM ? planCustom(ctx, papers) : planRandom(ctx, papers, seed);
     }
 
@@ -158,6 +185,15 @@ class DefaultLaunchPlanner implements LaunchPlanner {
 
     @Override
     public Map<Timeframe, Integer> maxDurations(@Nullable UUID snapshotId) {
+        return maxDurationsWithLimit(snapshotId, maxBars);
+    }
+
+    @Override
+    public Map<Timeframe, Integer> runMaxDurations(@Nullable UUID snapshotId) {
+        return maxDurationsWithLimit(snapshotId, runMaxBars);
+    }
+
+    private Map<Timeframe, Integer> maxDurationsWithLimit(@Nullable UUID snapshotId, int barsLimit) {
         String key = resolveSnapshot(snapshotId).snapshotKey();
         Set<Integer> intervals = archive.intervals(key);
         Map<Timeframe, Integer> result = new LinkedHashMap<>();
@@ -175,7 +211,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
         });
         for (Timeframe t : availableTimeframes(snapshotId)) {
             int steps = perDay.get(t);
-            result.put(t, steps <= 0 ? maxBars : maxBars / steps);
+            result.put(t, steps <= 0 ? barsLimit : barsLimit / steps);
         }
         return result;
     }
@@ -191,7 +227,12 @@ class DefaultLaunchPlanner implements LaunchPlanner {
     }
 
     private record Context(
-            LaunchRequest request, Snapshot snapshot, int sourceInterval, int length, List<LocalDate> days) {}
+            LaunchRequest request,
+            Snapshot snapshot,
+            int sourceInterval,
+            int length,
+            List<LocalDate> days,
+            int barsLimit) {}
 
     private LaunchResult planCustom(Context ctx, List<ArchivePaper> pool) {
         LaunchRequest request = ctx.request();
@@ -284,7 +325,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
                 Collections.shuffle(chosen, random);
             }
             int steps = steps(ctx, windowDays, chosen);
-            if (steps <= maxBars) {
+            if (steps <= ctx.barsLimit()) {
                 return plan(ctx, window, classification, chosen, true, steps);
             }
             // окно, где шагов больше лимита, не подходит: пропускаем, а не отказываем (иначе результат зависит от seed)
@@ -294,7 +335,7 @@ class DefaultLaunchPlanner implements LaunchPlanner {
         }
         if (overLimit > 0) {
             // подходящих окон не осталось из-за лимита; свойства скрытых окон (число шагов) клиенту не раскрываем
-            return new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", null, maxBars);
+            return new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", null, ctx.barsLimit());
         }
         return LaunchRejection.of(LaunchRejectReason.NO_MATCHING_PERIOD, "regime");
     }
@@ -350,8 +391,8 @@ class DefaultLaunchPlanner implements LaunchPlanner {
             List<ArchivePaper> chosen,
             boolean blind) {
         int steps = steps(ctx, windowDays(ctx, window), chosen);
-        if (steps > maxBars) {
-            return new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", steps, maxBars);
+        if (steps > ctx.barsLimit()) {
+            return new LaunchRejection(LaunchRejectReason.TOO_MANY_BARS, "durationDays", steps, ctx.barsLimit());
         }
         return plan(ctx, window, classification, chosen, blind, steps);
     }

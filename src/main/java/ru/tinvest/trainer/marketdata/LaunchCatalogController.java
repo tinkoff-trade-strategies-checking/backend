@@ -40,6 +40,8 @@ class LaunchCatalogController {
         MarketdataProperties.Execution e = properties.execution();
         Map<String, Integer> maxDurations = new LinkedHashMap<>();
         planner.maxDurations(null).forEach((timeframe, days) -> maxDurations.put(timeframe.code(), days));
+        Map<String, Integer> runMaxDurations = new LinkedHashMap<>();
+        planner.runMaxDurations(null).forEach((timeframe, days) -> runMaxDurations.put(timeframe.code(), days));
         LaunchPlanner.DateRange archiveRange = planner.archiveDateRange(null);
         int maxPapers = Math.max(LaunchPlanner.MIN_PAPERS, planner.papers(null).size());
         return new LaunchOptionsResponse(
@@ -47,6 +49,7 @@ class LaunchCatalogController {
                 LaunchPlanner.DEFAULT_DURATION,
                 maxDurations.keySet().stream().toList(),
                 maxDurations,
+                runMaxDurations,
                 Timeframe.D1.code(),
                 List.of(Regime.CALM.code(), Regime.MEDIUM.code(), Regime.STRESS.code()),
                 Regime.MEDIUM.code(),
@@ -64,7 +67,8 @@ class LaunchCatalogController {
                         e.spreadPct(),
                         e.slippageKappa(),
                         e.liquidityLimitPct(),
-                        properties.maxBars()),
+                        properties.maxBars(),
+                        properties.runMaxBars()),
                 archiveRange == null ? null : archiveRange.from(),
                 archiveRange == null ? null : archiveRange.to());
     }
@@ -88,13 +92,15 @@ class LaunchCatalogController {
             String spreadPct,
             String slippageKappa,
             String liquidityLimitPct,
-            int maxBars) {}
+            int maxBars,
+            int runMaxBars) {}
 
     record LaunchOptionsResponse(
             List<Integer> durations,
             int defaultDuration,
             List<String> availableTimeframes,
             Map<String, Integer> maxDurationDaysByTimeframe,
+            Map<String, Integer> runMaxDurationDaysByTimeframe,
             String defaultTimeframe,
             List<String> regimes,
             String defaultRegime,

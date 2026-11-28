@@ -446,8 +446,10 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
 
     @Test
     void launchOptionsFollowContract() throws Exception {
-        planner.maxDurations.put(Timeframe.H1, 357);
-        planner.maxDurations.put(Timeframe.D1, 5000);
+        planner.maxDurations.put(Timeframe.H1, 1785);
+        planner.maxDurations.put(Timeframe.D1, 25000);
+        planner.runMaxDurations.put(Timeframe.H1, 17857);
+        planner.runMaxDurations.put(Timeframe.D1, 250000);
         planner.archiveDateRange = new LaunchPlanner.DateRange(LocalDate.of(2024, 1, 3), LocalDate.of(2024, 12, 30));
         planner.papers = plan(false, 7).papers();
 
@@ -458,8 +460,10 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.defaultDuration").value(60))
                 .andExpect(jsonPath("$.availableTimeframes[0]").value("1h"))
                 .andExpect(jsonPath("$.availableTimeframes[1]").value("1d"))
-                .andExpect(jsonPath("$.maxDurationDaysByTimeframe['1h']").value(357))
-                .andExpect(jsonPath("$.maxDurationDaysByTimeframe['1d']").value(5000))
+                .andExpect(jsonPath("$.maxDurationDaysByTimeframe['1h']").value(1785))
+                .andExpect(jsonPath("$.maxDurationDaysByTimeframe['1d']").value(25000))
+                .andExpect(jsonPath("$.runMaxDurationDaysByTimeframe['1h']").value(17857))
+                .andExpect(jsonPath("$.runMaxDurationDaysByTimeframe['1d']").value(250000))
                 .andExpect(jsonPath("$.defaultTimeframe").value("1d"))
                 .andExpect(jsonPath("$.regimes[2]").value("stress"))
                 .andExpect(jsonPath("$.capitalPresets[0]").value("100000.00"))
@@ -468,7 +472,8 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.backgroundAlgorithmName").value("Эталон платформы"))
                 .andExpect(jsonPath("$.minPapers").value(1))
                 .andExpect(jsonPath("$.maxPapers").value(7))
-                .andExpect(jsonPath("$.executionRules.maxBars").value(5000))
+                .andExpect(jsonPath("$.executionRules.maxBars").value(25000))
+                .andExpect(jsonPath("$.executionRules.runMaxBars").value(250000))
                 .andExpect(jsonPath("$.executionRules.commissionPct").value("0.3"))
                 .andExpect(jsonPath("$.archiveFrom").value("2024-01-03"))
                 .andExpect(jsonPath("$.archiveTo").value("2024-12-30"));
@@ -739,6 +744,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
         List<PlannedPaper> papers = List.of();
         List<Timeframe> timeframes = List.of(Timeframe.D1);
         java.util.Map<Timeframe, Integer> maxDurations = new java.util.LinkedHashMap<>();
+        java.util.Map<Timeframe, Integer> runMaxDurations = new java.util.LinkedHashMap<>();
         LaunchPlanner.DateRange archiveDateRange;
 
         void reset() {
@@ -748,6 +754,7 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
             papers = List.of();
             timeframes = List.of(Timeframe.D1);
             maxDurations = new java.util.LinkedHashMap<>();
+            runMaxDurations = new java.util.LinkedHashMap<>();
             archiveDateRange = null;
         }
 
@@ -778,6 +785,11 @@ class SessionLaunchApiTest extends PostgresIntegrationTest {
         @Override
         public java.util.Map<Timeframe, Integer> maxDurations(UUID snapshotId) {
             return maxDurations;
+        }
+
+        @Override
+        public java.util.Map<Timeframe, Integer> runMaxDurations(UUID snapshotId) {
+            return runMaxDurations;
         }
 
         @Override
